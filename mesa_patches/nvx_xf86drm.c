@@ -128,6 +128,7 @@ static volatile int nvx_drm_lock;
 static NVX_XF86DRM_STATUS nvx_drm_status;
 #if defined(_WIN32) || defined(_WIN64)
 static uint32_t nvx_drm_fence_trace_count;
+static uint32_t nvx_drm_coherent_trace_count;
 static uint32_t nvx_drm_prep_trace_count;
 static uint32_t nvx_drm_submit_trace_count;
 static uint32_t nvx_drm_prep_call_trace_count;
@@ -1162,10 +1163,30 @@ nvx_drm_submit_pushbuf(int fd,
                if (slot->handle && slot->bo.allocation.BufferId ==
                                       references[reference_index].BufferId) {
                   int marked = NvxNouveauBoMarkUsed(&slot->bo, fence_value);
-                  /* Match Nouveau's asynchronous pushbuf path: record the
-                   * writer fence here, then wait and refresh the CPU shadow
-                   * only when a later CPU read actually depends on it. An
-                   * eager refresh here serializes every GPU batch. */
+                  /* Nouveau reads its small fence/query BO through a
+                   * persistent map, without another CPU_PREP. Linux maps
+                   * coherent memory; XP currently maps a shadow. Publish
+                   * actual GPU writes once this synchronous batch completed
+                   * so Gallium can retire fences and recycle resources.
+                   * Large render targets retain lazy readback. */
+                  if (marked &&
+                      (references[reference_index].Access & NVX_3D_RELOC_WRITE) &&
+                      slot->bo.allocation.Usage == NVX_3D_USAGE_GART_BUFFER &&
+                      slot->bo.allocation.Bytes <= NVX_3D_PAGE_BYTES &&
+                      slot->bo.map_count &&
+                      (slot->bo.map_access & NVX_NOUVEAU_BO_READ)) {
+                     int refreshed = NvxNouveauBoRefreshReadIfStale(&slot->bo);
+                     if (!refreshed)
+                        valid = 0;
+                     if (nvx_drm_coherent_trace_count < 4U) {
+                        NvxWglRecordNouveauPushbufItem(20U,
+                           nvx_drm_coherent_trace_count++,
+                           (uint32_t)slot->bo.allocation.BufferId,
+                           (uint32_t)refreshed,
+                           refreshed ? Nvx3dBatchReadDword(slot->bo.shadow, 0) : 0U,
+                           (uint32_t)fence_value, 0U, 0U);
+                     }
+                  }
                   if (nvx_drm_fence_trace_count < 4U) {
                      uint32_t trace_index = nvx_drm_fence_trace_count++;
                      NvxWglRecordNouveauPushbufItem(9U, trace_index,

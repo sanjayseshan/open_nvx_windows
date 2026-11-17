@@ -2,7 +2,19 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.260**.
 
-## Pending .261 buffer reuse fix
+## Pending .262 mapped completion visibility fix
+
+.261 built both ICDs and passed host checks. Hardware x64 gears 54.833 FPS,
+cube 61.0 FPS; x86 still exhausted GART. NOWAIT was a real bug but not the
+whole issue. Upstream nvc0_screen_fence_update reads screen->fence.map[0]
+directly, without CPU_PREP. NVX shadows were not refreshed after batches,
+so that pointer never observed GPU completion, preventing resource retirement.
+.262 refreshes actual GPU contents after successful synchronous submit for
+referenced GPU-written, persistently CPU-readable GART BOs <= 4 KiB. Large
+surfaces retain lazy readback. Readback failure fails submission; no synthetic
+fence values are written. Build/hardware pending.
+
+## .261 nonblocking buffer query fix
 
 Found a concrete upstream contract mismatch: GEM_CPU_PREP_NOWAIT always
 returned EBUSY for every BO with a recorded last_fence, even after completion.
