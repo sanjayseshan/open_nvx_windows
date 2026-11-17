@@ -10,4 +10,10 @@ nvx_xp_get_tick_count64(void)
     return (ULONGLONG)GetTickCount();
 }
 
+#if defined(__i386__)
+/* On 32-bit MinGW the stdcall import symbol includes its @0 suffix. */
+nvx_tick_count64_fn nvx_imp_GetTickCount64
+    __asm__("__imp__GetTickCount64@0") = nvx_xp_get_tick_count64;
+#else
 nvx_tick_count64_fn __imp_GetTickCount64 = nvx_xp_get_tick_count64;
+#endif

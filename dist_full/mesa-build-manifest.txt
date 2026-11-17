@@ -31,4 +31,4 @@ c9b221ba797c107713037a76f6f8fac8d6731ccae3a13a0aac669076ece5869a  /home/sanjay/t
 380d1cfe601bb94477491a510165ca94a768c213e1a4da769df2258e01008b6e  /home/sanjay/temp/xddm/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch
 dd49d6858839d38191bc51221f8bf4b1e0f265d5ffc8c6939095c6b1a89ddf3a  /home/sanjay/temp/xddm/mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch
 6b1cd4dacf40cf7485a5fd329d1c547190d4dc3cfcde1027a9ac0f1882c99134  /home/sanjay/temp/xddm/mesa_patches/0032-nouveau-xp-process-session-close.patch
-f81fddfa2a063b68bcb4e2dc1e1155bb5a8f5584672b8ffa358868d109e3da0a  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+adf27990463681e992943284121c34c5d63673f71f26b962ed9524875f0d7046  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

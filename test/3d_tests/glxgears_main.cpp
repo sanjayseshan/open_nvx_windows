@@ -507,6 +507,10 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	HMODULE hIcd = GetModuleHandleA("nvxogl64.dll");
 	if (!hIcd) hIcd = LoadLibraryA("nvxogl64.dll");
 	if (!hIcd) {
+		hIcd = GetModuleHandleA("nvxmesa.dll");
+		if (!hIcd) hIcd = LoadLibraryA("nvxmesa.dll");
+	}
+	if (!hIcd) {
 		hIcd = GetModuleHandleA("nvxogl.dll");
 		if (!hIcd) hIcd = LoadLibraryA("nvxogl.dll");
 	}
@@ -517,6 +521,7 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	 */
 	typedef int (WINAPI *PFNWGLDPF)(HDC, int, UINT, LPPIXELFORMATDESCRIPTOR);
 	PFNWGLDPF wglDPF = NULL;
+	int totalFormats = 0;
 	{
 		HMODULE hGL = GetModuleHandleA("opengl32.dll");
 		if (!hGL) hGL = LoadLibraryA("opengl32.dll");
@@ -526,8 +531,8 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 			PIXELFORMATDESCRIPTOR warmPfd;
 			memset(&warmPfd, 0, sizeof(warmPfd));
 			warmPfd.nSize = sizeof(warmPfd);
-			int total = wglDPF(hDC, 1, sizeof(warmPfd), &warmPfd);
-			log_out("[WGLGEARS] wglDescribePixelFormat warm-up: %d ICD formats\n", total);
+			totalFormats = wglDPF(hDC, 1, sizeof(warmPfd), &warmPfd);
+			log_out("[WGLGEARS] wglDescribePixelFormat warm-up: %d ICD formats\n", totalFormats);
 		} else {
 			log_out("[WGLGEARS] wglDescribePixelFormat unavailable; ICD may not load\n");
 		}
@@ -574,7 +579,8 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 		}
 
 		if (!foundFmt) {
-			for (int fmt = 37; fmt <= 1024; fmt++) {
+			int maxScan = totalFormats > 0 ? totalFormats : 100;
+			for (int fmt = 1; fmt <= maxScan; fmt++) {
 				PIXELFORMATDESCRIPTOR candidate;
 				memset(&candidate, 0, sizeof(candidate));
 				candidate.nSize = sizeof(candidate);

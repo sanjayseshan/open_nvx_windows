@@ -12,7 +12,7 @@ echo ==========================================================
 echo.
 
 :: Verify all required files from dist_full are in the same folder
-for %%F in (gsp_ga104.bin nvx.inf nvxdisp.dll nvxmesa.dll nvxmp.sys nvxogl64.dll) do (
+for %%F in (gsp_ga104.bin nvx.inf nvxdisp.dll nvxmesa.dll nvxmp.sys nvxogl32.dll nvxogl64.dll) do (
     if not exist "%SRC_DIR%\%%F" (
         echo [ERROR] Missing required file: "%SRC_DIR%\%%F"
         echo Make sure install.bat is inside the dist_full folder.
@@ -23,6 +23,7 @@ for %%F in (gsp_ga104.bin nvx.inf nvxdisp.dll nvxmesa.dll nvxmp.sys nvxogl64.dll
 
 :: Handle WOW64 redirection if invoked from 32-bit cmd.exe on XP x64
 set "SYS32=%SystemRoot%\System32"
+set "SYSWOW64=%SystemRoot%\SysWOW64"
 set "REG_VIEW="
 if exist "%SystemRoot%\Sysnative\cmd.exe" (
     set "SYS32=%SystemRoot%\Sysnative"
@@ -33,7 +34,7 @@ set "DRV_DIR=%SYS32%\drivers"
 :: 1. Backup existing driver files
 set "BACKUP_DIR=%SystemDrive%\nvx_backup"
 if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
-for %%F in ("%DRV_DIR%\nvxmp.sys" "%DRV_DIR%\gsp_ga104.bin" "%SYS32%\nvxdisp.dll" "%SYS32%\nvxmesa.dll" "%SYS32%\nvxogl64.dll") do (
+for %%F in ("%DRV_DIR%\nvxmp.sys" "%DRV_DIR%\gsp_ga104.bin" "%SYS32%\nvxdisp.dll" "%SYS32%\nvxmesa.dll" "%SYS32%\nvxogl64.dll" "%SYSWOW64%\nvxogl32.dll") do (
     if exist %%F copy /y %%F "%BACKUP_DIR%\" >nul
 )
 echo [1/5] Existing files backed up to %BACKUP_DIR%
@@ -45,6 +46,9 @@ copy /y "%SRC_DIR%\gsp_ga104.bin" "%DRV_DIR%\gsp_ga104.bin" >nul || goto :copy_f
 copy /y "%SRC_DIR%\nvxdisp.dll"   "%SYS32%\nvxdisp.dll"     >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvxmesa.dll"   "%SYS32%\nvxmesa.dll"     >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvxogl64.dll"  "%SYS32%\nvxogl64.dll"    >nul || goto :copy_fail
+if exist "%SystemRoot%\SysWOW64" (
+    copy /y "%SRC_DIR%\nvxogl32.dll" "%SYSWOW64%\nvxogl32.dll" >nul || goto :copy_fail
+)
 copy /y "%SRC_DIR%\nvx.inf"       "%SystemRoot%\inf\nvx.inf" >nul || goto :copy_fail
 if exist "%SRC_DIR%\nvxgdi.dl"    copy /y "%SRC_DIR%\nvxgdi.dl"    "%SYS32%\nvxgdi.dl"    >nul
 if exist "%SRC_DIR%\ucrtbase.dll" copy /y "%SRC_DIR%\ucrtbase.dll" "%SYS32%\ucrtbase.dll" >nul
@@ -95,7 +99,7 @@ reg add "%OGL_KEY%" /v DriverVersion /t REG_DWORD /d 65536 /f %REG_VIEW% >nul
 reg add "%OGL_KEY%" /v Flags /t REG_DWORD /d 1 /f %REG_VIEW% >nul
 reg add "%OGL_KEY%" /v Version /t REG_DWORD /d 2 /f %REG_VIEW% >nul
 set "OGL_WOW_KEY=HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp"
-reg add "%OGL_WOW_KEY%" /v Dll /t REG_SZ /d "nvxogl64.dll" /f %REG_VIEW% >nul
+reg add "%OGL_WOW_KEY%" /v Dll /t REG_SZ /d "nvxogl32.dll" /f %REG_VIEW% >nul
 reg add "%OGL_WOW_KEY%" /v DriverVersion /t REG_DWORD /d 65536 /f %REG_VIEW% >nul
 reg add "%OGL_WOW_KEY%" /v Flags /t REG_DWORD /d 1 /f %REG_VIEW% >nul
 reg add "%OGL_WOW_KEY%" /v Version /t REG_DWORD /d 2 /f %REG_VIEW% >nul

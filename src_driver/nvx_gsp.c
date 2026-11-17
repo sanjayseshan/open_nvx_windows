@@ -28,6 +28,35 @@
 #include "bootloader_blob.h"
 #include "booter_load_blob.h"
 
+static VOID NvxGspRecordNvc0BatchTiming(NVX_GR_CLIENT_CHANNEL *channel,
+    ULONG dwordCount,ULONG64 pollCount,ULONG retries)
+{
+    if(!channel) return;
+    channel->PerfSubmitCount++;
+    channel->PerfDwordCount+=dwordCount;
+    channel->PerfFenceWaitPolls+=pollCount;
+    if(pollCount>channel->PerfFenceWaitMaxPolls)
+        channel->PerfFenceWaitMaxPolls=pollCount;
+    channel->PerfDoorbellRetries+=retries;
+}
+
+VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    NVX_GR_CLIENT_CHANNEL *channel;
+    if(!dev) return;
+    channel=NvxGspFindClientChannel(dev,clientToken);
+    if(!channel||!channel->PerfSubmitCount) return;
+    LogStr("NVX [NVC0-PERF]: token=");LogHex(clientToken);
+    LogStr(" batches=");LogHex(channel->PerfSubmitCount);
+    LogStr(" dwords=");LogHex(channel->PerfDwordCount);
+    LogStr(" fence_wait_poll_100us=");LogHex(channel->PerfFenceWaitPolls);
+    LogStr(" max_fence_wait_polls=");LogHex(channel->PerfFenceWaitMaxPolls);
+    LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
+    LogStr(" doorbell_retries=");LogHex(channel->PerfDoorbellRetries);
+    LogStr("\n");
+}
+
 _Static_assert(GSP_VRAM_MAP_BYTES ==
                GSP_VRAM_SLICE_COUNT * GSP_VRAM_SLICE_BYTES,
                "VRAM PTE slices must cover the published aperture");
@@ -304,78 +333,6 @@ static VOID NvxGspLogPbdmaFault(PNVX_DEVICE_EXTENSION dev)
         LogStr(" PB_GET_HI=");LogHex(pbGetHi);LogStr(" PB_PUT=");LogHex(pbPut);
         LogStr(" PB_PUT_HI=");LogHex(pbPutHi);LogStr(" PB_HEADER=");LogHex(pbHeader);
         LogStr(" PB_COUNT=");LogHex(pbCount);LogStr(" PB_CRC=");LogHex(pbCrc);LogStr("\n");
-    }
-}
-
-/* On a fence timeout, PB_GET identifies the dword where PBDMA stopped
- * consuming the submitted pushbuffer. Log a small window from both the
- * validated IOCTL stream and the final GPU-visible stream so the command can
- * be compared with Mesa's captured Nouveau pushbuffer. */
-static VOID NvxGspLogNvc0StallWindow(PNVX_DEVICE_EXTENSION dev,
-    const uint32_t *source, const ULONG *push, ULONG sourceDwords,
-    ULONG totalDwords, ULONG64 pushVa)
-{
-    ULONG i, start, end, found=FALSE;
-    ULONG64 stalledDword=0, pushEnd;
-
-    if(!dev||!dev->Bar0MmioVirtual||dev->Bar0Length<4U||
-       !source||!push||!totalDwords||
-       totalDwords>0xffffffffU/sizeof(ULONG)) return;
-    pushEnd=pushVa+(ULONG64)totalDwords*sizeof(ULONG);
-    if(pushEnd<pushVa) return;
-
-    for(i=0;i<NVX_GR_RUNLIST_PBDMA_CONFIG_COUNT;i++) {
-        ULONG configOffset=dev->GspGraphicsRunlistBase+
-                           NVX_GR_RUNLIST_PBDMA_CONFIG(i);
-        ULONG config,pbdmaBase,pbGet,pbGetHi;
-        ULONG64 pbGetAddress;
-        if(configOffset>dev->Bar0Length-4U) continue;
-        config=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+configOffset));
-        if(!(config&NVX_GR_RUNLIST_PBDMA_CONFIG_VALID)) continue;
-        pbdmaBase=((config>>10)&0xffffU)<<10;
-        if(dev->Bar0Length<NVX_PPBDMA_PB_GET_HI_REL+4U||
-           pbdmaBase>dev->Bar0Length-NVX_PPBDMA_PB_GET_HI_REL-4U) continue;
-        pbGet=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+pbdmaBase+NVX_PPBDMA_PB_GET_REL));
-        pbGetHi=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+pbdmaBase+NVX_PPBDMA_PB_GET_HI_REL));
-        pbGetAddress=((ULONG64)pbGetHi<<32)|pbGet;
-        if(pbGetAddress>=pushVa&&pbGetAddress<=pushEnd) {
-            stalledDword=(pbGetAddress-pushVa)/sizeof(ULONG);
-            found=TRUE;
-            LogStr("NVX [NVC0-BATCH]: PB_GET window address=");
-            LogHex(pbGetAddress);LogStr(" pushVa=");LogHex(pushVa);
-            LogStr(" dword=");LogHex(stalledDword);
-            LogStr(" inDwords=");LogHex(sourceDwords);
-            LogStr(" totalDwords=");LogHex(totalDwords);LogStr("\n");
-            break;
-        }
-    }
-
-    if(!found) {
-        LogStr("NVX [NVC0-BATCH]: PB_GET did not resolve inside submitted buffer; pushVa=");
-        LogHex(pushVa);LogStr(" inDwords=");LogHex(sourceDwords);
-        LogStr(" totalDwords=");LogHex(totalDwords);LogStr("\n");
-        return;
-    }
-    start=stalledDword>16U?(ULONG)stalledDword-16U:0U;
-    end=(ULONG)stalledDword+32U;
-    if(end<stalledDword||end>totalDwords) end=totalDwords;
-    for(i=start;i<end;i++) {
-        if((i&7U)==(start&7U)) {
-            LogStr("NVX [NVC0-BATCH]: ioctl-window[");LogHex(i);LogStr("]");
-        }
-        if(i<sourceDwords) { LogStr(" ");LogHex(source[i]); }
-        else { LogStr(" <kernel-tail>"); }
-        if((i&7U)==7U||i+1U==end) LogStr("\n");
-    }
-    for(i=start;i<end;i++) {
-        if((i&7U)==(start&7U)) {
-            LogStr("NVX [NVC0-BATCH]: gpu-window[");LogHex(i);LogStr("]");
-        }
-        LogStr(" ");LogHex(push[i]);
-        if((i&7U)==7U||i+1U==end) LogStr("\n");
     }
 }
 
@@ -923,20 +880,20 @@ static BOOLEAN NvxGspRegisterScratch(PNVX_DEVICE_EXTENSION dev)
     /* rpc_alloc_memory_v13_01 + IDR=0 PTE descriptor, 4KB page numbers.
        GSP does not implement the local VideoMemory allocator (class 0x40).
        Register OS-owned coherent memory, as OpenRM's ALLOC_MEMORY does. */
-    ULONG payload[46]={0};
+    ULONG payload[78]={0};
     ULONG64 physical=dev->GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET;
     if(dev->GspDmaLength<GSP_SCRATCH_OFFSET+GSP_SCRATCH_SIZE||(physical&4095)) return FALSE;
     payload[0]=dev->GspClientHandle;payload[1]=dev->GspDeviceHandle;
     payload[2]=0x81000001;payload[3]=0x81;
     payload[4]=0x40000010; /* noncontiguous PCI pages, NO_MAP */
-    payload[8]=GSP_SCRATCH_SIZE;payload[10]=16;payload[12]=16U<<16;
-    for(ULONG i=0;i<16;i++) {
+    payload[8]=GSP_SCRATCH_SIZE;payload[10]=32;payload[12]=32U<<16;
+    for(ULONG i=0;i<32;i++) {
         ULONG64 page=(physical>>12)+i;
         payload[14+i*2]=(ULONG)page;payload[15+i*2]=(ULONG)(page>>32);
     }
     if(!NvxGspCall(dev,4,payload,sizeof(payload))) return FALSE;
     dev->GspScratchMemoryHandle=0x81000001;
-    LogStr("NVX [RM]: 64KB coherent scratch memory registered.\n");return TRUE;
+    LogStr("NVX [RM]: 128KB coherent scratch memory registered.\n");return TRUE;
 }
 
 #if NVX_ENABLE_GR_CHANNEL_PROBE
@@ -1012,7 +969,7 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
         if(pdIndex>255U) return FALSE;
         tables[1536+pdIndex*2+1]=(ptePhysical>>4)|0xc;
     }
-    for(ULONG i=0;i<16;i++)
+    for(ULONG i=0;i<32;i++)
         tables[2048+i]=((dev->GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET+i*4096)>>4)|0xd;
 #if NVX_ENABLE_GR_CHANNEL_PROBE
     if(dev->GspGrContextVirtual&&dev->GspGrContextLength==GSP_GR_CONTEXT_BYTES&&
@@ -1268,8 +1225,8 @@ static BOOLEAN NvxGspAllocChannel(PNVX_DEVICE_EXTENSION dev)
             LogStr("NVX [RM]: queried CE fault method buffer size: ");LogHex(mthdSize);LogStr("\n");
         }
     }
-    /* GR GPFIFO occupies 0x9000; runtime CE push slots use 0xd000; C797
-       push data uses 0xf000. Keep all three allocations disjoint. */
+    /* GR GPFIFO occupies 0x9000; runtime CE push slots use 0x10000; C797
+       push data uses 0xf000. Keep all allocations disjoint. */
     if(!mthdSize||mthdSize>0x5000||!dev->GspScratchGpuVa) return FALSE;
 
     /* Allocate TSG on Device */
@@ -3534,22 +3491,24 @@ BOOLEAN NvxGspSubmitNvc0ColorTargetClear(PVOID HwDeviceExtension,
  * profile against an owned BO. The kernel adds SET_OBJECT, idle, and release
  * semaphore methods; no caller-supplied method outside that profile reaches
  * the channel. */
-BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
+BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG64 fenceValue)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
     NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo={0};
+    NVX_GR_CLIENT_CHANNEL *channel=NULL;
     PUCHAR scratch;
     volatile ULONG *userd,*fence;
     volatile ULONG64 *fifo;
     PULONG push;
     ULONG n=0,i,put,wait;
     ULONG64 pushVa,fenceVa;
+    ULONG runlistBase,channelId,submitToken;
+    ULONG *pPut;
 
     if(!dev||!nvc0Dwords||!dev->GspInitialized||
-       !dev->GspGraphicsChannelReady||!dev->GspGraphicsCommandVerified||
-       dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued||
-       !dev->GspDmaVirtual||!dev->GspGraphicsRunlistBase||
+       dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued||
+       !dev->GspDmaVirtual||
        !fenceValue||fenceValue>0xffffffffULL)
         return FALSE;
 
@@ -3559,13 +3518,30 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     }
     if(wait==20000) return FALSE;
 
-    scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
-    userd=(volatile ULONG *)(scratch+0xb400);
+    /* OpenRM submits through the channel owned by the requesting client.
+       Never borrow another application's channel for a diagnostic clear. */
+    if(clientToken)
+        channel=NvxGspFindClientChannel(dev,clientToken);
+    if(!channel||!channel->Ready||channel->Faulted) {
+        LogStr("NVX [NVC0-CLEAR]: refusing non-owned channel token=");
+        LogHex(clientToken);
+        LogStr(channel?" not-ready\n":" no-channel\n");
+        __sync_lock_release(&NvxGrUserSubmitBusy);
+        return FALSE;
+    }
+
+    scratch=(PUCHAR)channel->Virtual;
+    userd=(volatile ULONG *)(scratch+NVX_GR_CLIENT_USERD_OFFSET);
     fence=(volatile ULONG *)(scratch+0x5000);
     fifo=(volatile ULONG64 *)(scratch+0x9000);
     push=(PULONG)(scratch+0xf000);
-    pushVa=dev->GspScratchGpuVa+0xf000;
-    fenceVa=dev->GspScratchGpuVa+0x5000;
+    pushVa=channel->GpuVa+0xf000;
+    fenceVa=channel->GpuVa+0x5000;
+    runlistBase=channel->RunlistBase;
+    channelId=channel->HardwareChannelId;
+    submitToken=channel->SubmitToken;
+    pPut=&channel->Put;
+
     for(i=0;i<16;i++) fence[i]=0;
     __sync_synchronize();
 
@@ -3591,24 +3567,29 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
         __sync_lock_release(&NvxGrUserSubmitBusy);
         return FALSE;
     }
-    put=dev->GspGraphicsGPPut%512U;
+    put=(*pPut)%512U;
     fifo[put]=(pushVa&0xfffffffcULL)|(((pushVa>>32)&0xffULL)<<32)|
               ((ULONG64)n<<42);
     __sync_synchronize();
-    dev->GspGraphicsGPPut=(put+1U)%512U;
+    *pPut=(put+1U)%512U;
     dev->Nvx3dLastFence=fenceValue;
-    userd[0x8c/4]=dev->GspGraphicsGPPut;
+    if(channel) channel->LastFence=fenceValue;
+    userd[0x8c/4]=*pPut;
     __sync_synchronize();
-    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsRunlistBase,2U,dev->GspGraphicsSubmitToken);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,runlistBase,channelId,submitToken);
 
     for(wait=0;wait<10000;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
             __sync_synchronize();
             dev->Nvx3dCompletedFence=fenceValue;
+            if(channel) {
+                channel->CompletedFence=fenceValue;
+                channel->CompletedBatches++;
+            }
             __sync_lock_release(&NvxGrUserSubmitBusy);
             return TRUE;
         }
-        if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued)
+        if((channel&&channel->Faulted)||dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued)
             break;
         VideoPortStallExecution(100);
     }
@@ -3617,33 +3598,36 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     /* RC type 31 has appeared on both the boot and client channels after this
        stream. Ask OpenRM for the channel's latched VA/type before another
        request or teardown can consume the evidence. */
-    if(dev->GspGraphicsChannelHandle&&
-       NvxGspControl(dev,dev->GspGraphicsChannelHandle,
-                     NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO,
-                     &faultInfo,sizeof(faultInfo))) {
-        const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *reply=
-            (const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *)(dev->RpcRxRecord+104);
-        LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO addr=");
-        LogHex(((ULONG64)reply->addrHi<<32)|reply->addrLo);
-        LogStr(" type=");LogHex(reply->faultType);
-        LogStr(" shaderVA0=");LogHex(reply->shaderProgramVA[0]);
-        LogStr("\n");
-        if((((ULONG64)reply->addrHi<<32)|reply->addrLo)==0x10009000ULL) {
-            PULONG64 tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+
-                                       GSP_PAGE_TABLES_OFFSET);
-            ULONG64 expected=(dev->GspDmaPhysical.QuadPart+
-                              GSP_SCRATCH_OFFSET+0x9000ULL);
-            LogStr("NVX [GR-FAULT]: GPFIFO mapping PDE=");
-            LogHex(tables[1536+128*2+1]);
-            LogStr(" PTE=");LogHex(tables[2048+9]);
-            LogStr(" expectedPhys=");LogHex(expected);
-            LogStr(" dmaPhys=");LogHex(dev->GspDmaPhysical.QuadPart);
-            LogStr(" scratchObj=");LogHex(dev->GspScratchMemoryHandle);
-            LogStr(" vaSpace=");LogHex(dev->GspVaSpaceHandle);
+    {
+        ULONG faultChanHandle=channel?channel->Channel:dev->GspGraphicsChannelHandle;
+        if(faultChanHandle&&
+           NvxGspControl(dev,faultChanHandle,
+                         NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO,
+                         &faultInfo,sizeof(faultInfo))) {
+            const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *reply=
+                (const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *)(dev->RpcRxRecord+104);
+            LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO addr=");
+            LogHex(((ULONG64)reply->addrHi<<32)|reply->addrLo);
+            LogStr(" type=");LogHex(reply->faultType);
+            LogStr(" shaderVA0=");LogHex(reply->shaderProgramVA[0]);
             LogStr("\n");
+            if((((ULONG64)reply->addrHi<<32)|reply->addrLo)==0x10009000ULL) {
+                PULONG64 tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+
+                                           GSP_PAGE_TABLES_OFFSET);
+                ULONG64 expected=(dev->GspDmaPhysical.QuadPart+
+                                  GSP_SCRATCH_OFFSET+0x9000ULL);
+                LogStr("NVX [GR-FAULT]: GPFIFO mapping PDE=");
+                LogHex(tables[1536+128*2+1]);
+                LogStr(" PTE=");LogHex(tables[2048+9]);
+                LogStr(" expectedPhys=");LogHex(expected);
+                LogStr(" dmaPhys=");LogHex(dev->GspDmaPhysical.QuadPart);
+                LogStr(" scratchObj=");LogHex(dev->GspScratchMemoryHandle);
+                LogStr(" vaSpace=");LogHex(dev->GspVaSpaceHandle);
+                LogStr("\n");
+            }
+        } else {
+            LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO unavailable after native clear timeout.\n");
         }
-    } else {
-        LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO unavailable after native clear timeout.\n");
     }
     __sync_lock_release(&NvxGrUserSubmitBusy);
     return FALSE;
@@ -3695,8 +3679,11 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     volatile ULONG *userd,*fence;
     volatile ULONG64 *fifo;
     PULONG push;
-    ULONG put,wait,tailCount=5U,pushBytesNeeded,totalDwords,i;
+    ULONG put,wait,lockPolls,tailCount=5U,pushBytesNeeded,totalDwords,i;
     ULONG64 fenceVa,pushVa,fifoEntry;
+    ULONG64 totalPolls;
+    ULONG retryCount=0;
+    ULONG fenceSlot;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        !pushVirtual||!pushGpuVa||!pushBytes||!dev->GspInitialized||
        dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued||
@@ -3710,29 +3697,40 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
         if(!__sync_lock_test_and_set(&NvxGrUserSubmitBusy,1)) break;
         VideoPortStallExecution(10U);
     }
-    if(wait==20000U) return FALSE;
+    lockPolls=wait;
+    if(wait==20000U) {
+        LogStr("NVX [NVC0-BATCH]: submit lock timed out.\n");
+        return FALSE;
+    }
     channel=NvxGspFindClientChannel(dev,clientToken);
     if(!channel||!channel->Ready||channel->Faulted||
        dev->Nvx3dLastFence>=0xffffffffULL) {
+        LogStr("NVX [NVC0-BATCH]: channel unavailable ready=");
+        LogHex(channel?channel->Ready:0U);LogStr(" faulted=");
+        LogHex(channel?channel->Faulted:0U);LogStr(" deviceFault=");
+        LogHex(dev->GspGraphicsDeviceFaulted);LogStr(" mmuFault=");
+        LogHex(dev->GspMmuFaultQueued);LogStr("\n");
         __sync_lock_release(&NvxGrUserSubmitBusy);return FALSE;
     }
+    channel->PerfSubmitLockPolls+=lockPolls;
     fenceValue=dev->Nvx3dLastFence+1U;
+    fenceSlot=(ULONG)(fenceValue%NVX_3D_FENCE_TRACK_SLOTS);
     channel->LastFence=fenceValue;
     *completedFence=fenceValue;
 
     scratch=(PUCHAR)channel->Virtual;
     userd=(volatile ULONG *)(scratch+NVX_GR_CLIENT_USERD_OFFSET);
-    fence=(volatile ULONG *)(scratch+0x5000);
+    fence=(volatile ULONG *)(scratch+0x5000+fenceSlot*sizeof(ULONG));
     fifo=(volatile ULONG64 *)(scratch+0x9000);
     push=(PULONG)pushVirtual;
     pushVa=pushGpuVa;
-    fenceVa=channel->GpuVa+0x5000;
-    VideoPortZeroMemory((PVOID)fence,16U*sizeof(ULONG));
+    fenceVa=channel->GpuVa+0x5000+fenceSlot*sizeof(ULONG);
+    VideoPortZeroMemory((PVOID)fence,sizeof(ULONG));
     VideoPortMoveMemory(push,(PVOID)nvc0Dwords,
                         dwordCount*sizeof(ULONG));
     __sync_synchronize();
-    /* A release after preceding writes supplies completion without forcing
-       a global GR idle before every submitted Mesa batch. */
+    /* The release is the per-batch completion point. Keep submission
+       synchronous until the XP fence path can safely queue independently. */
     push[dwordCount+0]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|
             (NVC797_SET_REPORT_SEMAPHORE_A>>2);
     push[dwordCount+1]=(ULONG)(fenceVa>>32);
@@ -3755,12 +3753,18 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     userd[0x8c/4]=channel->Put;
     __sync_synchronize();
     (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
+    totalPolls=0;
     for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
+            totalPolls+=wait;
+            NvxGspRecordNvc0BatchTiming(channel,dwordCount,totalPolls,retryCount);
             __sync_synchronize();
             dev->Nvx3dCompletedFence=fenceValue;
             channel->CompletedFence=fenceValue;
             channel->CompletedBatches++;
+            dev->Nvx3dFenceOwner[fenceSlot]=clientToken;
+            __sync_synchronize();
+            dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
             if(channel->DrawTraceCount<4U) {
                 ULONG primitive,vertexStart,vertexCount;
                 if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
@@ -3785,6 +3789,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     }
     if(fence[0]!=(ULONG)fenceValue&&!channel->Faulted&&
        !dev->GspGraphicsDeviceFaulted&&!dev->GspMmuFaultQueued) {
+        totalPolls+=wait;
         ULONG64 visibleEntry=fifo[put];
         LogStr("NVX [NVC0-BATCH]: retry doorbell fifoIndex=");LogHex(put);
         LogStr(" expectedEntry=");LogHex(fifoEntry);
@@ -3793,12 +3798,18 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
         LogStr(" USERD_PUT=");LogHex(userd[0x8c/4]);LogStr("\n");
         __sync_synchronize();
         (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
+        retryCount++;
         for(wait=0;wait<50000U;wait++) {
             if(fence[0]==(ULONG)fenceValue) {
+                totalPolls+=wait;
+                NvxGspRecordNvc0BatchTiming(channel,dwordCount,totalPolls,retryCount);
                 __sync_synchronize();
                 dev->Nvx3dCompletedFence=fenceValue;
             channel->CompletedFence=fenceValue;
             channel->CompletedBatches++;
+            dev->Nvx3dFenceOwner[fenceSlot]=clientToken;
+            __sync_synchronize();
+            dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
                 LogStr("NVX [NVC0-BATCH]: second doorbell completed fence=");
                 LogHex(fenceValue);LogStr(" wait=" );LogHex(wait);LogStr("\n");
                 __sync_lock_release(&NvxGrUserSubmitBusy);
@@ -3815,9 +3826,6 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     LogStr(" userdPut=");LogHex(userd[0x8c/4]);
     LogStr(" expectedPut=");LogHex(channel->Put);LogStr(" fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
-    /* Dump at the hardware's actual PB_GET stop point; a fixed prefix can
-       omit the failing packet when the stream is larger than 256 dwords. */
-    NvxGspLogNvc0StallWindow(dev,nvc0Dwords,push,dwordCount,totalDwords,pushVa);
     for(i=0;i<tailCount;i++) {
         LogStr("NVX [NVC0-BATCH]: tail[");LogHex(i);LogStr("]=");
         LogHex(push[dwordCount+i]);LogStr("\n");
@@ -4194,16 +4202,40 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
                             ULONG timeoutMs)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    NVX_GR_CLIENT_CHANNEL *ownerChannel=NULL;
+    ULONG64 ownerToken=0;
+    ULONG fenceSlot;
     ULONG elapsed=0;
     if(!dev||!fenceValue||fenceValue>dev->Nvx3dLastFence||timeoutMs>30000)
         return FALSE;
+    fenceSlot=(ULONG)(fenceValue%NVX_3D_FENCE_TRACK_SLOTS);
+    if(dev->Nvx3dFenceSequence[fenceSlot]==fenceValue) {
+        ownerToken=dev->Nvx3dFenceOwner[fenceSlot];
+        ownerChannel=NvxGspFindClientChannel(dev,ownerToken);
+        if(!ownerChannel||!ownerChannel->Virtual) return FALSE;
+    } else if(dev->Nvx3dCompletedFence>=fenceValue) {
+        return TRUE;
+    }
     while(elapsed<=timeoutMs) {
-        for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
-            NVX_GR_CLIENT_CHANNEL *c=&dev->Nvx3dClientSessions[i].Graphics;
-            if(c->ClientToken&&c->Faulted&&c->LastFence==fenceValue)
-                return FALSE;
+        if(ownerChannel) {
+            volatile ULONG *fence=(volatile ULONG *)
+                ((PUCHAR)ownerChannel->Virtual+0x5000+
+                 fenceSlot*sizeof(ULONG));
+            if(fence[0]>=(ULONG)fenceValue) {
+                __sync_synchronize();
+                if(ownerChannel->CompletedFence<fenceValue)
+                    ownerChannel->CompletedFence=fenceValue;
+                return TRUE;
+            }
+            if(ownerChannel->Faulted) return FALSE;
+        } else {
+            for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
+                NVX_GR_CLIENT_CHANNEL *c=&dev->Nvx3dClientSessions[i].Graphics;
+                if(c->ClientToken&&c->Faulted&&c->LastFence==fenceValue)
+                    return FALSE;
+            }
+            if(dev->Nvx3dCompletedFence>=fenceValue) return TRUE;
         }
-        if(dev->Nvx3dCompletedFence>=fenceValue) return TRUE;
         if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued) return FALSE;
         VideoPortStallExecution(1000);elapsed++;
     }

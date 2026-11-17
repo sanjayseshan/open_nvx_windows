@@ -47,7 +47,8 @@ int NvxWinsysWaitFence(NVX_WINSYS_DEVICE *device, uint64_t fence_value,
 int NvxWinsysValidateBatch(NVX_WINSYS_DEVICE *device,
                            const void *batch, uint32_t batch_bytes);
 int NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
-                         const void *batch, uint32_t batch_bytes,
+                         void *batch, uint32_t batch_bytes,
+                         uint32_t batch_capacity,
                          uint64_t *fence_value);
 
 #endif

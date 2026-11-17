@@ -18,12 +18,19 @@ Executes all host unit tests and builds both 64-bit and 32-bit drivers in one st
 ### 2. `test_full_driver.sh`
 Performs end-to-end integration testing:
 - Runs host unit tests and compiles production driver binaries.
+- With `NVX_BUILD_MESA_ICD=1`, builds both x64 and x86 Mesa WGL ICDs and
+  places the x86 ICD in XP x64 `SysWOW64` for WOW64 applications. The XP x64
+  display driver remains the native x64 driver.
 - Synchronizes drivers to the offline `winxp_x64.qcow2` disk image without root permissions.
 - Launches the VM session and parses hardware verification logs.
 
 ```bash
 ./test/test_full_driver.sh
 ```
+
+Building the Mesa ICDs requires both x86 and x64 MinGW C/C++ cross compilers.
+The x86 ICD is registered in the WOW64 OpenGLDrivers view as `nvxogl32.dll`;
+the x64 ICD remains `nvxogl64.dll` in the native view.
 
 For a short hardware 3D pass, run the same suite in rapid mode. It keeps the
 host checks and package audit, then boots XP and runs the bounded C797 clear

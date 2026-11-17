@@ -31,7 +31,10 @@ $repo_root/mesa_patches/0027-mesa-begin-end-staging-trace.patch
 $repo_root/mesa_patches/0028-nouveau-xp-widen-cached-bo-map.patch
 $repo_root/mesa_patches/0029-nouveau-zero-cb-sample-locations.patch
 $repo_root/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch
-$repo_root/mesa_patches/0032-nouveau-xp-process-session-close.patch"
+$repo_root/mesa_patches/0032-nouveau-xp-process-session-close.patch
+$repo_root/mesa_patches/0033-nouveau-xp-tls-allocation-fallback.patch
+$repo_root/mesa_patches/0034-nouveau-wgl-present-before-flush.patch
+$repo_root/mesa_patches/0035-nouveau-xp-submission-profile.patch"
 expected_revision=cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
 
 actual_revision=$(git -C "$mesa_dir" rev-parse HEAD)

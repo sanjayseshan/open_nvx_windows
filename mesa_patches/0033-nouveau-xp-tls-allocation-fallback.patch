@@ -1,0 +1,30 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+index 07fa13d0fd4aa..860bbbcb91fa6 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+@@ -669,6 +669,25 @@ nvc0_screen_resize_tls_area(struct nvc0_screen *screen,
+ 
+    ret = nouveau_bo_new(screen->base.device, NV_VRAM_DOMAIN(&screen->base), 1 << 17, size,
+                         NULL, &bo);
++   if (ret && lpos >= 1024) {
++      uint32_t retry_lpos = lpos / 2;
++      while (ret && retry_lpos >= 512) {
++         uint64_t retry_size = (retry_lpos + lneg) * 32 + cstack;
++         retry_size *= (screen->base.device->chipset >= 0xe0) ? 64 : 48;
++         retry_size = align(retry_size, 0x8000);
++         retry_size *= screen->mp_count;
++         retry_size = align(retry_size, 1 << 17);
++         ret = nouveau_bo_new(screen->base.device,
++                              NV_VRAM_DOMAIN(&screen->base), 1 << 17,
++                              retry_size, NULL, &bo);
++         if (!ret) {
++            NOUVEAU_ERR("TLS allocation fell back from 0x%"PRIx64
++                        " to 0x%"PRIx64" bytes\n", size, retry_size);
++            break;
++         }
++         retry_lpos /= 2;
++      }
++   }
+    if (ret)
+       return ret;
+ 

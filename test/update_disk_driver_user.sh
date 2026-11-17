@@ -109,19 +109,26 @@ Windows Registry Editor Version 5.00
 "Version"=dword:00000002
 "DriverVersion"=dword:00010000
 "Flags"=dword:00000001
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node]
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft]
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT]
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion]
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers]
+REGFILE
+fi
+if [ -f "$NVX_PACKAGE/nvxogl32.dll" ]; then
+    [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ] || {
+        echo "XP x64 SysWOW64 directory is missing; cannot install the x86 OpenGL ICD." >&2
+        exit 1
+    }
+    cp -v "$NVX_PACKAGE/nvxogl32.dll" "$NVX_MOUNT/WINDOWS/SysWOW64/nvxogl32.dll"
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_PACKAGE/nvxogl32.dll" "$NVX_MOUNT/test_accel/x86/nvxogl32.dll"
+    NVX_SOFTWARE_HIVE="$(find "$NVX_MOUNT" -maxdepth 4 -type f -ipath '*/windows/system32/config/software' -print -quit)"
+    if [ -z "$NVX_SOFTWARE_HIVE" ]; then
+        echo "Could not locate the offline SOFTWARE registry hive for the x86 Mesa ICD." >&2
+        exit 1
+    fi
+hivexregedit --merge --prefix 'HKEY_LOCAL_MACHINE\SOFTWARE' "$NVX_SOFTWARE_HIVE" <<'REGFILE'
+Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp]
-"Dll"="$NVX_OPENGL_ICD_DLL"
+"Dll"="nvxogl32.dll"
 "Version"=dword:00000002
 "DriverVersion"=dword:00010000
 "Flags"=dword:00000001
@@ -237,7 +244,12 @@ fi
 
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off
+rem All Users and Administrator Startup can both invoke this batch. Keep the
+rem lock directory for this boot so only the first invocation runs benchmarks.
+mkdir C:\test_accel\startup_test.lock >nul 2>&1
+if errorlevel 1 exit /b 0
 cd /d C:\test_accel
+if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 if exist C:\test_accel\p2mf_probe_gart.flag (
     echo [TEST] Isolated GART P2MF probe... >> C:\test_accel.log
@@ -271,6 +283,7 @@ if exist x86\test_gpu_accel32.exe (
     test_gpu_accel32.exe >> C:\test_accel.log 2>&1
     echo [TEST] 32-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
 )
+rmdir C:\test_accel\startup_test.lock >nul 2>&1
 echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
@@ -286,10 +299,17 @@ case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in
         echo "[TEST-PACKAGE] isolated P2MF probe target=FB enabled"
         ;;
 esac
-NVX_STARTUP="$(find "$NVX_MOUNT" -maxdepth 5 -type d -ipath '*/programs/startup' -print -quit)"
-if [ -n "$NVX_STARTUP" ]; then
-    cp -v "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_STARTUP/run_accel_test.bat"
-fi
+rm -rf "$NVX_MOUNT/test_accel/startup_test.lock"
+NVX_STARTUP_ADMIN="$NVX_MOUNT/Documents and Settings/Administrator/Start Menu/Programs/Startup"
+NVX_STARTUP_ALL="$NVX_MOUNT/Documents and Settings/All Users/Start Menu/Programs/Startup"
+for NVX_STARTUP in "$NVX_STARTUP_ADMIN" "$NVX_STARTUP_ALL"; do
+    if [ -d "$NVX_STARTUP" ]; then
+        rm -f "$NVX_STARTUP/run_accel_test.bat" \
+              "$NVX_STARTUP/run_accel_test.bat.disabled"
+        cp -v "$NVX_MOUNT/test_accel/run_test.bat" \
+            "$NVX_STARTUP/run_accel_test.bat"
+    fi
+done
 
 if [ "${NVX_RAPID_3D:-0}" = "1" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"

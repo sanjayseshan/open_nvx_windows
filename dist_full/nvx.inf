@@ -9,7 +9,7 @@ Signature   = "$CHICAGO$"
 Provider    = %NVIDIA%
 ClassGUID   = {4D36E968-E325-11CE-BFC1-08002BE10318}
 Class       = Display
-DriverVer   = 11/16/2026, 3.0.0.242
+DriverVer   = 11/17/2026, 3.0.0.256
 
 [DestinationDirs]
 DefaultDestDir      = 11
@@ -74,7 +74,7 @@ HKLM, "Software\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Dll,
 HKLM, "Software\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Version,       0x00010001, 2
 HKLM, "Software\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", DriverVersion, 0x00010001, 0x00010000
 HKLM, "Software\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Flags,         0x00010001, 1
-HKLM, "Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Dll,           0x00000000, "nvxogl64.dll"
+HKLM, "Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Dll,           0x00000000, "nvxogl32.dll"
 HKLM, "Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Version,       0x00010001, 2
 HKLM, "Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", DriverVersion, 0x00010001, 0x00010000
 HKLM, "Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp", Flags,         0x00010001, 1
@@ -93,6 +93,7 @@ nvxogl64.dll
 nvxmp.sys  = 1
 nvxdisp.dll = 1
 nvxogl64.dll = 1
+nvxogl32.dll = 1
 
 [Strings]
 NVIDIA              = "NVIDIA Corporation (XDDM Community Port)"

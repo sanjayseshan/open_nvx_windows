@@ -7,12 +7,30 @@ if [ ! -x "$MESON" ] && command -v meson >/dev/null 2>&1; then
     MESON="$(command -v meson)"
 fi
 NINJA="${NINJA:-ninja}"
-BUILD_DIR="${NVX_MESA_BUILD_DIR:-${TMPDIR:-/tmp}/nvx-mesa-xp64-build}"
+NVX_MESA_ARCH="${NVX_MESA_ARCH:-x64}"
+case "$NVX_MESA_ARCH" in
+    x64)
+        MESA_ARCH_SUFFIX=64
+        MESA_CROSS_FILE="$ROOT/test/mesa_xp64.ini"
+        MESA_DLL_NAME=nvxogl64
+        MESA_TARGET=x86_64-pc-windows-gnu
+        MESA_OBJDUMP=x86_64-w64-mingw32-objdump
+        ;;
+    x86)
+        MESA_ARCH_SUFFIX=32
+        MESA_CROSS_FILE="$ROOT/test/mesa_xp32.ini"
+        MESA_DLL_NAME=nvxogl32
+        MESA_TARGET=i686-pc-windows-gnu
+        MESA_OBJDUMP=i686-w64-mingw32-objdump
+        ;;
+    *) echo "NVX_MESA_ARCH must be x64 or x86" >&2; exit 1 ;;
+esac
+BUILD_DIR="${NVX_MESA_BUILD_DIR:-${TMPDIR:-/tmp}/nvx-mesa-xp${MESA_ARCH_SUFFIX}-build}"
 XP_CROSS_FILE="${BUILD_DIR}.ini"
-DLL="$BUILD_DIR/src/gallium/targets/wgl/nvxogl64.dll"
+DLL="$BUILD_DIR/src/gallium/targets/wgl/${MESA_DLL_NAME}.dll"
 MESA_WGL_DLL="$BUILD_DIR/src/gallium/targets/libgl-gdi/opengl32.dll"
 # The external XP patch lowers Mesa's minimum-version option to 5 (Windows XP).
-# The cross file sets _WIN32_WINNT/WINVER to 0x0502 for XP x64; final PE imports
+# The cross file sets _WIN32_WINNT/WINVER to 0x0502 for XP; final PE imports
 # and subsystem versions are checked by audit_xp_imports.py.
 MESA_MIN_WINDOWS_VERSION=5
 # Include Nouveau in the normal XP ICD package so WGL exercises the native
@@ -25,9 +43,9 @@ MESON_VERSION_FILE="$BUILD_DIR/.nvx-meson-version"
 MESON_VERSION="$($MESON --version)"
 
 mkdir -p "$BUILD_DIR"
-python3 - "$ROOT/test/mesa_xp64.ini" "$XP_CROSS_FILE" \
+python3 - "$MESA_CROSS_FILE" "$XP_CROSS_FILE" \
     "$ROOT/mesa_patches/xp_include" "${NVX_RUSTC:-}" \
-    "${NVX_RUST_TARGET:-x86_64-pc-windows-gnu}" <<'PY'
+    "${NVX_RUST_TARGET:-$MESA_TARGET}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -53,42 +71,16 @@ if rustc:
 PY
 
 restore_mesa_sources() {
+    # apply_mesa_xp_patches.sh requires a clean submodule before it starts.
+    # Restore to that exact baseline instead of reversing every patch: reverse
+    # checks can match untouched source and insert/remove overlapping lines.
     rm -f "$ROOT/mesa/src/gallium/winsys/nouveau/drm/nvx_xf86drm.c"
-    for patch_file in \
-        "$ROOT/mesa_patches/0032-nouveau-xp-process-session-close.patch" \
-        "$ROOT/mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch" \
-        "$ROOT/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch" \
-        "$ROOT/mesa_patches/0029-nouveau-zero-cb-sample-locations.patch" \
-        "$ROOT/mesa_patches/0028-nouveau-xp-widen-cached-bo-map.patch" \
-        "$ROOT/mesa_patches/0027-mesa-begin-end-staging-trace.patch" \
-        "$ROOT/mesa_patches/0026-nouveau-xp-render-target-trace.patch" \
-        "$ROOT/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch" \
-        "$ROOT/mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch" \
-        "$ROOT/mesa_patches/0021-nouveau-xp-swap-path-diagnostics.patch" \
-        "$ROOT/mesa_patches/0020-nouveau-xp-async-swap.patch" \
-        "$ROOT/mesa_patches/0019-nouveau-xp-preserve-pushbuf-limits-on-error.patch" \
-        "$ROOT/mesa_patches/0018-nouveau-xp-pushbuf-validation-trace.patch" \
-        "$ROOT/mesa_patches/0017-nouveau-xp-nvc0-tsc-stage-trace.patch" \
-        "$ROOT/mesa_patches/0016-nouveau-xp-context-stage-trace.patch" \
-        "$ROOT/mesa_patches/0014-nouveau-xp-screen-failure-trace.patch" \
-        "$ROOT/mesa_patches/0015-nouveau-xp-winsys-init-stage-trace.patch" \
-        "$ROOT/mesa_patches/0013-nouveau-xp-flush-mapped-pushbuf.patch" \
-        "$ROOT/mesa_patches/0012-nouveau-xp-nvx-bo-map.patch" \
-        "$ROOT/mesa_patches/0011-nouveau-use-os-mman.patch" \
-        "$ROOT/mesa_patches/0010-nouveau-xp-disable-drm-sharing.patch" \
-        "$ROOT/mesa_patches/0009-nouveau-xp-mmap-unsupported.patch" \
-        "$ROOT/mesa_patches/0008-nouveau-xp-hdc-entry.patch" \
-        "$ROOT/mesa_patches/0007-nouveau-xp-pointer-width.patch" \
-        "$ROOT/mesa_patches/0006-nouveau-xp-xf86drm-compat.patch" \
-        "$ROOT/mesa_patches/0005-wgl-nouveau-present.patch" \
-        "$ROOT/mesa_patches/0004-nouveau-wgl-drop-unused-renderonly.patch" \
-        "$ROOT/mesa_patches/0003-nouveau-wgl-exclude-nvk-winsys.patch" \
-        "$ROOT/mesa_patches/0002-nvx-gallium-bridge.patch" \
-        "$ROOT/mesa_patches/0001-xp-win32-shims.patch"; do
-        if git -C "$ROOT/mesa" apply --unidiff-zero --reverse --check "$patch_file" >/dev/null 2>&1; then
-            git -C "$ROOT/mesa" apply --unidiff-zero --reverse "$patch_file"
-        fi
-    done
+    git -C "$ROOT/mesa" restore --worktree -- .
+    python3 - "$ROOT/mesa/src/c11/impl/nvx_win32_xp.h" <<'PY'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).unlink(missing_ok=True)
+PY
 }
 trap restore_mesa_sources EXIT
 "$ROOT/test/apply_mesa_xp_patches.sh"
@@ -107,7 +99,7 @@ if [[ -f "$BUILD_DIR/meson-private/coredata.dat" &&
         -Dgallium-drivers="$MESA_GALLIUM_DRIVERS" -Dvulkan-drivers="$MESA_VULKAN_DRIVERS" -Dllvm=disabled \
         -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=true \
         -Dmesa-clc="$MESA_CLC" \
-        -Dgallium-wgl-dll-name=nvxogl64 -Ddefault_library=static \
+        -Dgallium-wgl-dll-name="$MESA_DLL_NAME" -Ddefault_library=static \
         -Dmin-windows-version="$MESA_MIN_WINDOWS_VERSION"
 elif [[ -f "$BUILD_DIR/meson-private/coredata.dat" ]]; then
     # Meson can regenerate coredata from an older executable while retaining
@@ -119,7 +111,7 @@ elif [[ -f "$BUILD_DIR/meson-private/coredata.dat" ]]; then
         -Dgallium-drivers="$MESA_GALLIUM_DRIVERS" -Dvulkan-drivers="$MESA_VULKAN_DRIVERS" -Dllvm=disabled \
         -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=true \
         -Dmesa-clc="$MESA_CLC" \
-        -Dgallium-wgl-dll-name=nvxogl64 -Ddefault_library=static \
+        -Dgallium-wgl-dll-name="$MESA_DLL_NAME" -Ddefault_library=static \
         -Dmin-windows-version="$MESA_MIN_WINDOWS_VERSION"
 else
     "$MESON" setup "$BUILD_DIR" "$ROOT/mesa" \
@@ -128,7 +120,7 @@ else
         -Dgallium-drivers="$MESA_GALLIUM_DRIVERS" -Dvulkan-drivers="$MESA_VULKAN_DRIVERS" -Dllvm=disabled \
         -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=true \
         -Dmesa-clc="$MESA_CLC" \
-        -Dgallium-wgl-dll-name=nvxogl64 -Ddefault_library=static \
+        -Dgallium-wgl-dll-name="$MESA_DLL_NAME" -Ddefault_library=static \
         -Dmin-windows-version="$MESA_MIN_WINDOWS_VERSION"
 fi
 printf '%s\n' "$MESON_VERSION" > "$MESON_VERSION_FILE"
@@ -142,17 +134,21 @@ if [[ ! -s "$MESA_WGL_DLL" ]]; then
     echo "Mesa WGL frontend was not produced: $MESA_WGL_DLL" >&2
     exit 1
 fi
-imports=$(x86_64-w64-mingw32-objdump -p "$DLL" | sed -n 's/^[[:space:]]*DLL Name: //p')
+imports=$($MESA_OBJDUMP -p "$DLL" | sed -n 's/^[[:space:]]*DLL Name: //p')
 if printf '%s\n' "$imports" | grep -Eiq 'api-ms-win|winpthread|libz'; then
     echo "Mesa ICD has non-XP runtime imports:" >&2
     printf '%s\n' "$imports" >&2
     exit 1
 fi
 
-install -m 0644 "$DLL" "$ROOT/dist_full/nvxogl64.dll"
-install -m 0644 "$MESA_WGL_DLL" "$ROOT/dist_full/nvxmesa.dll"
-echo "Built XP x64 Mesa WGL ICD ($MESA_GALLIUM_DRIVERS): $ROOT/dist_full/nvxogl64.dll"
-echo "Built direct Mesa WGL diagnostic frontend: $ROOT/dist_full/nvxmesa.dll"
+install -m 0644 "$DLL" "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
+if [[ "$NVX_MESA_ARCH" == x64 ]]; then
+    install -m 0644 "$MESA_WGL_DLL" "$ROOT/dist_full/nvxmesa.dll"
+fi
+echo "Built XP $NVX_MESA_ARCH Mesa WGL ICD ($MESA_GALLIUM_DRIVERS): $ROOT/dist_full/${MESA_DLL_NAME}.dll"
+if [[ "$NVX_MESA_ARCH" == x64 ]]; then
+    echo "Built direct Mesa WGL diagnostic frontend: $ROOT/dist_full/nvxmesa.dll"
+fi
 echo "Imported DLLs:"
 printf '%s\n' "$imports"
 
@@ -160,5 +156,5 @@ printf '%s\n' "$imports"
 {
     git -C "$ROOT/mesa" rev-parse HEAD
     sha256sum "$ROOT"/mesa_patches/*.patch
-    sha256sum "$ROOT/dist_full/nvxogl64.dll"
-} > "$ROOT/dist_full/mesa-build-manifest.txt"
+    sha256sum "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
+} > "$ROOT/dist_full/mesa-build-manifest-${NVX_MESA_ARCH}.txt"

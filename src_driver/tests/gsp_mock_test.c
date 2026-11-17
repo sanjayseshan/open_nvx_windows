@@ -115,8 +115,8 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             return;
         }
         if(f==4) {
-            assert(request[23]==0x81&&request[28]==65536&&request[30]==16);
-            assert(request[32]==(16U<<16));
+            assert(request[23]==0x81&&request[28]==GSP_SCRATCH_SIZE&&request[30]==32);
+            assert(request[32]==(32U<<16));
             assert(request[34]==((dev.GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET)>>12));
             ULONG assertions=7;
             assert(NvxEncodeRpc((PUCHAR)packet,4096,0x101b,write-1,&assertions,4));
@@ -177,7 +177,8 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             assert(tables[0]==((physical+4096)>>4|0xc));
             assert(tables[1536+257]==((physical+0x4000)>>4|0xc));
             assert(tables[2048]==((dev.GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET)>>4|0xd));
-            assert(tables[2064]==0);
+            assert(tables[2048+31]==((dev.GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET+31*4096)>>4|0xd));
+            assert(tables[2048+32]==0);
             assert(tables[1025]==((physical+0x5000)>>4|0xc));
             assert(tables[2560]==((physical+GSP_VRAM_LPT_OFFSET)>>4|0xc));
             assert(tables[3072]==(dev.GspFbLayoutValid?1:0));
@@ -406,7 +407,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
     if(off==0x220490 && dev.GspGPPut>1) {
         PUCHAR scratch=(PUCHAR)dev.GspDmaVirtual+GSP_SCRATCH_OFFSET;
         ULONG previous=(dev.GspGPPut+1023)%1024;
-        PULONG push=(PULONG)(scratch+0xd000+(previous%16)*0x100);
+        PULONG push=(PULONG)(scratch+0x10000+(previous%16)*0x100);
         if(push[2]==0x20048100) {
             assert(push[11]==1 && push[8]==push[9] && push[9]==push[10]);
             memcpy(dmaPointer(((ULONG64)push[5]<<32)|push[6],push[10]),
@@ -546,7 +547,7 @@ static void test_reusable_queue(void) {
     assert(dev_q.GspGPPut == 3);
     assert(dev_q.GspNextFence == 0x102);
     {
-        PULONG push=(PULONG)(scratch+0xd000+2*0x100);
+        PULONG push=(PULONG)(scratch+0x10000+2*0x100);
         assert(push[8] == 4096); /* input pitch */
         assert(push[9] == 4096); /* output pitch */
         assert(push[10] == 1024); /* bytes per line */

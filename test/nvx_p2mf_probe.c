@@ -21,7 +21,7 @@ run_probe(HDC hdc, int gart)
    NVX_3D_BATCH_HEADER header;
    NVX_3D_BUFFER_REFERENCE reference;
    uint32_t words[172];
-   uint8_t batch[sizeof(header) + sizeof(reference) + sizeof(words)];
+   uint8_t batch[sizeof(header) + 2U * sizeof(reference) + sizeof(words)];
    uint32_t expected[162], result[162];
    uint64_t fence = 0;
    uint32_t n = 0, dataDwords = gart ? 4U : 162U;
@@ -107,7 +107,7 @@ run_probe(HDC hdc, int gart)
           (unsigned long)device.NouveauObjectBindings[2].ClassEngineId);
    submitted = NvxWinsysSubmitBatch(&device, batch,
                                    sizeof(header) + sizeof(reference) +
-                                   n * sizeof(words[0]), &fence);
+                                   n * sizeof(words[0]), sizeof(batch), &fence);
    printf("NVX [P2MF-PROBE]: submit=%s fence=%lu\n",
           submitted ? "completed" : "failed-or-timeout",
           (unsigned long)fence);

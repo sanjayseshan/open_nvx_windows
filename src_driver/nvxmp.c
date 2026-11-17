@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.237
+ * Driver Version: 3.0.0.256
  */
 
 #include "miniport.h"
@@ -2174,17 +2174,17 @@ static BOOLEAN Nvx3dCloseGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,ULONG
     if(c&&c->Submitting) {Nvx3dUnlockBuffers();return FALSE;}
     if(c) c->Ready=FALSE;
     Nvx3dUnlockBuffers();
+    NvxGspLogClientSubmissionStats(engine,token);
     if(!NvxGspCloseClientChannel(engine,token)) return FALSE;
-    /* STOP/EVICT/FREE acknowledged: timed-out GPU references may now be
-       released. Do not clear Busy for unrelated CPU upload operations. */
-    if(!Nvx3dLockBuffers()) return FALSE;
-    for(ULONG i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
-        entry=&engine->Nvx3dBuffers[i];
-        if(entry->ClientToken==token&&entry->GpuPinned) {
-            entry->GpuPinned=FALSE;entry->Busy=FALSE;
+    /* STOP/EVICT/FREE acknowledged; synchronous submission has completed all
+       BO references before it returns. */
+    for(ULONG i=0;i<NVX_3D_FENCE_TRACK_SLOTS;i++) {
+        if(engine->Nvx3dFenceOwner[i]==token) {
+            engine->Nvx3dFenceOwner[i]=0;
+            __sync_synchronize();
+            engine->Nvx3dFenceSequence[i]=0;
         }
     }
-    Nvx3dUnlockBuffers();
     if(id) {
         if(!Nvx3dLockBuffers()) return FALSE;
         entry=Nvx3dFindBuffer(engine,id);
@@ -2201,11 +2201,22 @@ static BOOLEAN Nvx3dOpenGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,
 {
     NVX_3D_ALLOC_BUFFER allocation={0};
     PNVX_3D_USER_BUFFER_ENTRY entry;
+    NVX_GR_CLIENT_CHANNEL *existing;
     PVOID backing;
     PHYSICAL_ADDRESS physical;
     BOOLEAN ok;
     if(NvxGspGetClientChannel(engine,lease)) return TRUE;
-    if(NvxGspFindClientChannel(engine,lease->ClientToken)) return FALSE;
+    existing=NvxGspFindClientChannel(engine,lease->ClientToken);
+    if(existing) {
+        if(!existing->Ready||existing->Faulted) {
+            /* Failed retirement retains GPU ownership of the old backing.
+               Do not allocate/replay another backing while it is live. */
+            if(!Nvx3dCloseGraphicsClientLocked(engine,lease->ClientToken))
+                return FALSE;
+        } else {
+            return FALSE;
+        }
+    }
     allocation.Size=sizeof(allocation);allocation.Version=NVX_3D_ABI_VERSION;
     allocation.ClientToken=lease->ClientToken;
     allocation.AllocationToken=0x47524348414e0000ULL; /* private channel backing */
@@ -2819,13 +2830,21 @@ BOOLEAN NTAPI HwVidStartIO(
             status=ERROR_INVALID_PARAMETER;break;
         }
         VideoPortMoveMemory(&request,RequestPacket->InputBuffer,sizeof(request));
+        if(devExt->IsSecondaryDisplay) {
+            /* The same WGL HDC escape is dispatched to both XP display
+               extensions in this dual-view setup. Head zero owns window
+               presentation; acknowledging here prevents a second scanout
+               copy to the clone/secondary surface. */
+            status=NO_ERROR;statusBlock->Information=sizeof(request);break;
+        }
         if(!engine||!engine->GspCopyVerified||engine->GspChannelFaulted||
            devExt->CurrentModeIndex>=devExt->NumModes||
            !Nvx3dLockBuffers()) {
             status=ERROR_NOT_SUPPORTED;break;
         }
         entry=Nvx3dFindBuffer(engine,request.BufferId);
-        if(!entry||entry->Busy||entry->ClientToken!=request.ClientToken||
+        if(!entry||entry->Busy||
+           entry->ClientToken!=request.ClientToken||
            !(entry->Usage&NVX_3D_USAGE_GART_BUFFER)||
            (entry->Usage&~NVX_3D_USAGE_GART_BUFFER)||entry->TileMode||
            entry->MemoryKind||!entry->SystemVirtual||!entry->GpuVa||
@@ -3177,8 +3196,7 @@ BOOLEAN NTAPI HwVidStartIO(
         PNVX_3D_USER_BUFFER_ENTRY entry;
         ULONG headerBytes=sizeof(upload);
         ULONG inputBytes=RequestPacket->InputBufferLength;
-        if(!RequestPacket->InputBuffer||inputBytes<headerBytes||
-           !engine||!Nvx3dLockBuffers()) {
+        if(!RequestPacket->InputBuffer||inputBytes<headerBytes||!engine) {
             status=ERROR_INVALID_PARAMETER;break;
         }
         VideoPortMoveMemory(&upload,RequestPacket->InputBuffer,headerBytes);
@@ -3186,10 +3204,14 @@ BOOLEAN NTAPI HwVidStartIO(
            !upload.BufferId||!upload.Bytes||
            upload.Bytes>NVX_3D_MAX_UPLOAD_BYTES||
            inputBytes!=headerBytes+upload.Bytes) {
-            Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
+            status=ERROR_INVALID_PARAMETER;break;
+        }
+        if(!Nvx3dLockBuffers()) {
+            status=ERROR_DEVICE_NOT_READY;break;
         }
         entry=Nvx3dFindBuffer(engine,upload.BufferId);
-        if(!entry||entry->Busy||entry->ClientToken!=upload.ClientToken||
+        if(!entry||entry->Busy||
+           entry->ClientToken!=upload.ClientToken||
            !Nvx3dClientAcceptsWorkLocked(engine,upload.ClientToken)||
            !Nvx3dValidateUpload(&upload,inputBytes,entry->Bytes)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
@@ -3229,12 +3251,16 @@ BOOLEAN NTAPI HwVidStartIO(
         ULONG headerBytes=sizeof(download);
         if(!RequestPacket->InputBuffer||
            RequestPacket->InputBufferLength!=headerBytes||
-           !RequestPacket->OutputBuffer||!engine||!Nvx3dLockBuffers()) {
+           !RequestPacket->OutputBuffer||!engine) {
             status=ERROR_INVALID_PARAMETER;break;
         }
         VideoPortMoveMemory(&download,RequestPacket->InputBuffer,headerBytes);
+        if(!Nvx3dLockBuffers()) {
+            status=ERROR_DEVICE_NOT_READY;break;
+        }
         entry=Nvx3dFindBuffer(engine,download.BufferId);
-        if(!entry||entry->Busy||entry->ClientToken!=download.ClientToken||
+        if(!entry||entry->Busy||
+           entry->ClientToken!=download.ClientToken||
            !Nvx3dClientAcceptsWorkLocked(engine,download.ClientToken)||
            !Nvx3dValidateDownload(&download,headerBytes,
                 RequestPacket->OutputBufferLength,entry->Bytes)) {
@@ -3269,14 +3295,24 @@ BOOLEAN NTAPI HwVidStartIO(
         NVX_3D_READBACK request;
         NVX_3D_USER_BUFFER_ENTRY saved;
         PNVX_3D_USER_BUFFER_ENTRY entry;
+        ULONG64 readbackOwner=0;
         if(!RequestPacket->InputBuffer||
            RequestPacket->InputBufferLength!=sizeof(request)||
            !RequestPacket->OutputBuffer||
            RequestPacket->OutputBufferLength<NVX_3D_READBACK_BYTES||
-           !engine||!Nvx3dLockBuffers()) {
+           !engine) {
             status=ERROR_INVALID_PARAMETER;break;
         }
         VideoPortMoveMemory(&request,RequestPacket->InputBuffer,sizeof(request));
+        if(!Nvx3dLockBuffers()) {
+            status=ERROR_DEVICE_NOT_READY;break;
+        }
+        entry=Nvx3dFindBuffer(engine,request.BufferId);
+        if(entry) readbackOwner=entry->ClientToken;
+        Nvx3dUnlockBuffers();
+        if(!readbackOwner||!Nvx3dLockBuffers()) {
+            status=ERROR_DEVICE_NOT_READY;break;
+        }
         entry=Nvx3dFindBuffer(engine,request.BufferId);
         if(!entry||entry->Busy||
            !Nvx3dValidateReadback(&request,
@@ -3356,8 +3392,8 @@ BOOLEAN NTAPI HwVidStartIO(
         engine->Nvx3dLastFence=fenceValue;
         Nvx3dUnlockBuffers();
 
-        if((nativeClear&&NvxGspSubmitNvc0NativeClear(engine,request.Dwords,
-                                                     fenceValue))||
+        if((nativeClear&&NvxGspSubmitNvc0NativeClear(engine,request.ClientToken,
+                                                     request.Dwords,fenceValue))||
            (!nativeClear&&NvxGspSubmitNvc0ColorTargetClear(engine,saved.GpuVa,
                 saved.Width,saved.Height,saved.TileMode,color,fenceValue))) {
             request.FenceValue=fenceValue;
@@ -3583,7 +3619,7 @@ validate_batch_done:
                 entry=Nvx3dFindBuffer(engine,ref.BufferId);
                 if(!entry||entry->Busy||entry->ClientToken!=header.ClientToken) {
                     status=ERROR_BUSY;
-                    for(ULONG j=0;j<pinnedCount;j++) {pinned[j]->Busy=FALSE;pinned[j]->GpuPinned=FALSE;}
+                    for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
                     pinnedCount=0;
                     break;
                 }
@@ -3592,14 +3628,14 @@ validate_batch_done:
                    entry->Bytes>=header.DwordCount*sizeof(ULONG)+
                                   7U*sizeof(ULONG))
                     pushEntry=entry;
-                entry->Busy=TRUE;entry->GpuPinned=TRUE;pinned[pinnedCount++]=entry;
+                entry->Busy=TRUE;pinned[pinnedCount++]=entry;
             }
             if(status!=ERROR_BUSY&&(!pushEntry||!pinnedCount))
                 status=ERROR_INVALID_PARAMETER;
             if(status!=ERROR_INVALID_PARAMETER&&status!=ERROR_BUSY)
                 status=NO_ERROR;
             if(status!=NO_ERROR) {
-                for(ULONG j=0;j<pinnedCount;j++) {pinned[j]->Busy=FALSE;pinned[j]->GpuPinned=FALSE;}
+                for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
                 pinnedCount=0;
             }
             Nvx3dUnlockBuffers();
@@ -3619,6 +3655,13 @@ validate_batch_done:
                 if(channel->Faulted) goto submit_batch_done;
                 goto release_batch_buffers;
             }
+            if(!Nvx3dLockBuffers()) {
+                status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
+            }
+            for(i=0;i<pinnedCount;i++)
+                pinned[i]->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+            pinnedCount=0;
             result.Size=sizeof(result);result.Version=NVX_3D_ABI_VERSION;
             result.FenceValue=fenceValue;
             VideoPortMoveMemory(RequestPacket->OutputBuffer,&result,sizeof(result));
@@ -3626,7 +3669,7 @@ validate_batch_done:
         }
 release_batch_buffers:
         if(Nvx3dLockBuffers()) {
-            for(i=0;i<pinnedCount;i++) {pinned[i]->Busy=FALSE;pinned[i]->GpuPinned=FALSE;}
+            for(i=0;i<pinnedCount;i++) pinned[i]->Busy=FALSE;
             Nvx3dUnlockBuffers();
         }
 submit_batch_done:
@@ -4221,7 +4264,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.237 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.256 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

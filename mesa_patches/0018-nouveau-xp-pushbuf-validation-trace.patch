@@ -4,7 +4,7 @@
  #include "util/u_atomic.h"
  #include "util/u_memory.h"
  
-+#ifdef NVX_XP_WIN32_SHIMS
++#if defined(NVX_XP_WIN32_SHIMS) && defined(NVX_XP_PUSHBUF_TRACE)
 +extern void NvxWglRecordMesaInitStage(const char *stage);
 +#define NVX_PUSH_TRACE(stage) NvxWglRecordMesaInitStage(stage)
 +#else

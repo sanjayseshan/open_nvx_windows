@@ -45,12 +45,16 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
             goto unsafe;
         c->Scheduled=FALSE;
     }
+    /* Match nvGpuOpsStopChannel: stop submission, then retire the promoted
+       GR context before releasing its channel and backing memory. A host
+       flag change does not remove firmware context bindings. */
     if(c->Promoted) {
         evict.engineType=NV2080_ENGINE_TYPE_GRAPHICS;
         evict.hClient=evict.hChanClient=dev->GspClientHandle;
         evict.hObject=c->Channel;
         if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
-                         NV2080_CTRL_CMD_GPU_EVICT_CTX,&evict,sizeof(evict))) goto unsafe;
+                         NV2080_CTRL_CMD_GPU_EVICT_CTX,&evict,sizeof(evict)))
+            goto unsafe;
         c->Promoted=FALSE;
     }
     if(c->Channel) {
@@ -80,6 +84,8 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
         c->MemoryAllocated=FALSE;
     }
     if(c->HardwareIdAllocated) {
+        /* Drain any pending GSP notifications before releasing the ChID */
+        (void)NvxGspGetName(dev);
         if(nvx_openrm_chid_free(dev->GspChannelIdHeap,&c->ClientToken,
                                c->HardwareChannelId)!=NV_OK) goto unsafe;
         c->HardwareIdAllocated=FALSE;
@@ -284,16 +290,10 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     if(!nvx_openrm_channel_memory(&chan,(NvU64)physical.QuadPart+0xa000,
         (NvU64)physical.QuadPart+NVX_GR_CLIENT_USERD_OFFSET,
         (NvU64)physical.QuadPart+0xc000,(NvU64)physical.QuadPart+0xe000)) goto fail;
-    /* The OS allocator zeroes the full backing today, but make the new
-       channel's software USERD state explicit before RM publishes its
-       descriptor and the hardware channel is scheduled. */
-    {
-        volatile ULONG *userd=(volatile ULONG *)
-            ((PUCHAR)backing+NVX_GR_CLIENT_USERD_OFFSET);
-        userd[0x88/4]=0;
-        userd[0x8c/4]=0;
-        __sync_synchronize();
-    }
+    /* Explicitly zero USERD, RAMFC, GPFIFO, and pushbuffer scratch regions
+       before RM publishes descriptors and the hardware channel is scheduled. */
+    VideoPortZeroMemory((PUCHAR)backing+0x9000,0x7000);
+    __sync_synchronize();
     stage="GPFIFO";
     if(!NvxGspAlloc(dev,c->Tsg,base+5,AMPERE_CHANNEL_GPFIFO_A,&chan,sizeof(chan))) goto fail;
     c->Channel=base+5;

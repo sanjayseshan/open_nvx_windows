@@ -22,6 +22,12 @@ void NvxWglRecordNouveauSclass(uint32_t token_low, uint32_t token_high,
                               const uint32_t *classes);
 void NvxWglRecordNouveauPushbuf(uint32_t channel, uint32_t nr_push,
                                uint32_t nr_buffers, uint32_t nr_relocs);
+void NvxWglRecordNouveauProfile(uint32_t total_us, uint32_t prepare_us,
+                               uint32_t submit_us, uint32_t tail_us,
+                               uint32_t dwords);
+void NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us);
+uint64_t nvx_wgl_present_timer(void);
+uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                    uint32_t a, uint32_t b, uint32_t c,
                                    uint32_t d, uint32_t e, uint32_t f);
@@ -764,6 +770,10 @@ nvx_drm_submit_pushbuf(int fd,
    uint32_t reference_bytes, dword_bytes, relocation_bytes, batch_bytes;
    uint64_t client_token;
    uint64_t fence_value = 0;
+   uint64_t profile_start = 0, profile_submit_start = 0;
+   uint64_t profile_translate_start = 0;
+   uint32_t profile_prepare_us = 0, profile_submit_us = 0;
+   uint32_t profile_translate_us = 0;
    int valid = 0, translated = 0, submit_busy_owned = 0;
 #if defined(_WIN32) || defined(_WIN64)
    struct nvx_drm_vertex_dump vertex_dumps[NVX_DRM_VERTEX_DUMP_LIMIT];
@@ -780,6 +790,8 @@ nvx_drm_submit_pushbuf(int fd,
        !request->buffers || !request->push ||
        (request->nr_relocs && !request->relocs))
       return 0;
+
+   profile_start = nvx_wgl_present_timer();
 
    buffers = (struct drm_nouveau_gem_pushbuf_bo *)(uintptr_t)request->buffers;
    pushes = (struct drm_nouveau_gem_pushbuf_push *)(uintptr_t)request->push;
@@ -1050,6 +1062,8 @@ nvx_drm_submit_pushbuf(int fd,
    submit_ring_slot = winsys.NouveauBatchPushIndex % 4U;
 #endif
    nvx_drm_lock_release();
+   profile_prepare_us = nvx_wgl_present_elapsed_us(profile_start);
+   profile_translate_start = nvx_wgl_present_timer();
 
 #if defined(_WIN32) || defined(_WIN64)
    {
@@ -1096,8 +1110,13 @@ nvx_drm_submit_pushbuf(int fd,
       memcpy(batch + sizeof(header) + reference_bytes + dword_bytes,
              translated_relocations, relocation_bytes);
    if (translated) {
-      valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes,
+      profile_translate_us = nvx_wgl_present_elapsed_us(
+         profile_translate_start);
+      NvxWglRecordNouveauTranslateProfile(profile_translate_us);
+      profile_submit_start = nvx_wgl_present_timer();
+      valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes, sizeof(batch),
                                    &fence_value);
+      profile_submit_us = nvx_wgl_present_elapsed_us(profile_submit_start);
 #if defined(_WIN32) || defined(_WIN64)
       if (nvx_drm_submit_trace_count < 32U) {
          const NVX_3D_ALLOC_BUFFER *push_bo =
@@ -1143,14 +1162,10 @@ nvx_drm_submit_pushbuf(int fd,
                if (slot->handle && slot->bo.allocation.BufferId ==
                                       references[reference_index].BufferId) {
                   int marked = NvxNouveauBoMarkUsed(&slot->bo, fence_value);
-                  /* Mesa keeps GART BOs mapped through persistent shadows.
-                   * Keep readable mappings current after GPU writes so a
-                   * later READ map sees completed render output rather than
-                   * stale CPU cache contents. */
-                  if ((references[reference_index].Access &
-                       NVX_3D_RELOC_WRITE) && slot->bo.map_count &&
-                      (slot->bo.map_access & NVX_NOUVEAU_BO_READ))
-                     (void)NvxNouveauBoRefreshRead(&slot->bo);
+                  /* Match Nouveau's asynchronous pushbuf path: record the
+                   * writer fence here, then wait and refresh the CPU shadow
+                   * only when a later CPU read actually depends on it. An
+                   * eager refresh here serializes every GPU batch. */
                   if (nvx_drm_fence_trace_count < 4U) {
                      uint32_t trace_index = nvx_drm_fence_trace_count++;
                      NvxWglRecordNouveauPushbufItem(9U, trace_index,
@@ -1218,6 +1233,13 @@ nvx_drm_submit_pushbuf(int fd,
       request->suffix1 = 0;
       request->vram_available = winsys.caps.VramApertureBytes;
       request->gart_available = winsys.caps.GartBytes;
+   }
+   if (valid) {
+      uint32_t total_us = nvx_wgl_present_elapsed_us(profile_start);
+      uint32_t accounted_us = profile_prepare_us + profile_submit_us;
+      uint32_t tail_us = total_us > accounted_us ? total_us - accounted_us : 0U;
+      NvxWglRecordNouveauProfile(total_us, profile_prepare_us,
+                                 profile_submit_us, tail_us, dword_count);
    }
    NvxWglRecordNouveauPushbufItem(6U, 0U,
                                   !translated ? 3U : (valid ? 1U : 2U),
@@ -2278,6 +2300,27 @@ NvxXf86DrmGetBufferAllocation(int fd, uint32_t handle,
    }
    nvx_drm_lock_release();
    return found;
+}
+
+/* Wait for the actual NVX submission fence attached to a Nouveau GEM BO.
+ * This is the XP adapter for Gallium's nouveau_bo_wait()/DRM CPU_PREP edge;
+ * it keeps completion tied to the same BO that the upstream pushbuf wrote. */
+int
+NvxXf86DrmWaitBufferFence(int fd, uint32_t handle)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int completed = 0;
+
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   if (slot && device) {
+      completed = !slot->bo.last_fence ||
+         NvxWinsysWaitFence(&device->device, slot->bo.last_fence, 5000U);
+   }
+   nvx_drm_lock_release();
+   return completed;
 }
 
 int

@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.242"
+NVX_TEST_VERSION="3.0.0.256"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -151,16 +151,18 @@ if [ "${NVX_BUILD_MESA_ICD:-0}" = "1" ]; then
     # it can dispatch context creation to the ICD.
     make -C "$NVX_ROOT/src_disp" NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1
 elif [ -f "$NVX_ROOT/dist_full/nvxogl64.dll" ]; then
+    make -C "$NVX_ROOT/src_disp" clean
     # Mesa ICD already built; rebuild nvxdisp with OpenGL DDI enabled so that
-    # DrvDescribePixelFormat/DrvSetPixelFormat/DrvSwapBuffers are registered.
-    # Without this, ChoosePixelFormat returns PFD_GENERIC_FORMAT and wglgears
-    # never reaches the ICD (GL_RENDERER stays GDI Generic).
+    # both architectures export DrvDescribePixelFormat/DrvSetPixelFormat/
+    # DrvSwapBuffers. The x86 build needs the same feature define or WOW64
+    # apps select PFD_GENERIC_FORMAT and fall back to GDI Generic.
     make -C "$NVX_ROOT/src_disp" NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1
 else
     make -C "$NVX_ROOT/src_disp"
 fi
 make -C "$NVX_ROOT/src_disp" check
 cp "$NVX_ROOT/src_disp/nvxdisp.dll" "$NVX_ROOT/dist_full/nvxdisp.dll"
+rm -f "$NVX_ROOT/dist_full/nvxdisp32.dll"
 
 # Keep the offline package INF aligned with the version used for this test
 # build.
@@ -171,6 +173,8 @@ sed -i -E "s|^DriverVer[[:space:]]*=.*|DriverVer   = $NVX_DRIVER_DATE, $NVX_TEST
 if [ "${NVX_BUILD_MESA_ICD:-0}" = "1" ]; then
     echo "==> Building the XP x64 Mesa WGL ICD (Nouveau with softpipe fallback)"
     "$NVX_ROOT/test/build_mesa_xp64.sh"
+    echo "==> Building the XP x86 Mesa WGL ICD for WOW64 applications"
+    "$NVX_ROOT/test/build_mesa_xp32.sh"
 fi
 
 if [ ! -f "$NVX_ROOT/dist_full/nvxdisp.dll" ]; then
@@ -182,6 +186,10 @@ sha256sum "$NVX_ROOT/dist_full/nvxmp.sys" "$NVX_ROOT/dist_full/nvxdisp.dll"
 if [ -f "$NVX_ROOT/dist_full/nvxogl64.dll" ]; then
     echo "==> XP x64 OpenGL ICD package"
     sha256sum "$NVX_ROOT/dist_full/nvxogl64.dll"
+fi
+if [ -f "$NVX_ROOT/dist_full/nvxogl32.dll" ]; then
+    echo "==> XP x86 OpenGL ICD package"
+    sha256sum "$NVX_ROOT/dist_full/nvxogl32.dll"
 fi
 
 if [ "${NVX_RAPID_3D:-0}" = "1" ]; then

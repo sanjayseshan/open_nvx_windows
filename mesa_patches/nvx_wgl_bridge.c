@@ -26,6 +26,44 @@
 
 int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
                              uint32_t width, uint32_t height);
+void NvxWglRecordMesaInitStage(const char *stage);
+uint64_t nvx_wgl_present_timer(void);
+uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
+void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
+static void nvx_bridge_nouveau_trace(const char *message);
+int NvxXf86DrmWaitBufferFence(int fd, uint32_t handle);
+int nvx_wgl_xf86drm_fd(void);
+int nvx_wgl_wait_gpu_buffer(uint32_t handle);
+
+int
+nvx_wgl_wait_gpu_buffer(uint32_t handle)
+{
+   static volatile LONG success_trace_count;
+   static volatile LONG failure_trace_count;
+   static volatile LONG timing_sample_count;
+   uint64_t wait_start = nvx_wgl_present_timer();
+   int fd = nvx_wgl_xf86drm_fd();
+   int result = fd > 0 && handle &&
+                NvxXf86DrmWaitBufferFence(fd, handle);
+
+   if ((InterlockedIncrement(&timing_sample_count) % 30) == 1) {
+      char timing[96];
+      wsprintfA(timing, "PRESENT_TIMING fence_wait_us=%lu result=%lu",
+                (unsigned long)nvx_wgl_present_elapsed_us(wait_start),
+                (unsigned long)result);
+      nvx_bridge_nouveau_trace(timing);
+   }
+
+   if (result) {
+      if (InterlockedIncrement(&success_trace_count) <= 4)
+         NvxWglRecordMesaInitStage(
+            "GPU present: NVX BO completion fence signaled");
+   } else if (InterlockedIncrement(&failure_trace_count) <= 16) {
+      NvxWglRecordMesaInitStage(
+         "GPU present: NVX BO completion fence failed");
+   }
+   return result;
+}
 
 static HDC nvx_wgl_hdc;
 static NVX_WINSYS_DEVICE nvx_bridge_winsys;
@@ -49,6 +87,25 @@ static volatile LONG nvx_bridge_render_target_seen;
 static struct pipe_screen *nvx_bridge_cached_nouveau_screen;
 static volatile LONG nvx_bridge_callback_count;
 static volatile LONG nvx_bridge_gpu_batch_count;
+static volatile LONG nvx_profile_batches;
+static volatile LONG nvx_profile_total_us;
+static volatile LONG nvx_profile_prepare_us;
+static volatile LONG nvx_profile_submit_us;
+static volatile LONG nvx_profile_tail_us;
+static volatile LONG nvx_profile_dwords;
+static volatile LONG nvx_profile_kicks;
+static volatile LONG nvx_profile_kick_us;
+static volatile LONG nvx_profile_kick_dwords;
+static volatile LONG nvx_profile_kick_flush_us;
+static volatile LONG nvx_profile_kick_validate_us;
+static volatile LONG nvx_profile_translate_us;
+static volatile LONG nvx_profile_ring_wait_us;
+static volatile LONG nvx_profile_escape_us;
+static volatile LONG nvx_profile_winsys_us;
+static volatile LONG nvx_profile_swaps;
+static volatile LONG nvx_profile_frame_interval_us;
+static volatile LONG nvx_profile_present_us;
+static uint64_t nvx_profile_last_present_start;
 static volatile LONG nvx_bridge_nvc0_clear_count;
 static volatile LONG nvx_bridge_last_primitive;
 static volatile LONG nvx_bridge_last_count;
@@ -74,6 +131,15 @@ void NvxWglRecordNouveauSclass(uint32_t token_low, uint32_t token_high,
                                const uint32_t *classes);
 void NvxWglRecordNouveauPushbuf(uint32_t channel, uint32_t nr_push,
                                 uint32_t nr_buffers, uint32_t nr_relocs);
+void NvxWglRecordNouveauProfile(uint32_t total_us, uint32_t prepare_us,
+                                uint32_t submit_us, uint32_t tail_us,
+                                uint32_t dwords);
+void NvxWglRecordNouveauKickProfile(uint32_t elapsed_us, uint32_t dwords);
+void NvxWglRecordNouveauKickStages(uint32_t flush_us, uint32_t validate_us);
+void NvxWglRecordNouveauWinsysProfile(uint32_t total_us, uint32_t ring_wait_us,
+                                      uint32_t escape_us);
+void NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us);
+static void nvx_wgl_log_performance_profile(void);
 void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                     uint32_t a, uint32_t b, uint32_t c,
                                     uint32_t d, uint32_t e, uint32_t f);
@@ -353,16 +419,41 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
    RECT clip;
    HRGN visible;
    DWORD region_bytes, copied_regions = 0;
+   DWORD visible_rect_count = 0;
    RGNDATA *region_data = NULL;
    int fd, result = 0;
+   uint64_t present_start = nvx_wgl_present_timer();
+   uint64_t copy_start = 0;
    static volatile LONG trace_count;
+   static volatile LONG timing_sample_count;
+   static volatile LONG last_present_duration_us;
+
+   if (nvx_profile_last_present_start) {
+      InterlockedIncrement(&nvx_profile_swaps);
+      InterlockedExchangeAdd(&nvx_profile_frame_interval_us,
+         (LONG)nvx_wgl_present_elapsed_us(nvx_profile_last_present_start));
+      InterlockedExchangeAdd(&nvx_profile_present_us,
+         InterlockedExchange(&last_present_duration_us, 0));
+   }
+   nvx_profile_last_present_start = present_start;
+
+#define NVX_PRESENT_COPY_FAIL(_stage) do { \
+   static volatile LONG _count; \
+   if (InterlockedIncrement(&_count) <= 4) \
+      NvxWglRecordMesaInitStage("GPU present copy: " _stage); \
+} while (0)
+#define NVX_PRESENT_COPY_RETURN(_value) do { \
+   InterlockedExchange(&last_present_duration_us, \
+      (LONG)nvx_wgl_present_elapsed_us(present_start)); \
+   return (_value); \
+} while (0)
 
    if (!hdc || !handle || !stride || !width || !height ||
        width > NVX_3D_MAX_SURFACE_DIMENSION ||
        height > NVX_3D_MAX_SURFACE_DIMENSION ||
        stride < width * 4U || (stride & 3U) ||
        (uint64_t)stride * height > NVX_3D_MAX_BUFFER_BYTES)
-      return 0;
+      { NVX_PRESENT_COPY_FAIL("invalid arguments"); NVX_PRESENT_COPY_RETURN(0); }
    fd = nvx_wgl_xf86drm_fd();
    if (fd <= 0 ||
        !NvxXf86DrmGetBufferAllocation(fd, handle, &allocation) ||
@@ -371,19 +462,23 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
        allocation.Bytes < stride * height ||
        allocation.ClientToken != nvx_bridge_winsys.ClientToken ||
        GetClipBox(hdc, &clip) == ERROR || !GetDCOrgEx(hdc, &origin))
-      return 0;
+      { NVX_PRESENT_COPY_FAIL("buffer/clip validation failed"); NVX_PRESENT_COPY_RETURN(0); }
 
    visible = CreateRectRgn(0, 0, 0, 0);
-   if (!visible)
-      return 0;
+   if (!visible) {
+      NVX_PRESENT_COPY_FAIL("CreateRectRgn failed");
+      NVX_PRESENT_COPY_RETURN(0);
+   }
    if (GetRandomRgn(hdc, visible, SYSRGN) != 1) {
       DeleteObject(visible);
-      return 0;
+      NVX_PRESENT_COPY_FAIL("GetRandomRgn failed");
+      NVX_PRESENT_COPY_RETURN(0);
    }
    region_bytes = GetRegionData(visible, 0, NULL);
    if (!region_bytes || region_bytes > 65536U) {
       DeleteObject(visible);
-      return 0;
+      NVX_PRESENT_COPY_FAIL("visible region size invalid");
+      NVX_PRESENT_COPY_RETURN(0);
    }
    region_data = (RGNDATA *)GlobalAlloc(GPTR, region_bytes);
    if (!region_data || GetRegionData(visible, region_bytes, region_data) !=
@@ -391,9 +486,12 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       if (region_data)
          GlobalFree(region_data);
       DeleteObject(visible);
+      NVX_PRESENT_COPY_FAIL("GetRegionData failed");
       return 0;
    }
 
+   copy_start = nvx_wgl_present_timer();
+   visible_rect_count = region_data->rdh.nCount;
    if (region_data->rdh.iType == RDH_RECTANGLES &&
        region_data->rdh.nCount && region_data->rdh.nCount <= 64U) {
       const RECT *rects = (const RECT *)region_data->Buffer;
@@ -436,6 +534,7 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
          request.Height = (uint32_t)(bottom - top);
          if (!ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
                         (LPCSTR)&request, 0, NULL)) {
+            NVX_PRESENT_COPY_FAIL("ExtEscape rejected copy");
             result = 0;
             break;
          }
@@ -443,12 +542,66 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       }
       if (!copied_regions)
          result = 0;
+      if (!copied_regions)
+         NVX_PRESENT_COPY_FAIL("no visible region copied");
+   } else {
+      NVX_PRESENT_COPY_FAIL("region data was not bounded rectangles");
    }
    GlobalFree(region_data);
    DeleteObject(visible);
+   if ((InterlockedIncrement(&timing_sample_count) % 30) == 1) {
+      char timing[160];
+      wsprintfA(timing,
+         "PRESENT_TIMING clip_copy_us=%lu total_us=%lu rects=%lu copied=%lu result=%lu",
+         (unsigned long)nvx_wgl_present_elapsed_us(copy_start),
+         (unsigned long)nvx_wgl_present_elapsed_us(present_start),
+         (unsigned long)visible_rect_count,
+         (unsigned long)copied_regions, (unsigned long)result);
+      nvx_bridge_nouveau_trace(timing);
+   }
    if (result && InterlockedIncrement(&trace_count) <= 4)
       nvx_bridge_trace("WGL swap presented by GPU copy to clipped scanout");
+   InterlockedExchange(&last_present_duration_us,
+      (LONG)nvx_wgl_present_elapsed_us(present_start));
+#undef NVX_PRESENT_COPY_FAIL
+#undef NVX_PRESENT_COPY_RETURN
    return result;
+}
+
+uint64_t
+nvx_wgl_present_timer(void)
+{
+   LARGE_INTEGER counter;
+   QueryPerformanceCounter(&counter);
+   return (uint64_t)counter.QuadPart;
+}
+
+uint32_t
+nvx_wgl_present_elapsed_us(uint64_t start)
+{
+   static LARGE_INTEGER frequency;
+   LARGE_INTEGER now;
+   uint64_t ticks;
+   if (!frequency.QuadPart)
+      QueryPerformanceFrequency(&frequency);
+   QueryPerformanceCounter(&now);
+   if (!frequency.QuadPart || (uint64_t)now.QuadPart < start)
+      return 0;
+   ticks = (uint64_t)now.QuadPart - start;
+   return (uint32_t)((ticks * 1000000ULL) /
+                     (uint64_t)frequency.QuadPart);
+}
+
+void
+nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us)
+{
+   static volatile LONG sample_count;
+   if ((InterlockedIncrement(&sample_count) % 30) == 1) {
+      char timing[112];
+      wsprintfA(timing, "PRESENT_TIMING stage_blit_us=%lu flush_us=%lu",
+                (unsigned long)blit_us, (unsigned long)flush_us);
+      nvx_bridge_nouveau_trace(timing);
+   }
 }
 
 int
@@ -614,13 +767,116 @@ void
 NvxWglRecordNouveauPushbuf(uint32_t channel, uint32_t nr_push,
                            uint32_t nr_buffers, uint32_t nr_relocs)
 {
-   char message[96];
-
    InterlockedIncrement(&nvx_bridge_gpu_batch_count);
-   wsprintfA(message, "Nouveau pushbuf channel=%08lx pushes=%lu buffers=%lu relocs=%lu",
-             (unsigned long)channel, (unsigned long)nr_push,
-             (unsigned long)nr_buffers, (unsigned long)nr_relocs);
-   nvx_bridge_nouveau_trace(message);
+   (void)channel;
+   (void)nr_push;
+   (void)nr_buffers;
+   (void)nr_relocs;
+}
+
+void
+NvxWglRecordNouveauProfile(uint32_t total_us, uint32_t prepare_us,
+                           uint32_t submit_us, uint32_t tail_us,
+                           uint32_t dwords)
+{
+   InterlockedIncrement(&nvx_profile_batches);
+   InterlockedExchangeAdd(&nvx_profile_total_us, (LONG)total_us);
+   InterlockedExchangeAdd(&nvx_profile_prepare_us, (LONG)prepare_us);
+   InterlockedExchangeAdd(&nvx_profile_submit_us, (LONG)submit_us);
+   InterlockedExchangeAdd(&nvx_profile_tail_us, (LONG)tail_us);
+   InterlockedExchangeAdd(&nvx_profile_dwords, (LONG)dwords);
+}
+
+void
+NvxWglRecordNouveauKickProfile(uint32_t elapsed_us, uint32_t dwords)
+{
+   InterlockedIncrement(&nvx_profile_kicks);
+   InterlockedExchangeAdd(&nvx_profile_kick_us, (LONG)elapsed_us);
+   InterlockedExchangeAdd(&nvx_profile_kick_dwords, (LONG)dwords);
+}
+
+void
+NvxWglRecordNouveauKickStages(uint32_t flush_us, uint32_t validate_us)
+{
+   InterlockedExchangeAdd(&nvx_profile_kick_flush_us, (LONG)flush_us);
+   InterlockedExchangeAdd(&nvx_profile_kick_validate_us, (LONG)validate_us);
+}
+
+void
+NvxWglRecordNouveauWinsysProfile(uint32_t total_us, uint32_t ring_wait_us,
+                                 uint32_t escape_us)
+{
+   InterlockedExchangeAdd(&nvx_profile_winsys_us, (LONG)total_us);
+   InterlockedExchangeAdd(&nvx_profile_ring_wait_us, (LONG)ring_wait_us);
+   InterlockedExchangeAdd(&nvx_profile_escape_us, (LONG)escape_us);
+}
+
+void
+NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us)
+{
+   InterlockedExchangeAdd(&nvx_profile_translate_us, (LONG)elapsed_us);
+}
+
+static void
+nvx_wgl_log_performance_profile(void)
+{
+   char message[224];
+   LONG batches = InterlockedExchange(&nvx_profile_batches, 0);
+   LONG total = InterlockedExchange(&nvx_profile_total_us, 0);
+   LONG prepare = InterlockedExchange(&nvx_profile_prepare_us, 0);
+   LONG submit = InterlockedExchange(&nvx_profile_submit_us, 0);
+   LONG tail = InterlockedExchange(&nvx_profile_tail_us, 0);
+   LONG dwords = InterlockedExchange(&nvx_profile_dwords, 0);
+   LONG kicks = InterlockedExchange(&nvx_profile_kicks, 0);
+   LONG kick_us = InterlockedExchange(&nvx_profile_kick_us, 0);
+   LONG kick_dwords = InterlockedExchange(&nvx_profile_kick_dwords, 0);
+   LONG kick_flush_us = InterlockedExchange(&nvx_profile_kick_flush_us, 0);
+   LONG kick_validate_us = InterlockedExchange(&nvx_profile_kick_validate_us, 0);
+   LONG translate_us = InterlockedExchange(&nvx_profile_translate_us, 0);
+   LONG ring_wait_us = InterlockedExchange(&nvx_profile_ring_wait_us, 0);
+   LONG escape_us = InterlockedExchange(&nvx_profile_escape_us, 0);
+   LONG winsys_us = InterlockedExchange(&nvx_profile_winsys_us, 0);
+   LONG swaps = InterlockedExchange(&nvx_profile_swaps, 0);
+   LONG frame_us = InterlockedExchange(&nvx_profile_frame_interval_us, 0);
+   LONG present_us = InterlockedExchange(&nvx_profile_present_us, 0);
+
+   if (batches) {
+      wsprintfA(message,
+         "NOUVEAU_PROFILE submits=%ld dwords=%ld total_us=%ld prepare_us=%ld ioctl_fence_us=%ld tail_us=%ld avg_total_us=%lu avg_prepare_us=%lu avg_ioctl_fence_us=%lu avg_tail_us=%lu",
+         batches, dwords, total, prepare, submit, tail,
+         (unsigned long)(total / batches),
+         (unsigned long)(prepare / batches),
+         (unsigned long)(submit / batches),
+         (unsigned long)(tail / batches));
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (kicks) {
+      wsprintfA(message,
+         "NOUVEAU_KICK_PROFILE kicks=%ld dwords=%ld total_us=%ld flush_us=%ld validate_us=%ld avg_kick_us=%lu avg_flush_us=%lu avg_validate_us=%lu",
+         kicks, kick_dwords, kick_us, kick_flush_us, kick_validate_us,
+         (unsigned long)(kick_us / kicks),
+         (unsigned long)(kick_flush_us / kicks),
+         (unsigned long)(kick_validate_us / kicks));
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (swaps) {
+      wsprintfA(message,
+         "NOUVEAU_FRAME_PROFILE swaps=%ld frame_interval_us=%ld present_us=%ld avg_frame_us=%lu avg_present_us=%lu estimated_cpu_between_presents_us=%lu",
+         swaps, frame_us, present_us,
+         (unsigned long)(frame_us / swaps),
+         (unsigned long)(present_us / swaps),
+         (unsigned long)((frame_us > present_us ? frame_us - present_us : 0) /
+                         swaps));
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (winsys_us || translate_us) {
+      wsprintfA(message,
+         "NOUVEAU_SUBMIT_PROFILE translate_us=%ld winsys_us=%ld ring_fence_wait_us=%ld miniport_escape_us=%ld winsys_other_us=%ld",
+         translate_us, winsys_us, ring_wait_us, escape_us,
+         winsys_us > ring_wait_us + escape_us ?
+            winsys_us - ring_wait_us - escape_us : 0L);
+      nvx_bridge_nouveau_trace(message);
+   }
 }
 
 void
@@ -629,6 +885,17 @@ NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                uint32_t d, uint32_t e, uint32_t f)
 {
    char message[112];
+
+   /* Kind 6 is the pushbuf result, emitted once for every batch. Keep that
+    * status in the aggregate profile instead of reopening the log per batch. */
+   if (kind == 6U)
+      return;
+   /* BO/push/reloc dumps are high-volume diagnostics, never part of the
+    * default performance run. Define NVX_XP_PUSHBUF_TRACE to restore them. */
+#if !defined(NVX_XP_PUSHBUF_TRACE)
+   if (kind <= 5U || kind == 8U || kind == 19U)
+      return;
+#endif
 
    wsprintfA(message,
              "Nouveau pushbuf item kind=%lu index=%lu a=%08lx b=%08lx c=%08lx d=%08lx e=%08lx f=%08lx",
@@ -642,6 +909,7 @@ void
 NvxWglRecordNouveauPushbufDwords(uint32_t push_index, uint32_t first_word,
                                  const uint32_t *dwords, uint32_t count)
 {
+#if defined(NVX_XP_PUSHBUF_TRACE)
    static volatile LONG captured_pushes;
    char output[48U * 1024U];
    char line[128];
@@ -686,6 +954,12 @@ NvxWglRecordNouveauPushbufDwords(uint32_t push_index, uint32_t first_word,
       return;
    WriteFile(file, output, used, &written, NULL);
    CloseHandle(file);
+#else
+   (void)push_index;
+   (void)first_word;
+   (void)dwords;
+   (void)count;
+#endif
 }
 
 void
@@ -905,10 +1179,17 @@ NvxWglRecordMesaRenderTarget(uint32_t cbuf_count, uint32_t index,
                              uint32_t height, uint32_t format,
                              uint32_t memtype)
 {
+   static volatile LONG render_target_trace_count;
    char message[176];
 
    if (present)
       InterlockedExchange(&nvx_bridge_render_target_seen, 1);
+   /* This callback is on Gallium's render-target update path. Opening,
+    * appending, and closing the guest trace file for every draw serialized
+    * the WOW64 benchmark with hundreds of filesystem writes. Preserve a few
+    * records for diagnosis while keeping steady-state rendering quiet. */
+   if (InterlockedIncrement(&render_target_trace_count) > 8)
+      return;
    wsprintfA(message,
       "NVC0 framebuffer cbufs=%lu index=%lu present=%lu address=%08lx:%08lx size=%lux%lu format=%08lx memtype=%08lx",
       (unsigned long)cbuf_count, (unsigned long)index,
@@ -2303,6 +2584,7 @@ nvx_wgl_process_detach(void)
     * during winsys setup; acquiring/releasing a fresh DC here can recurse
     * through GDI while the WOW64 ICD is unloading. */
    HDC transport = nvx_bridge_bound_hdc;
+   nvx_wgl_log_performance_profile();
    if (transport)
       NvxXf86DrmCloseProcessClients(transport);
 }

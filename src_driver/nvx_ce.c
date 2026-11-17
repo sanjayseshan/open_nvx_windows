@@ -251,8 +251,8 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
     va=dev->GspScratchGpuVa;
 
     slot=dev->GspGPPut%16;
-    push=(PULONG)(scratch+0xd000+slot*0x100);
-    pushVa=va+0xd000+slot*0x100;
+    push=(PULONG)(scratch+0x10000+slot*0x100);
+    pushVa=va+0x10000+slot*0x100;
     fenceVal=dev->GspNextFence++;
     if(!fenceVal) fenceVal=dev->GspNextFence++;
 
@@ -392,8 +392,8 @@ static BOOLEAN NvxGspSubmitColorTileStrips(PNVX_DEVICE_EXTENSION dev,
     fifo=(volatile ULONG64 *)scratch;
     va=dev->GspScratchGpuVa;
     slot=dev->GspGPPut%16;
-    push=(PULONG)(scratch+0xd000+slot*0x100);
-    pushVa=va+0xd000+slot*0x100;
+    push=(PULONG)(scratch+0x10000+slot*0x100);
+    pushVa=va+0x10000+slot*0x100;
     for(i=0;i<4;i++) {
         push[n++]=0x20018000;push[n++]=0xc7b5;
         push[n++]=0x20048100;
@@ -639,8 +639,8 @@ static BOOLEAN NvxGspSubmitFillUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
     va=dev->GspScratchGpuVa;
 
     slot=dev->GspGPPut%16;
-    push=(PULONG)(scratch+0xd000+slot*0x100);
-    pushVa=va+0xd000+slot*0x100;
+    push=(PULONG)(scratch+0x10000+slot*0x100);
+    pushVa=va+0x10000+slot*0x100;
     fenceVal=dev->GspNextFence++;
     if(!fenceVal) fenceVal=dev->GspNextFence++;
 

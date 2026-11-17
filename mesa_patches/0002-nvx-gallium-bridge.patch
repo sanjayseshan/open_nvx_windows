@@ -87,17 +87,29 @@ index 100753a18bf7e..4339002d06f68 100644
  #endif
  
  #ifdef GALLIUM_LLVMPIPE
-@@ -76,6 +79,102 @@ static bool use_zink = false;
+@@ -76,6 +79,124 @@ static bool use_zink = false;
  
  static const char *created_driver_name = NULL;
  
 +extern int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle,
 +                                   uint32_t stride, uint32_t width,
 +                                   uint32_t height);
++extern void NvxWglRecordMesaInitStage(const char *stage);
++extern int nvx_wgl_wait_gpu_buffer(uint32_t handle);
++extern uint64_t nvx_wgl_present_timer(void);
++extern uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
++extern void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
 +
 +/* Keep Nouveau's normal tiled render target. Blit it to a reusable linear
 + * GART image, then let the miniport CE copy only visible window rectangles. */
 +static volatile LONG nvx_present_busy;
++static volatile LONG nvx_present_trace_count;
++static void
++nvx_present_trace(const char *stage)
++{
++   if (InterlockedIncrement(&nvx_present_trace_count) <= 48)
++      NvxWglRecordMesaInitStage(stage);
++}
 +static struct pipe_screen *nvx_present_screen;
 +static struct pipe_resource *nvx_present_stage;
 +static unsigned nvx_present_width;
@@ -111,19 +123,22 @@ index 100753a18bf7e..4339002d06f68 100644
 +   struct pipe_resource templ;
 +   struct pipe_box box;
 +   struct winsys_handle handle;
-+   struct pipe_fence_handle *fence = NULL;
 +   bool result = false;
++   uint64_t blit_start, flush_start;
 +
 +   if (!screen || !ctx || !res || !hDC || !screen->resource_create ||
-+       !screen->resource_get_handle || !screen->fence_finish ||
-+       !screen->fence_reference || !ctx->resource_copy_region ||
++       !screen->resource_get_handle || !ctx->resource_copy_region ||
 +       !ctx->flush || res->target != PIPE_TEXTURE_2D ||
 +       res->format != PIPE_FORMAT_B8G8R8A8_UNORM || res->nr_samples > 1 ||
 +       !res->width0 || !res->height0 || res->width0 > 4096 ||
 +       res->height0 > 4096)
++      { nvx_present_trace("GPU present: unsupported WGL target or callbacks");
 +      return false;
++      }
 +   if (InterlockedCompareExchange(&nvx_present_busy, 1, 0) != 0)
++      { nvx_present_trace("GPU present: presenter already busy");
 +      return false;
++      }
 +
 +   if (nvx_present_stage &&
 +       (nvx_present_screen != screen || nvx_present_width != res->width0 ||
@@ -148,8 +163,10 @@ index 100753a18bf7e..4339002d06f68 100644
 +      templ.usage = PIPE_USAGE_STAGING;
 +      templ.bind = PIPE_BIND_SHARED | PIPE_BIND_LINEAR;
 +      nvx_present_stage = screen->resource_create(screen, &templ);
-+      if (!nvx_present_stage)
++      if (!nvx_present_stage) {
++         nvx_present_trace("GPU present: staging resource allocation failed");
 +         goto done;
++      }
 +      nvx_present_screen = screen;
 +      nvx_present_width = res->width0;
 +      nvx_present_height = res->height0;
@@ -160,26 +177,31 @@ index 100753a18bf7e..4339002d06f68 100644
 +   box.width = res->width0;
 +   box.height = res->height0;
 +   box.depth = 1;
++   blit_start = nvx_wgl_present_timer();
 +   ctx->resource_copy_region(ctx, nvx_present_stage, 0, 0, 0, 0,
 +                             res, 0, &box);
-+   ctx->flush(ctx, &fence, 0);
-+   if (!fence || !screen->fence_finish(screen, ctx, fence,
-+                                       5000000000ULL))
-+      goto done;
++   flush_start = nvx_wgl_present_timer();
++   ctx->flush(ctx, NULL, 0);
++   nvx_wgl_trace_stage_timing(
++      nvx_wgl_present_elapsed_us(blit_start),
++      nvx_wgl_present_elapsed_us(flush_start));
 +
 +   memset(&handle, 0, sizeof(handle));
 +   handle.type = WINSYS_HANDLE_TYPE_SHARED;
 +   if (screen->resource_get_handle(screen, ctx, nvx_present_stage,
 +                                   &handle, 0) &&
-+       handle.handle && handle.stride)
++       handle.handle && handle.stride &&
++       nvx_wgl_wait_gpu_buffer((uint32_t)(uintptr_t)handle.handle))
 +      result = nvx_wgl_present_gpu_copy(hDC,
 +                                        (uint32_t)(uintptr_t)handle.handle,
 +                                        handle.stride,
 +                                        res->width0, res->height0) != 0;
++   else
++      nvx_present_trace("GPU present: staging export or NVX fence wait failed");
 +
 +done:
-+   if (fence)
-+      screen->fence_reference(screen, &fence, NULL);
++   if (!result)
++      nvx_present_trace("GPU present: attempt fell back to Mesa flush/readback");
 +   InterlockedExchange(&nvx_present_busy, 0);
 +   return result;
 +}

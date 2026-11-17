@@ -142,7 +142,7 @@ extern volatile ULONG NvxGrUserSubmitBusy;
 #define GSP_LIBOS_ARGS_OFFSET          0x024E0000ULL
 #define GSP_RM_ARGS_OFFSET             0x024E1000ULL
 #define GSP_SCRATCH_OFFSET             0x02F00000ULL
-#define GSP_SCRATCH_SIZE               0x10000UL
+#define GSP_SCRATCH_SIZE               0x20000UL
 #define GSP_PAGE_TABLES_OFFSET         0x02E00000ULL
 #define GSP_VRAM_GPU_VA                0x20000000ULL
 #define GSP_VRAM_MAP_BYTES             0x08000000ULL
@@ -310,6 +310,7 @@ typedef struct _VIDEO_MODE_DEF {
 
 #define NVX_3D_USER_BUFFER_SLOTS 2048U
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
+#define NVX_3D_FENCE_TRACK_SLOTS 256U
 /* RM resources belong to a client, never to the currently submitting app.
  * GPU VAs are disjoint in the validated shared aperture; contexts and queues
  * are private. Hardware scheduling remains RM's responsibility. */
@@ -322,6 +323,9 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG Objects[5], ClassIds[5]; /* 3D, compute, I2M, 2D, CE */
     ULONG SubmitToken, RunlistBase, Put, HardwareChannelId;
     ULONG DrawTraceCount, CompletedBatches;
+    ULONG64 PerfSubmitCount, PerfDwordCount;
+    ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
+    ULONG64 PerfSubmitLockPolls, PerfDoorbellRetries;
     BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;
     BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated, HardwareIdAllocated;
     ULONG64 LastFence, CompletedFence;
@@ -349,7 +353,6 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG MemoryKind;
     ULONG Alignment;
     ULONG Busy;
-    BOOLEAN GpuPinned;
     ULONG GartFirstPage;
     ULONG GartPageCount;
     BOOLEAN GartUnmapPending;
@@ -503,6 +506,8 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG Nvx3dLastSubmitReply[20];
     ULONG64 Nvx3dLastFence;
     ULONG64 Nvx3dCompletedFence;
+    ULONG64 Nvx3dFenceSequence[NVX_3D_FENCE_TRACK_SLOTS];
+    ULONG64 Nvx3dFenceOwner[NVX_3D_FENCE_TRACK_SLOTS];
     NVX_3D_CLIENT_SESSION_ENTRY Nvx3dClientSessions[NVX_3D_CLIENT_SESSION_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
     NVX_GART_HEAP GspGartHeap;
@@ -583,11 +588,12 @@ BOOLEAN NvxGspSubmitUserColorTargetClear(PVOID HwDeviceExtension,
 BOOLEAN NvxGspSubmitNvc0ColorTargetClear(PVOID HwDeviceExtension,
     ULONG64 dstVa,ULONG width,ULONG height,ULONG tileMode,ULONG color,
     ULONG64 fenceValue);
-BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
+BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG64 fenceValue);
 BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG dwordCount,
     PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 *completedFence);
+VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken);
 BOOLEAN NvxGspSubmitUserColorTargetTriangles(PVOID HwDeviceExtension,
     ULONG64 dstVa,ULONG width,ULONG height,ULONG tileMode,ULONG64 vertexVa,
     ULONG vertexCount,ULONG color,ULONG64 fenceValue,BOOLEAN verifyFullTarget);

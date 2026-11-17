@@ -1,0 +1,14 @@
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -203,8 +313,8 @@ wgl_present(struct pipe_screen *screen,
+ #endif
++   if (nvx_wgl_present_gpu(screen, ctx, res, hDC))
++      return;
+    if (screen->flush_frontbuffer) {
+       screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
+       return;
+    }
+-   if (nvx_wgl_present_gpu(screen, ctx, res, hDC))
+-      return;
+    if (ctx && res && hDC && ctx->texture_map && ctx->texture_unmap) {

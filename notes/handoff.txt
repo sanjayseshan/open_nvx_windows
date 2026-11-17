@@ -1,6 +1,157 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest tested package: **3.0.0.242**.
+Updated November 17, 2026. Latest tested package: **3.0.0.256**.
+
+## Latest profiling run (3.0.0.256)
+
+Full run log: `test_logs/v3.0.0.256-20261117-113559.log`. Host tests, both Mesa
+ICD builds, XP import audits, image update and VFIO boot completed. The x64
+gears run selected NV170 and reported 309 frames / 6 seconds = 51.5 FPS; the
+cube reported 300 frames in 5.0821 seconds = 59.0 FPS. GR checks passed. One
+firmware assertion appeared at startup; no MMU fault was recorded.
+
+The x64 gears profile gives a much clearer bottleneck split:
+
+- `nouveau_pushbuf_kick`: 3.043 s total over 3,535 kicks; flush was 3.024 s,
+  validation 3.55 ms. Average kick 860 us, almost all of it in flush.
+- NVX shim profile: 3,265 successful submits, 1.291 s total; 273 ms prep,
+  998 ms winsys submit, and 20 ms post-submit tail. Batch translation was 3.48
+  ms total.
+- Winsys detail: 989 ms total, including 923 ms in the miniport escape, 35.3 ms
+  waiting to reuse staging-ring slots, and 30.4 ms other winsys work. Escape
+  time includes miniport validation/submission and the synchronous GPU-fence
+  completion poll.
+- GPU-copy presentation averaged 110 us. The guest trace was 9,320 lines,
+  down from roughly 292,000 in the earlier profile; PBV/PBFL/PBS hot-path
+  tracing and bulk pushbuffer dumps are disabled by default.
+
+The old 1.83 ms kick figure was therefore badly inflated by tracing. The new
+data says validation is negligible and flush/DRM dispatch is the expensive
+side. The shim translation itself is negligible; the measured miniport escape
+and upstream flush-to-shim path dominate. Counters still need reconciliation:
+the 3,535 kicks differ from 3,265 successful shim submissions, and the
+miniport channel summary reports a different batch total. Do not compare those
+counts as if they were the same scope yet.
+
+The x86 gears process selected NV170 and captured its initial frame, then
+stopped producing output. The watchdog sent ACPI powerdown after the 180-second
+desktop timeout, so x86 FPS and profile are unknown and the all-benchmarks
+completion marker is absent. The 64-bit GPU test still exits with
+`0xC0000005` in its Direct3D availability section. The profile is useful for
+x64 OpenGL, not yet a clean full-suite pass.
+
+The .255 build attempt failed at Mesa link due missing prototypes in the new
+profile hooks; .256 fixed that and built successfully. The 0035 profile patch
+now uses `push->cur - nvpb->bgn` for dword counting and splits kick flush from
+validation. `test/update_disk_driver_user.sh` clears the guest trace before a
+new run.
+
+## Submission-path optimization in progress
+
+`NvxWinsysSubmitBatch` previously allocated a temporary heap buffer and copied
+every translated batch into it just to insert the staging pushbuffer BO
+reference before the command dwords. It now inserts that reference in place in
+the caller-owned translation buffer, using `memmove` for the overlapping
+dword/relocation tail, and submits the expanded buffer directly. The API takes
+the caller's capacity and rejects batches without room for the extra reference.
+This removes one allocation/free and one full-batch copy per kick; it does not
+change the NVX ABI or GPU ordering. This change has not yet been built or
+hardware-tested.
+
+The miniport still waits for each GPU fence before returning from
+`NvxGspSubmitNvc0Batch`. Removing that wait could offer a larger gain, but needs
+fence-based lifetime protection for every referenced BO and the staging ring;
+do not remove it until that asynchronous ownership path is implemented.
+
+## Latest hardware status (3.0.0.253)
+
+One full build, image-update, and VFIO run completed successfully:
+`test_logs/v3.0.0.253-20261117-104257.log`; the runner exited 0. Both Mesa
+ICDs passed the XP import/subsystem audit, the miniport banner correctly says
+3.0.0.253, and the GR triangle/readback/semaphore check passed. The cube
+rendered 300 frames in 5.4161 seconds (55.4 FPS). Both WGL architectures
+reported NV170 and 19.0 FPS gears. One startup firmware assertion was reported;
+no MMU fault appeared. The x64 gears process exited 0. The x86 gears process
+completed six seconds and then exited with `0xC0000005`; the 64-bit GPU test
+also exited with `0xC0000005` after its OpenGL section.
+
+The two `NVX [NVC0-PERF]` session summaries identify 5,478 batches and 313,864
+submitted dwords for each gears run, or about 48 submissions per rendered
+frame. The x64 run counted 5,478 explicit 100 us fence-wait polls (at least
+0.548 seconds of requested stalls over six seconds); the x86 run counted
+6,876 polls (at least 0.688 seconds), with a maximum of 24 polls (2.4 ms) for
+one batch. Both had zero submit-lock polls and zero doorbell retries. Thus
+synchronous fence stalls consume measurable time, particularly on x86, but
+their lower bound is only about 9–11% of the benchmark interval. The very high
+batch count remains a likely CPU/IOCTL overhead source; the counters do not
+measure time spent in the user-mode submission call or Nouveau command
+generation. Next measure aggregate user-mode batch-submit duration and compare
+per-frame submit count before changing the synchronous lifetime guarantees.
+
+The miniport now logs aggregate per-client counts at teardown instead of
+printing each submission. `src_driver/nvx_gsp.c` records batch/dword counts,
+fence-poll counts and maxima, submit-lock polls, and doorbell retries. A poll
+means one explicit `VideoPortStallExecution(100)` interval; it is a lower bound
+on stall time, not full CPU submission duration.
+
+The Administrator and All Users Startup entries are both named
+`run_accel_test.bat`, per request. Neither contains an Internet Explorer
+launch. Both use a shared directory lock to avoid duplicate concurrent suites;
+the full test updater installs the same batch in both folders and clears a
+stale lock before each deliberate hardware run. The `.253` run showed the
+expected x64 and x86 benchmark sequence once each.
+
+D3D hardware acceleration remains unproven. WineD3D reports GTX 470 /
+`nv4_disp.dll`; the adapter identity still needs separate investigation.
+
+Test command:
+`NVX_BUILD_MESA_ICD=1 NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 JOBS=8 ./test/test_full_driver.sh`.
+
+## Previous hardware status (3.0.0.252)
+
+The `.252` full VFIO run is in
+`test_logs/v3.0.0.252-20261117-101628.log`. GR passed, the cube ran at 54.4
+FPS, and gears reported 21.167 FPS x64 / 16.0 FPS x86. NV170 was selected for
+both. The startup banner mismatch was corrected in `.253`. Sampled
+presentation timings were stage blit 0.84–2.62 ms, Gallium flush 0.66–2.21
+ms, fence wait 8–10 us, and visible-rectangle CE copy 0.06–0.37 ms; these
+stages alone do not explain gears performance.
+
+Some `.252` clip samples had `rects=0 copied=0`, possibly from hidden windows;
+confirm during a focused visible-window run before calling this a presentation
+defect.
+
+## Previous hardware status (3.0.0.251)
+
+The `.251` run reached all benchmarks before log collection was interrupted.
+Its log is `test_logs/v3.0.0.251-20261116-224438.log`; `test_accel.log`
+confirms `[ALL_BENCHMARKS_FINISHED]`. Both architectures used NV170; the cube
+ran at 55.5 FPS, and gears measured 19.0 FPS x64 and 17.333 FPS x86. One
+firmware assertion occurred. The `.251` change capped
+`NvxWglRecordMesaRenderTarget` at eight file writes. The improvement in gears
+rate was small, indicating logging was not the remaining primary bottleneck.
+
+The WineD3D diagnostic still prints `NVIDIA GeForce GTX 470` for the D3D
+adapter (`nv4_disp.dll`); that string is not the OpenGL renderer identity.
+OpenGL reports Mesa/NV170. D3D hardware acceleration remains unproven.
+
+## Latest regression analysis (3.0.0.244)
+
+Log: `test_logs/v3.0.0.244-20261116-212207.log`. The 64-bit renderer is
+NV170, but the cube dropped to 29.0 FPS (300 frames in 10.3271 seconds). The
+submission path waits synchronously for every GPU batch, then the miniport
+incorrectly marks all referenced BOs pinned and performs redundant fence
+checks on later upload, download, readback, and present operations. Version
+3.0.0.245 removes that duplicate per-BO lifetime wait while preserving the
+synchronous completion point.
+
+The x86 WGL run selected GDI Generic. Its log also shows Nouveau's 64.5 MiB
+TLS BO failing in both the framebuffer heap and the fragmented GART VA range;
+Gallium then exposes only 36 pixel formats and the application chooses the
+generic one. Version 3.0.0.245 retries the upstream TLS allocation at smaller
+bounded sizes only when the full allocation fails. This is a compatibility
+fallback for the constrained XP mapping; shaders requiring a larger local
+store may still fail and must be checked on hardware.
 
 ## Latest scanout test (3.0.0.242)
 
@@ -65,8 +216,9 @@ cleanup are recorded.
 `3DMark05_v130_1901.exe` is copied to both the Administrator and All Users
 desktops in `winxp_x64.qcow2`. The x86 `nvxogl32.dll`, `d3d9.dll`, and
 `wined3d.dll` are present in `WINDOWS/SysWOW64`; the OpenGL hardware route is
-verified by x86 gears. The automatic Startup benchmark was disabled (the
-batch is retained as `run_accel_test.bat.disabled`) so the desktop is usable.
+verified by x86 gears. The test Startup batch is installed in both the
+Administrator and All Users Startup folders with a shared lock to prevent
+duplicate runs.
 3DMark05 is a 32-bit Direct3D 9 workload. The user's latest run reached the
 benchmark but showed near-zero FPS and black screens; its D3D renderer and
 hardware acceleration are still unverified. The existing 64-bit D3D9 smoke
@@ -100,7 +252,7 @@ investigate VRAM/GART placement and release for the repeated 64.5 MiB BOs, then
 capture 3DMark's actual D3D renderer and per-test output. A successful x86 WGL
 gears run alone does not prove the WineD3D D3D9 route is hardware accelerated.
 
-## Current verified status
+## Verified rendering baseline (3.0.0.237)
 
 RTX 3070 / GA104 runs the Mesa Nouveau WGL ICD on XP x64. The user confirms
 that gears now looks good, with complete gears. The captured third frame also
@@ -168,29 +320,23 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 
 ## Remaining issues and next work
 
-1. **Performance and presentation:** correctness is improved, but the CPU
-   presentation path is expensive. The x64 GPU-to-scanout route is now
-   verified. NvxGspSubmitNvc0Batch waits for each batch fence before
-   returning, polling in 100 us intervals and serializing CPU/GPU work. WGL
-   blits to a reusable linear GART stage, waits for its fence, then
-   synchronously submits CE copies per visible rectangle; unsupported layouts
-   retain the CPU/StretchDIBits fallback. VRAM raw
-   downloads use a 4 KiB scratch window and a separate completed CE copy for
-   each chunk (360000 bytes at 300x300 means 88 chunks if read via this helper).
-   GART-backed staging downloads have a direct CPU-copy path and avoid that
-   VRAM scratch loop; do not assume every present incurs those 88 CE copies.
-   Shadow scans, changed-word uploads, waits, and serial diagnostics add cost.
-   GPU timing/clock measurements have not been collected, so no percentage
-   attribution or GPU power-state diagnosis is established. 3.0.0.242 reports
-   59.9 FPS for the cube and 23.667 FPS for x64 gears with probes enabled.
-   `LogStr` sends characters through polled COM1, but high-frequency batch,
-   upload, wait, and present IOCTLs are suppressed; compare a diagnostics-light
-   run before assigning most slowdown to logging. Next time submit, stage
-   blit/fence, and CE copies, then consider batching or async work while
-   retaining coherency correctness. The fresh x86 build is blocked by the
-   missing i686 MinGW C++ compiler. Captures and first-48 range sample
-   readbacks themselves add diagnostic overhead; current FPS is not a clean
-   production benchmark. Fine-grained changed runs may issue many small uploads.
+1. **Submission performance:** v3.0.0.256 raised x64 gears from the earlier
+   17.8 FPS profile run to 51.5 FPS after disabling high-frequency pushbuf
+   trace writes. The measured WGL presenter costs about 110 us per swap.
+   `nouveau_pushbuf_kick` remains about 860 us on average; almost all measured
+   kick time is in `pushbuf_flush`, not `pushbuf_validate`. Within successful
+   shim submissions, translation is only 3.48 ms total, while the synchronous
+   miniport escape accounts for 923 ms and staging-ring reuse waits for 35 ms.
+   The kick count (3,535), shim successful-submit count (3,265), and miniport
+   batch count do not agree, so these aggregates still have different or
+   incomplete scopes. Reconcile those counters and time the internal escape
+   stages before choosing between optimizing flush dispatch, the miniport, or
+   fence lifetime. The profiling run is x64 only: x86 gears created NV170 and
+   captured its initial frame, then stopped producing output until watchdog
+   powerdown. The x86 Mesa ICD builds and passes import audits; its previous
+   compiler-blocked status is resolved. The current 51.5 FPS is not a clean
+   production benchmark because capture, remaining diagnostics, and test probes
+   are still enabled.
 2. **Direct3D / 3DMark05:** x86 WGL hardware rendering is verified, but the
    user's 3DMark05 run reported near-zero FPS and then black screens. Verify
    its 32-bit D3D9-to-WineD3D-to-WGL renderer and repair the mode-set and large
