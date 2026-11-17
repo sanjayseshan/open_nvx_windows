@@ -1,8 +1,8 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.260**.
+Updated November 17, 2026. Latest tested package: **3.0.0.262**.
 
-## Pending .262 mapped completion visibility fix
+## Latest .262 result: GART exhaustion fixed; x86 exit exception remains
 
 .261 built both ICDs and passed host checks. Hardware x64 gears 54.833 FPS,
 cube 61.0 FPS; x86 still exhausted GART. NOWAIT was a real bug but not the
@@ -12,7 +12,32 @@ so that pointer never observed GPU completion, preventing resource retirement.
 .262 refreshes actual GPU contents after successful synchronous submit for
 referenced GPU-written, persistently CPU-readable GART BOs <= 4 KiB. Large
 surfaces retain lazy readback. Readback failure fails submission; no synthetic
-fence values are written. Build/hardware pending.
+fence values are written. Both ICD builds, XP import checks and host tests
+passed. VFIO log: `test_logs/v3.0.0.262-20261117-123326.log`.
+
+Hardware results:
+- x64 gears: 330 frames / 6 s = 55.0 FPS, exits 0.
+- x86 gears: 319 frames / 6 s = 53.167 FPS, then exits 0xC0000005.
+- Cube: 300 frames / 4.9416 s = 60.7 FPS on NV170.
+- No GART reservation failure or MMU fault. Small BOs now retire/free during
+  animation; the x86 session closes and frees its resources.
+- Sampled kind=20 traces show real GPU-read fence values reaching shadows.
+- 3D ABI passed; startup firmware assertion count remains 1.
+- The runner reached ALL_BENCHMARKS_FINISHED, but its PASS label is
+  unconditional: x86 gears shutdown and the x64 D3D probe still report
+  0xC0000005. This is not a clean all-tests pass.
+
+The original allocation-exhaustion/rendering stall is fixed in this run.
+Remaining work is the x86 process-exit fault, the D3D probe fault, and further
+performance work. The added small mapped-BO refresh has overhead; sustained
+60+ FPS gears is still unproved. Full coherent mapped GART would eventually
+replace this limited shadow synchronization.
+
+Relevant files: mesa_patches/nvx_xf86drm.c (CPU_PREP and post-submit
+visibility), mesa_patches/nvx_winsys.c (zero-timeout fence transport),
+src_driver/nvx_gsp.c (nonblocking completion check), test/nvx_winsys_test.c,
+src_driver/tests/gsp_mock_test.c. Existing shadow merge tests cover preserving
+pending CPU changes while importing actual GPU-written words.
 
 ## .261 nonblocking buffer query fix
 
@@ -22,7 +47,9 @@ Nouveau's cache cannot reuse those BOs and allocates replacements. .261
 uses the existing fence escape with TimeoutMs=0 to query actual completion;
 the miniport now avoids its final 1 ms sleep when the timeout is zero.
 Winsys tests cover successful and busy zero-timeout queries, and GSP mock
-tests verify that both return without stalling. Build/hardware pending.
+tests verify that both return without stalling. Both ICD builds and host
+checks passed. Hardware .261 still exhausted GART, leading to the mapped
+fence visibility fix above. Log: `test_logs/v3.0.0.261-20261117-122851.log`.
 
 ## Latest quiet-allocation comparison (.260)
 
@@ -51,7 +78,8 @@ near 446 / 452 ms. Thus allocation serial logging outside the batch escape
 accounts for substantial flush time. Profile frame interval averaged 16,240
 us; GPU presentation averaged 144 us. Profiling remains enabled.
 
-Remaining priorities: trace the ~2 new 4 KiB allocations per gears frame
+Historical .260 priorities (GART exhaustion resolved in .262): trace the ~2
+new 4 KiB allocations per gears frame
 and GART exhaustion across application sessions; identify why these BOs
 are not reclaimed/reused. Do not assume all allocation replays are leaks:
 the dual-head XDDM path intentionally replays individual requests. A BO ID
