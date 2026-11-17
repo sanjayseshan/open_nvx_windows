@@ -1,18 +1,59 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.258**.
+Updated November 17, 2026. Latest tested package: **3.0.0.260**.
 
-## Pending optimization test (.259)
+## Latest quiet-allocation comparison (.260)
+
+The first .259 x64 gears interval emitted 3,429 serial lines, dominated by
+1,364 IOCTL messages, 1,362 GART messages and 683 allocation messages.
+.260 makes allocation success/replay/PTE tracing opt-in with
+`NVX_TRACE_ALLOCATIONS=1`; errors remain visible. No lookup cache change is
+included, so the comparison isolates success logging overhead. Host checks
+and driver build passed. Hardware benchmark measured x64
+gears 59.5 FPS (357 frames / 6 s), cube 60.9 FPS (300 / 4.9236 s).
+The measured gears interval has 17 serial lines / 2,333 bytes, compared
+with .259's 3,429 lines / 474,735 bytes. Only success tracing changed
+between these two builds. This supports logging overhead as a performance
+cost, while single short runs do not establish the full FPS contribution.
+Log: `test_logs/v3.0.0.260-20261117-121724.log`. Host checks, XP import
+audit, x64 NV170 rendering and 3D ABI passed. The guest session ended at
+the desktop timeout: x86 gears started but exhausted the GART allocation
+arena, so the suite has no x86 FPS or all-benchmarks completion marker.
+One startup firmware assertion remains; no MMU fault observed. The D3D
+availability test still exits 0xC0000005.
+
+Matched profile scope (.259 -> .260): 3,535 kicks / 184,915 dwords and
+3,265 shim submits / 186,299 dwords in both. Kick total fell from 2.611
+to 1.415 seconds, flush from 2.591 to 1.395 seconds; miniport escape stayed
+near 446 / 452 ms. Thus allocation serial logging outside the batch escape
+accounts for substantial flush time. Profile frame interval averaged 16,240
+us; GPU presentation averaged 144 us. Profiling remains enabled.
+
+Remaining priorities: trace the ~2 new 4 KiB allocations per gears frame
+and GART exhaustion across application sessions; identify why these BOs
+are not reclaimed/reused. Do not assume all allocation replays are leaks:
+the dual-head XDDM path intentionally replays individual requests. A BO ID
+lookup cache was considered but not implemented, to isolate the logging
+comparison. Neither x86 reliability nor sustained 60+ FPS gears is proved.
+The post-.256 regression is not attributed to a specific change:
+.259 already exceeded .256 (55.833 vs 51.5 FPS) after finer fence polling.
+
+## Fine fence polling test (.259)
 
 Bounded 20 x 1 us fence polling before the existing 100 us completion
 wait avoids rounding small GPU batches up to 100 us. Synchronous completion,
 BO pins, timeout recovery and validation remain in place. New counter
 `fence_fast_poll_1us` distinguishes short waits from long polls.
 The cube benchmark deliberately paces at 60 FPS; do not modify application
-pacing to claim driver throughput. Hardware .259: x64 gears 55.833 FPS (335 frames / 6 s), cube 58.5 FPS.
+pacing to claim driver throughput. Hardware .259: x64 gears 55.833 FPS
+(335 frames / 6 s), cube 58.5 FPS.
 16,090 batches needed 65,288 short polls and just 3 long polls.
-The x86 run again exhibits allocation replay/GART exhaustion; final runner
-status pending. Log: `test_logs/v3.0.0.259-20261117-121430.log`.
+The x86 run again exhibits allocation replay/GART exhaustion; runner ended
+after desktop timeout, with no x86 FPS or full-suite
+completion marker. GR and 3D ABI passed; one startup firmware assertion,
+no MMU fault. D3D availability still exits 0xC0000005. The .259 profile
+shows miniport escapes 446 ms vs .258's 1,009 ms for the same 3,265
+shim submits; kick total fell from 3.060 s to 2.611 s. Log: `test_logs/v3.0.0.259-20261117-121430.log`.
 
 ## Latest miniport submit optimization test (3.0.0.258)
 
@@ -43,9 +84,7 @@ clear total-time or FPS gain against .256, despite the removed table work; run
 another comparable benchmark before assigning the FPS difference to this
 change.
 
-## Previous miniport submit test (3.0.0.257)
-
-## Latest submission-path test (3.0.0.257)
+## Previous submission-path test (3.0.0.257)
 
 Full run log: `test_logs/v3.0.0.257-20261117-115705.log`. Host tests, x64/x86
 Mesa builds, XP import audits, image update, and VFIO boot completed. The x64
@@ -84,7 +123,7 @@ lookup pass and its later lock/unlock cycle. It combines the stable batch copy
 and exact-size ownership metadata into one nonpaged allocation rather than two
 allocations and a fixed 64-record metadata buffer. A `buffer_lookup_slots`
 counter records the actual table slots traversed during submit ownership
-collection. Build and hardware results are pending.
+collection. Build and hardware results are recorded in the .258 section above.
 
 ## Latest profiling run (3.0.0.256)
 
@@ -139,8 +178,7 @@ the caller-owned translation buffer, using `memmove` for the overlapping
 dword/relocation tail, and submits the expanded buffer directly. The API takes
 the caller's capacity and rejects batches without room for the extra reference.
 This removes one allocation/free and one full-batch copy per kick; it does not
-change the NVX ABI or GPU ordering. This change has not yet been built or
-hardware-tested.
+change the NVX ABI or GPU ordering. This change was built and hardware tested in .257 and later.
 
 The miniport still waits for each GPU fence before returning from
 `NvxGspSubmitNvc0Batch`. Removing that wait could offer a larger gain, but needs

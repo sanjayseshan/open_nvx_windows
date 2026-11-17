@@ -748,6 +748,7 @@ BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
         NvxGspUnlockGartPtes();
         return FALSE;
     }
+#if NVX_TRACE_ALLOCATIONS
     LogStr("NVX [GART]: mapped page=");LogHex(firstPage);
     LogStr(" count=");LogHex(pageCount);
     LogStr(" gpuVa=");LogHex(NVX_GART_GPU_VA_BASE+
@@ -765,6 +766,7 @@ BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
     LogStr(" pte7=");LogHex(pageCount>7?entries[firstPage+7U]:0);
     LogStr(" pteLast=");LogHex(entries[firstPage+(bytes>>12)-1U]);
     LogStr("\n");
+#endif
     __sync_synchronize();
     /* On an unconfirmed invalidate, the caller must retain the physical
      * backing and VA reservation; stale translations may still reference it. */

@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.259
+ * Driver Version: 3.0.0.260
  */
 
 #include "miniport.h"
@@ -1668,9 +1668,11 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
        mapping. GART-backed Nouveau vertex/push buffers are sufficient; this
        flag must not depend on a separate FB allocation having happened. */
     engine->GspGraphicsUserAllocReady=TRUE;
+#if NVX_TRACE_ALLOCATIONS
     LogStr("NVX [GART]: committed client BO id=");LogHex(id);
     LogStr(" va=");LogHex(gpuVa);LogStr(" bytes=");LogHex(request->Bytes);
     LogStr(" pages=");LogHex(pageCount);LogStr("\n");
+#endif
     return TRUE;
 }
 
@@ -1855,9 +1857,11 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
                     Nvx3dUnlockBuffers();return FALSE;
                 }
                 request->BufferId=entry->Id;request->GpuVa=entry->GpuVa;
+#if NVX_TRACE_ALLOCATIONS
                 LogStr("NVX [3D-ALLOC]: replay token=");
                 LogHex(request->ClientToken);LogStr(" id=");
                 LogHex(request->BufferId);LogStr("\n");
+#endif
                 Nvx3dUnlockBuffers();return TRUE;
             }
         }
@@ -2285,7 +2289,9 @@ BOOLEAN NTAPI HwVidStartIO(
        paths already report sampled progress and all submission failures.
        Suppress high-frequency batch, upload, download, and wait fence IOCTLs
        so the virtual serial log is not backpressured during animation. */
-    if(RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_UPLOAD &&
+    if((NVX_TRACE_ALLOCATIONS ||
+        RequestPacket->IoControlCode!=IOCTL_NVX_3D_ALLOC_BUFFER) &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_UPLOAD &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL &&
        RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
@@ -4286,7 +4292,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.259 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.260 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));
