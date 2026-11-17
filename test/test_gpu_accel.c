@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <share.h>
+#include "nvx_exception_trace.h"
 #include "../src_driver/nvx_3d_abi.h"
 #if defined(NVX_TEST_NOUVEAU_PUSHBUF)
 #include "../mesa_patches/nvx_nouveau_pushbuf.h"
@@ -4445,6 +4446,7 @@ static BOOL CALLBACK FindSecondary(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM
 
 int main(int argc, char **argv)
 {
+    nvx_install_exception_trace();
     InitLogging();
     LogMsg("[CLIENT_PROCESS] pid=%lu\n", (unsigned long)GetCurrentProcessId());
 

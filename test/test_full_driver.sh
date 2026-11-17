@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.262"
+NVX_TEST_VERSION="3.0.0.263"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -210,7 +210,7 @@ finish() {
     echo
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
-        for guest_log in mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log; do
+        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log; do
             echo "==> Guest OpenGL trace: $guest_log"
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || \

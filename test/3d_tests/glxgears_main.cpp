@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "../nvx_exception_trace.h"
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
@@ -809,6 +810,7 @@ main(int argc, char *argv[])
    FILE *fpReset = fopen("C:\\wglgears.log", "w");
    if (fpReset) fclose(fpReset);
 
+   nvx_install_exception_trace();
    ProgramName = argv[0];
 
    for (i = 1; i < argc; i++) {

@@ -2,6 +2,14 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.262**.
 
+## Pending .263 exception capture
+
+Added a test-only vectored exception logger to both benchmark executables.
+It records the faulting module/offset, access address and stack candidates in
+C:\nvx_exception.log, preserving normal exception handling. The full runner
+extracts this file after shutdown. This revision is diagnostic: no speculative
+ICD or WineD3D fault suppression. Host checks passed; VFIO pending.
+
 ## Latest .262 result: GART exhaustion fixed; x86 exit exception remains
 
 .261 built both ICDs and passed host checks. Hardware x64 gears 54.833 FPS,
