@@ -3511,7 +3511,7 @@ validate_batch_done:
         PVOID copiedInput=NULL;
         NVX_3D_ALLOC_BUFFER *ownedAllocations=NULL;
         PNVX_3D_USER_BUFFER_ENTRY pinned[NVX_3D_MAX_BATCH_BUFFERS];
-        PNVX_3D_USER_BUFFER_ENTRY *referencedEntries[NVX_3D_MAX_BATCH_BUFFERS];
+        PNVX_3D_USER_BUFFER_ENTRY referencedEntries[NVX_3D_MAX_BATCH_BUFFERS];
         PNVX_3D_USER_BUFFER_ENTRY pushEntry=NULL;
         uint32_t classIds[5],requiredBytes,*dwords;
         uint32_t addressFailMethod=0xffffffffU;

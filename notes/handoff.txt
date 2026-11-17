@@ -1,8 +1,37 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.257**.
+Updated November 17, 2026. Latest tested package: **3.0.0.258**.
 
-Next test package: **3.0.0.258**, reducing redundant miniport submit work.
+## Latest miniport submit optimization test (3.0.0.258)
+
+Full VFIO log: `test_logs/v3.0.0.258-20261117-120815.log`. Host and driver
+checks, XP import audit, boot, x64 OpenGL, GR submission/readback, and 3D ABI
+cases passed. The cube rendered 300 frames in 5.0477 seconds (59.4 FPS), and
+x64 gears reported 292 frames / 6 seconds (48.667 FPS), both on NV170. One
+startup firmware assertion appeared; no MMU fault was found. The x86 gears run
+again stopped after starting and capturing its initial frame; the runner ended
+the guest at its active desktop timeout, so there is no x86 FPS or full-suite
+completion marker. The D3D availability probe still exits with
+`0xC0000005`.
+
+The new `buffer_lookup_slots` counter reported 2,111,536 table slots traversed
+for ownership collection across 14,026 batches. The old submit path repeated
+the same ID lookup during its later pinning pass; because the referenced table
+entries are now pinned while holding the first lock, that second pass is gone.
+This saves approximately another 2.11 million slot checks for this gears run,
+plus one buffer-lock cycle per batch. One pool allocation now holds the copied
+batch and exact-size ownership metadata instead of two allocations and a
+64-record metadata buffer.
+
+The measured gears rate is better than .257's 41.5 FPS, but below .256's best
+51.5 FPS. The .258 shim profile recorded 3,265 submits and 186,299 dwords;
+prep was 258 ms, escape/fence time 1,084 ms, and total was 1,361 ms. The
+upstream kick/flush profile was 3,060 / 3,042 ms. These profiles do not show a
+clear total-time or FPS gain against .256, despite the removed table work; run
+another comparable benchmark before assigning the FPS difference to this
+change.
+
+## Previous miniport submit test (3.0.0.257)
 
 ## Latest submission-path test (3.0.0.257)
 
