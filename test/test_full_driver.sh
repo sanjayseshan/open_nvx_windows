@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.269"
+NVX_TEST_VERSION="3.0.0.270"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -371,4 +371,15 @@ if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
    grep -Eq '\[NVC0-BATCH\]: (submission did not complete|GPU kick/fence failed|reject channel/session)|kernel-rejected pushbuf' "$NVX_RUN_LOG"; then
     echo "ERROR: native GPU submissions failed despite application frame markers; see $NVX_RUN_LOG" >&2
     exit 1
+fi
+
+if [ "$NVX_RUN_3DMARK" = "1" ]; then
+    if ! grep -Fq '[3DMARK05_EXIT] code=0' "$NVX_RUN_LOG"; then
+        echo "ERROR: 3DMark05 did not exit successfully; see $NVX_RUN_LOG and its 3DMark artifact" >&2
+        exit 1
+    fi
+    if ! grep -Fq '[ALL_BENCHMARKS_FINISHED] Status: PASS' "$NVX_RUN_LOG"; then
+        echo "ERROR: guest benchmark suite did not complete successfully; see $NVX_RUN_LOG" >&2
+        exit 1
+    fi
 fi

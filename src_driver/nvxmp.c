@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.265
+ * Driver Version: 3.0.0.270
  */
 
 #include "miniport.h"
@@ -1564,7 +1564,9 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     if(!NvxGartReserve(&engine->GspGartHeap,request->Bytes,
                        vaAlignment,&firstPage,&pageCount,&gpuVa)) {
         LogStr("NVX [GART]: NvxGartReserve failed for bytes=");
-        LogHex(request->Bytes);LogStr("\n");
+        LogHex(request->Bytes);LogStr(" alignment=");LogHex(vaAlignment);
+        LogStr(" client=");LogHex(request->ClientToken);
+        LogStr(" total_bytes=");LogHex(NVX_GART_TOTAL_BYTES);LogStr("\n");
         Nvx3dUnlockBuffers();
         return FALSE;
     }
@@ -2329,6 +2331,18 @@ BOOLEAN NTAPI HwVidStartIO(
         for(i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++)
             if(!engine->Nvx3dClientSessions[i].ClientToken) break;
         if(i==NVX_3D_CLIENT_SESSION_SLOTS) {
+            ULONG active=0,closing=0,channels=0;
+            for(i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
+                NVX_3D_CLIENT_SESSION_ENTRY *entry=&engine->Nvx3dClientSessions[i];
+                if(!entry->ClientToken) continue;
+                active++;
+                if(entry->Closing) closing++;
+                if(entry->Graphics.Ready||entry->Graphics.Submitting) channels++;
+            }
+            LogStr("NVX [3D-SESSION]: open rejected; slots full active=");
+            LogHex(active);LogStr(" closing=");LogHex(closing);
+            LogStr(" graphics_channels=");LogHex(channels);
+            LogStr(" limit=");LogHex(NVX_3D_CLIENT_SESSION_SLOTS);LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_TOO_MANY_OPEN_FILES;break;
         }
         if(!g_Nvx3dSessionSeed)
@@ -2535,17 +2549,25 @@ BOOLEAN NTAPI HwVidStartIO(
 
         if (devExt->IsSecondaryDisplay) {
             PNVX_DEVICE_EXTENSION prim = (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension;
+            ULONG oldIndex=devExt->CurrentModeIndex;
+            ULONG oldWidth=devExt->ActiveWidth,oldHeight=devExt->ActiveHeight;
+            ULONG oldBpp=devExt->ActiveBpp,oldFreq=devExt->ActiveFreq;
             devExt->CurrentModeIndex = requested;
             LogStr("NVX [DUALVIEW]: Secondary mode set to index: ");
             LogHex(requested);
             LogStr("\n");
             if (prim) {
-                (void)NvxNativeSetSecondaryScanout(prim);
                 devExt->ActiveWidth = devExt->Modes[requested].VisScreenWidth;
                 devExt->ActiveHeight = devExt->Modes[requested].VisScreenHeight;
                 devExt->ActiveBpp = 32;
                 devExt->ActiveFreq = devExt->Modes[requested].Frequency;
-                status = NO_ERROR;
+                if(NvxNativeSetSecondaryScanout(prim)) status=NO_ERROR;
+                else {
+                    devExt->CurrentModeIndex=oldIndex;devExt->ActiveWidth=oldWidth;
+                    devExt->ActiveHeight=oldHeight;devExt->ActiveBpp=oldBpp;
+                    devExt->ActiveFreq=oldFreq;status=ERROR_DEVICE_NOT_READY;
+                    LogStr("NVX [DUALVIEW]: secondary mode rejected; native scanout setup failed.\n");
+                }
             } else {
                 status = ERROR_INVALID_PARAMETER;
             }
@@ -2568,6 +2590,9 @@ BOOLEAN NTAPI HwVidStartIO(
 #else
         BOOLEAN restoreNativeDual=devExt->NativeDualActive;
         BOOLEAN vbeOk = FALSE;
+        ULONG oldIndex=devExt->CurrentModeIndex;
+        ULONG oldWidth=devExt->ActiveWidth,oldHeight=devExt->ActiveHeight;
+        ULONG oldBpp=devExt->ActiveBpp,oldFreq=devExt->ActiveFreq;
         /* If mode index is within VBE modes, try VBE first; otherwise switch directly via native scanout */
 #ifdef _WIN64
         if (requested < 4) {
@@ -2592,7 +2617,15 @@ BOOLEAN NTAPI HwVidStartIO(
         LogHex(requested);
         LogStr("\n");
         if (restoreNativeDual || !vbeOk) {
-            (void)NvxNativeSetSecondaryScanout(devExt);
+            if(!NvxNativeSetSecondaryScanout(devExt)) {
+                status=ERROR_DEVICE_NOT_READY;
+                if(!vbeOk) {
+                    devExt->CurrentModeIndex=oldIndex;devExt->ActiveWidth=oldWidth;
+                    devExt->ActiveHeight=oldHeight;devExt->ActiveBpp=oldBpp;
+                    devExt->ActiveFreq=oldFreq;
+                }
+                LogStr("NVX [NATIVE]: mode request failed; scanout was not committed.\n");
+            }
         } else if (devExt->Modes[requested].VisScreenWidth >= 1920 &&
                    devExt->Modes[requested].VisScreenHeight >= 1080 &&
                    devExt->SecondaryDpTrainReady &&
@@ -4292,7 +4325,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.265 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.270 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

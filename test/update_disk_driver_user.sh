@@ -292,6 +292,7 @@ test_gpu_accel.exe >> C:\test_accel.log 2>&1
 set NVX_TEST_RC=!ERRORLEVEL!
 echo [TEST] 64-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
 if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+findstr /l /c:"[NVX_3D_RESULT] FAIL" C:\test_accel.log >nul && set NVX_SUITE_FAILED=1
 if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
     echo [3DMARK05_START] > \\.\COM1
@@ -325,6 +326,7 @@ if exist C:\test_accel\x86\test_gpu_accel32.exe (
     set NVX_TEST_RC=!ERRORLEVEL!
     echo [TEST] 32-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+    findstr /l /c:"[NVX_3D_RESULT] FAIL" C:\test_accel.log >nul && set NVX_SUITE_FAILED=1
 )
 rem Keep the boot lock: both XP Startup folders can launch this batch at
 rem different times, so releasing it here could run the benchmark suite twice.

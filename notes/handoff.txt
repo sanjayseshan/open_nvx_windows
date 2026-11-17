@@ -1,8 +1,49 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest hardware suite: **3.0.0.268**. The next
-package is **3.0.0.269**, with fixes to the opt-in 3DMark05 runner; do not treat
-the .268 invocation as a successful benchmark run.
+Updated November 17, 2026. Latest hardware run: **3.0.0.269**. The x64
+OpenGL/D3D smoke tests passed, but automated 3DMark05 crashed and the later
+x86 test stalled after allocation failures; the suite did not complete.
+
+## .269 VFIO run: 3DMark crash and x86 allocation stall
+
+Run log: `test_logs/v3.0.0.269-20261117-141913.log`; collected
+3DMark output: `test_logs/v3.0.0.269-20261117-141913-3dmark05.log`.
+VFIO booted on the first attempt. The runner fixes worked: the 3DMark start and
+exit were visible in COM1, and its normal 180-second desktop cutoff did not
+terminate the guest.
+
+Results:
+- x64 gears: 51.0 FPS; x64 cube: 60.9 FPS and `[NVX_3D_RESULT] PASS`;
+  D3D9 rendered 60 frames at 55.7 FPS.
+- 3DMark05 launched but exited with `-1073741819` (`0xC0000005`, access
+  violation). There is no game-test progress or score. The output artifact
+  contains driver command/debug output, not proof of a benchmark run. A stray
+  `[3DMARK05_NOT_INSTALLED]` COM1 marker followed the exit marker, but the
+  collected `test_accel.log` confirms the executable ran and recorded the
+  crash code; investigate whether a second Startup invocation emitted that
+  contradictory serial marker.
+- x86 gears: 55.5 FPS. The x86 cube reported about 60.2 FPS but
+  `[NVX_3D_RESULT] FAIL`; GPU batches were zero. Its native Nouveau channel
+  could not open after a 14 MiB backing allocation failed in GART. Further
+  512 KiB and 4 MiB GART allocations failed, and serial output stopped.
+- I sent three Enter keys; QEMU remained running and the log did not advance.
+  After more than a minute with no serial progress, I requested ACPI shutdown.
+  Consequently there is no `[ALL_BENCHMARKS_FINISHED]` marker. The host script
+  returned 0 because it only requires the OpenGL rendered marker, so this run
+  must be treated as failed/incomplete despite the shell exit status.
+- Startup firmware assertion count remained 1; no MMU fault or copy-queue
+  timeout was found in the captured run.
+
+Next actions:
+1. Diagnose 3DMark's access violation using the XP crash/debug logs and verify
+   whether its free-edition game tests are runnable with the current flags.
+2. Trace the x86 client/channel ownership and GART exhaustion. Do not count its
+   reported FPS as accelerated rendering; the native test failed and batches
+   remained zero.
+3. The `.270` test harness now fails if 3DMark exits nonzero, the guest suite
+   fails, or the suite completion marker is absent. The guest batch also marks
+   an `[NVX_3D_RESULT] FAIL` as a suite failure. These gates have shell/diff
+   validation only and need the next VFIO run.
 
 ## .267 hardware result and .268 3DMark automation
 
@@ -61,13 +102,13 @@ reported 60.3 FPS but failed the native GPU test (`gpu_batches=0`); do not count
 that as hardware acceleration. GART allocation failures persist, including
 14 MiB channel backing and later 4 MiB requests.
 
-The runner fixes for the next package write suite/3DMark lifecycle markers to
-COM1, invoke 3DMark synchronously instead of via `start /wait /b`, propagate
-`NVX_RUN_3DMARK` into the autoretry runner, and disable its normal 180-second
-desktop cutoff during 3DMark mode. The total timeout remains 20 minutes. The
-local executable contains `-gtall` and related CLI strings, but its zero exit
-and empty output mean actual game-test launch is still unverified; verify test
-progress and GPU submissions in the next serial and guest logs.
+The `.269` runner fix writes suite/3DMark lifecycle markers to COM1, invokes
+3DMark synchronously, propagates `NVX_RUN_3DMARK` into autoretry, and disables
+its normal 180-second desktop cutoff in 3DMark mode. The `.270` harness now
+requires successful 3DMark exit and suite completion, and marks a failed native
+3D test as suite failure. Shell syntax/diff checks pass; hardware validation is
+pending. Diagnose the `.269` access violation before interpreting future
+benchmark output.
 
 ## Manual 3DMark05 run: resource exhaustion and black screen
 
@@ -114,11 +155,10 @@ Next fixes/investigation:
 3. Compare native display teardown, instance registration and mode restoration
    with upstream. The current path frees channels and reuses instance state;
    identify why repeated registration asserts before changing RM lifetime.
-4. Run .269 with `NVX_RUN_3DMARK=1 NVX_AUTO_RETRY=1 NVX_BUILD_MESA_ICD=1`.
-   Watch COM1 for `[3DMARK05_START]`, `[3DMARK05_EXIT]` and suite completion.
-   Verify the game tests actually start and submit GPU work; an exit code of 0
-   or an empty log is not a pass. Check session counts, allocation failures,
-   display state and final guest output artifacts.
+4. Continue from the .269 findings above. Fix the 3DMark access violation and
+   x86 allocation/channel failure, make the runner reject incomplete suites,
+   then test .270. Require actual game-test progress and GPU submissions, not
+   merely a process start or frame counter.
 
 Relevant: src_driver/nvxmp.c (CLIENT_OPEN/CLOSE),
 src_driver/nvx_3d_abi.h (session ABI), src_disp/opengl.c (escape forwarding),
