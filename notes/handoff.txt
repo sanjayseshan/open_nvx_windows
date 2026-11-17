@@ -2,6 +2,16 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.260**.
 
+## Pending .261 buffer reuse fix
+
+Found a concrete upstream contract mismatch: GEM_CPU_PREP_NOWAIT always
+returned EBUSY for every BO with a recorded last_fence, even after completion.
+Nouveau's cache cannot reuse those BOs and allocates replacements. .261
+uses the existing fence escape with TimeoutMs=0 to query actual completion;
+the miniport now avoids its final 1 ms sleep when the timeout is zero.
+Winsys tests cover successful and busy zero-timeout queries, and GSP mock
+tests verify that both return without stalling. Build/hardware pending.
+
 ## Latest quiet-allocation comparison (.260)
 
 The first .259 x64 gears interval emitted 3,429 serial lines, dominated by

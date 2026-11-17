@@ -410,7 +410,7 @@ NvxWinsysWaitFence(NVX_WINSYS_DEVICE *device, uint64_t fence_value,
    NVX_3D_WAIT_FENCE request;
    NVX_3D_WAIT_FENCE result;
 
-   if (!nvx_winsys_ready(device) || !fence_value || !timeout_ms)
+   if (!nvx_winsys_ready(device) || !fence_value || timeout_ms > 30000U)
       return 0;
    memset(&request, 0, sizeof(request));
    request.Size = sizeof(request);

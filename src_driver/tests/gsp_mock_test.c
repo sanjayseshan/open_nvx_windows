@@ -28,7 +28,8 @@ VOID LogStr(const char *s) {
 }
 VOID LogHex(unsigned long long x) { (void)x; }
 VOID VideoPortDebugPrint(VIDEO_DEBUG_LEVEL level, const CHAR *fmt, ...) { (void)level;(void)fmt; }
-VOID VideoPortStallExecution(ULONG us) { (void)us; }
+static ULONG64 stallMicroseconds;
+VOID VideoPortStallExecution(ULONG us) { stallMicroseconds+=us; }
 VOID VideoPortZeroMemory(PVOID p,ULONG n) { memset(p,0,n); }
 VOID VideoPortMoveMemory(PVOID d,PVOID s,ULONG n) { memcpy(d,s,n); }
 PVOID VideoPortGetDmaAdapter(PVOID extension,PVP_DEVICE_DESCRIPTION desc)
@@ -790,6 +791,16 @@ int main(void)
         }
         assert(!dev.GspDmaVirtual && !dev.DmaAdapter);
         assert(!dev.GspCopyVerified);
+    }
+    {
+        static NVX_DEVICE_EXTENSION fenceDev;
+        ULONG64 before=stallMicroseconds;
+        fenceDev.Nvx3dLastFence=1;
+        assert(!NvxGspWaitUserFence(&fenceDev,1,0));
+        assert(stallMicroseconds==before);
+        fenceDev.Nvx3dCompletedFence=1;
+        assert(NvxGspWaitUserFence(&fenceDev,1,0));
+        assert(stallMicroseconds==before);
     }
     test_reusable_queue();
     puts("GSP mock tests passed: boot, CE queues, dual-head ownership/head commits, v169 notifier lookup, RPC events and teardown retention.");

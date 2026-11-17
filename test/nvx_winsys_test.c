@@ -30,6 +30,7 @@ struct mock_state {
    uint64_t next_buffer;
    uint64_t freed_buffer;
    uint64_t waited_fence;
+   uint32_t waited_timeout;
    uint64_t submitted_fence;
    uint32_t upload_count;
    uint32_t upload_bytes;
@@ -230,6 +231,7 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       result->Status = mock->fail_wait ? NVX_3D_STATUS_INVALID_PARAMETER :
                                         NVX_3D_STATUS_SUCCESS;
       mock->waited_fence = request->FenceValue;
+      mock->waited_timeout = request->TimeoutMs;
       record_event(mock, MOCK_EVENT_WAIT);
       return !mock->fail_wait;
    }
@@ -390,6 +392,12 @@ main(void)
 
    assert(NvxWinsysWaitFence(&device, 42, 1000));
    assert(mock.waited_fence == 42);
+   assert(NvxWinsysWaitFence(&device, 42, 0));
+   assert(mock.waited_timeout == 0);
+   mock.fail_wait = 1;
+   assert(!NvxWinsysWaitFence(&device, 42, 0));
+   assert(mock.waited_timeout == 0);
+   mock.fail_wait = 0;
    assert(NvxWinsysFreeBuffer(&device, result.BufferId));
    assert(mock.freed_buffer == result.BufferId);
 

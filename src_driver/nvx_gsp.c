@@ -4251,6 +4251,9 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
             if(dev->Nvx3dCompletedFence>=fenceValue) return TRUE;
         }
         if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued) return FALSE;
+        /* Timeout zero is a completion query, used by GEM CPU_PREP_NOWAIT.
+           Never stall the calling thread after its final readiness check. */
+        if(elapsed>=timeoutMs) break;
         VideoPortStallExecution(1000);elapsed++;
     }
     return FALSE;

@@ -2525,10 +2525,11 @@ drmCommandWrite(int fd, unsigned long command, void *data,
       buffer = nvx_drm_find_bo_locked(device, request->handle);
       found = buffer != NULL;
       if (buffer) {
+         /* NOWAIT queries readiness; a recorded fence does not imply that
+          * the BO is still busy. Nouveau uses this to recycle cached BOs. */
          ok = !buffer->bo.last_fence ||
-              (!(request->flags & NOUVEAU_GEM_CPU_PREP_NOWAIT) &&
-               NvxWinsysWaitFence(&device->device, buffer->bo.last_fence,
-                                  5000U));
+              NvxWinsysWaitFence(&device->device, buffer->bo.last_fence,
+                 (request->flags & NOUVEAU_GEM_CPU_PREP_NOWAIT) ? 0U : 5000U);
          /* Mesa keeps the CPU shadow mapped across accesses. Waiting for the
           * GPU fence alone leaves that mapping stale after render-target
           * writes; refresh it before reporting a read-prep as complete. */
