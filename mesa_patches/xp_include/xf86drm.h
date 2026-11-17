@@ -128,6 +128,8 @@ int NvxXf86DrmUpdateBufferMapAccess(int fd, uint32_t handle,
                                     uint32_t access);
 int NvxXf86DrmUnmapBuffer(int fd, uint32_t handle);
 int NvxXf86DrmFlushBuffer(int fd, uint32_t handle);
+int NvxXf86DrmGetBufferAllocation(int fd, uint32_t handle,
+                                  NVX_3D_ALLOC_BUFFER *allocation);
 
 drmVersionPtr drmGetVersion(int fd);
 void drmFreeVersion(drmVersionPtr version);

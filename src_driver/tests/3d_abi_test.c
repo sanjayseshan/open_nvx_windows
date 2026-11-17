@@ -421,6 +421,7 @@ int main(void)
     NVX_3D_FREE_BUFFER freeRequest={0};
     NVX_3D_UPLOAD_BUFFER upload={0};
     NVX_3D_DOWNLOAD_BUFFER download={0};
+    NVX_3D_PRESENT_COPY present={0};
     NVX_3D_SUBMIT submit={0};
     NVX_3D_WAIT_FENCE wait={0};
     NVX_3D_READBACK readback={0};
@@ -443,6 +444,7 @@ int main(void)
     assert(sizeof(NVX_3D_FREE_BUFFER)==24);
     assert(sizeof(NVX_3D_UPLOAD_BUFFER)==40);
     assert(sizeof(NVX_3D_DOWNLOAD_BUFFER)==40);
+    assert(sizeof(NVX_3D_PRESENT_COPY)==56);
     assert(sizeof(NVX_3D_SUBMIT)==80);
     assert(sizeof(NVX_3D_WAIT_FENCE)==24);
     assert(sizeof(NVX_3D_READBACK)==32);
@@ -502,6 +504,30 @@ int main(void)
     download.Bytes=4096;download.Reserved[0]=1;
     assert(!Nvx3dValidateDownload(&download,sizeof(download),4096,8192));
     download.Reserved[0]=0;
+    present.Size=sizeof(present);present.Version=NVX_3D_ABI_VERSION;
+    present.BufferId=19;present.ClientToken=1;
+    present.SourcePitch=1280;present.Width=300;present.Height=200;
+    present.SourceX=4;present.SourceY=3;
+    present.DestinationX=100;present.DestinationY=50;
+    assert(Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                   1280U*240U,1920,1080));
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present)-1,
+                                    1280U*240U,1920,1080));
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                    255935U,1920,1080));
+    present.SourcePitch=1196;
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                    1280U*240U,1920,1080));
+    present.SourcePitch=1280;present.SourceX=UINT32_MAX;
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                    1280U*240U,1920,1080));
+    present.SourceX=4;present.DestinationX=1700;
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                    1280U*240U,1920,1080));
+    present.DestinationX=100;present.Reserved=1;
+    assert(!Nvx3dValidatePresentCopy(&present,sizeof(present),
+                                    1280U*240U,1920,1080));
+    present.Reserved=0;
     assert(Nvx3dDispatch(NVX_3D_OP_DOWNLOAD,&download,sizeof(download),
         readbackPixels,sizeof(readbackPixels),&information,
         0,0,0,0,0,0)==NVX_3D_STATUS_SUCCESS);

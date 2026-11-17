@@ -2259,6 +2259,28 @@ NvxXf86DrmMapBuffer(int fd, uint32_t handle, uint32_t access)
 }
 
 int
+NvxXf86DrmGetBufferAllocation(int fd, uint32_t handle,
+                              NVX_3D_ALLOC_BUFFER *allocation)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int found = 0;
+   if (allocation)
+      memset(allocation, 0, sizeof(*allocation));
+   if (!allocation)
+      return 0;
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   if (slot && slot->bo.allocation.ClientToken == device->client_token) {
+      *allocation = slot->bo.allocation;
+      found = 1;
+   }
+   nvx_drm_lock_release();
+   return found;
+}
+
+int
 NvxXf86DrmUpdateBufferMapAccess(int fd, uint32_t handle, uint32_t access)
 {
    struct nvx_drm_device_slot *device;

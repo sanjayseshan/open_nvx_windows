@@ -24,6 +24,9 @@
 #include "nvx_winsys_win32.h"
 #include "xf86drm.h"
 
+int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
+                             uint32_t width, uint32_t height);
+
 static HDC nvx_wgl_hdc;
 static NVX_WINSYS_DEVICE nvx_bridge_winsys;
 static NVX_NOUVEAU_DEVICE nvx_bridge_nouveau_device;
@@ -339,6 +342,113 @@ int
 nvx_wgl_xf86drm_fd(void)
 {
    return InterlockedCompareExchange(&nvx_bridge_drm_fd, 0, 0);
+}
+
+int
+nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
+                         uint32_t width, uint32_t height)
+{
+   NVX_3D_ALLOC_BUFFER allocation;
+   POINT origin;
+   RECT clip;
+   HRGN visible;
+   DWORD region_bytes, copied_regions = 0;
+   RGNDATA *region_data = NULL;
+   int fd, result = 0;
+   static volatile LONG trace_count;
+
+   if (!hdc || !handle || !stride || !width || !height ||
+       width > NVX_3D_MAX_SURFACE_DIMENSION ||
+       height > NVX_3D_MAX_SURFACE_DIMENSION ||
+       stride < width * 4U || (stride & 3U) ||
+       (uint64_t)stride * height > NVX_3D_MAX_BUFFER_BYTES)
+      return 0;
+   fd = nvx_wgl_xf86drm_fd();
+   if (fd <= 0 ||
+       !NvxXf86DrmGetBufferAllocation(fd, handle, &allocation) ||
+       allocation.Usage != NVX_3D_USAGE_GART_BUFFER ||
+       allocation.TileMode || allocation.MemoryKind ||
+       allocation.Bytes < stride * height ||
+       allocation.ClientToken != nvx_bridge_winsys.ClientToken ||
+       GetClipBox(hdc, &clip) == ERROR || !GetDCOrgEx(hdc, &origin))
+      return 0;
+
+   visible = CreateRectRgn(0, 0, 0, 0);
+   if (!visible)
+      return 0;
+   if (GetRandomRgn(hdc, visible, SYSRGN) != 1) {
+      DeleteObject(visible);
+      return 0;
+   }
+   region_bytes = GetRegionData(visible, 0, NULL);
+   if (!region_bytes || region_bytes > 65536U) {
+      DeleteObject(visible);
+      return 0;
+   }
+   region_data = (RGNDATA *)GlobalAlloc(GPTR, region_bytes);
+   if (!region_data || GetRegionData(visible, region_bytes, region_data) !=
+                       region_bytes) {
+      if (region_data)
+         GlobalFree(region_data);
+      DeleteObject(visible);
+      return 0;
+   }
+
+   if (region_data->rdh.iType == RDH_RECTANGLES &&
+       region_data->rdh.nCount && region_data->rdh.nCount <= 64U) {
+      const RECT *rects = (const RECT *)region_data->Buffer;
+      DWORD i;
+      result = 1;
+      for (i = 0; i < region_data->rdh.nCount; i++) {
+         LONG source_x = rects[i].left - origin.x;
+         LONG source_y = rects[i].top - origin.y;
+         LONG left = rects[i].left, top = rects[i].top;
+         LONG right = rects[i].right, bottom = rects[i].bottom;
+         NVX_3D_PRESENT_COPY request;
+         if (source_x < 0) {
+            left -= source_x;
+            source_x = 0;
+         }
+         if (source_y < 0) {
+            top -= source_y;
+            source_y = 0;
+         }
+         if ((uint64_t)source_x >= width ||
+             (uint64_t)source_y >= height)
+            continue;
+         if ((uint64_t)(right - left) > width - (uint32_t)source_x)
+            right = left + (LONG)(width - (uint32_t)source_x);
+         if ((uint64_t)(bottom - top) > height - (uint32_t)source_y)
+            bottom = top + (LONG)(height - (uint32_t)source_y);
+         if (right <= left || bottom <= top)
+            continue;
+         memset(&request, 0, sizeof(request));
+         request.Size = sizeof(request);
+         request.Version = NVX_3D_ABI_VERSION;
+         request.BufferId = allocation.BufferId;
+         request.ClientToken = allocation.ClientToken;
+         request.SourceX = (uint32_t)source_x;
+         request.SourceY = (uint32_t)source_y;
+         request.SourcePitch = stride;
+         request.DestinationX = (uint32_t)left;
+         request.DestinationY = (uint32_t)top;
+         request.Width = (uint32_t)(right - left);
+         request.Height = (uint32_t)(bottom - top);
+         if (!ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
+                        (LPCSTR)&request, 0, NULL)) {
+            result = 0;
+            break;
+         }
+         copied_regions++;
+      }
+      if (!copied_regions)
+         result = 0;
+   }
+   GlobalFree(region_data);
+   DeleteObject(visible);
+   if (result && InterlockedIncrement(&trace_count) <= 4)
+      nvx_bridge_trace("WGL swap presented by GPU copy to clipped scanout");
+   return result;
 }
 
 int
@@ -2189,9 +2299,10 @@ done:
 void
 nvx_wgl_process_detach(void)
 {
-   HDC transport = GetDC(NULL);
-   if (transport) {
+   /* PROCESS_DETACH runs under the loader lock. Reuse the context DC saved
+    * during winsys setup; acquiring/releasing a fresh DC here can recurse
+    * through GDI while the WOW64 ICD is unloading. */
+   HDC transport = nvx_bridge_bound_hdc;
+   if (transport)
       NvxXf86DrmCloseProcessClients(transport);
-      ReleaseDC(NULL, transport);
-   }
 }

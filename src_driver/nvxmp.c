@@ -2269,6 +2269,7 @@ BOOLEAN NTAPI HwVidStartIO(
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL &&
        RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_SUBMIT_BATCH &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_UPLOAD_BUFFER &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_DOWNLOAD_BUFFER &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_WAIT_FENCE) {
@@ -2801,6 +2802,86 @@ BOOLEAN NTAPI HwVidStartIO(
     case IOCTL_VIDEO_SET_COLOR_REGISTERS:
         status = NO_ERROR;
         break;
+
+    case IOCTL_NVX_3D_PRESENT_COPY: {
+        PNVX_DEVICE_EXTENSION engine=devExt->IsSecondaryDisplay?
+            (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
+        NVX_3D_PRESENT_COPY request;
+        NVX_3D_USER_BUFFER_ENTRY saved;
+        PNVX_3D_USER_BUFFER_ENTRY entry;
+        ULONG64 dstBase,surfaceBytes,sourceOffset,sourceSpan,destOffset,destSpan;
+        ULONG bytesPerLine,dstPitch;
+        BOOLEAN copied=FALSE;
+        static ULONG s_presentCopyCount;
+        if(!RequestPacket->InputBuffer||
+           RequestPacket->InputBufferLength!=sizeof(request)||
+           RequestPacket->OutputBufferLength) {
+            status=ERROR_INVALID_PARAMETER;break;
+        }
+        VideoPortMoveMemory(&request,RequestPacket->InputBuffer,sizeof(request));
+        if(!engine||!engine->GspCopyVerified||engine->GspChannelFaulted||
+           devExt->CurrentModeIndex>=devExt->NumModes||
+           !Nvx3dLockBuffers()) {
+            status=ERROR_NOT_SUPPORTED;break;
+        }
+        entry=Nvx3dFindBuffer(engine,request.BufferId);
+        if(!entry||entry->Busy||entry->ClientToken!=request.ClientToken||
+           !(entry->Usage&NVX_3D_USAGE_GART_BUFFER)||
+           (entry->Usage&~NVX_3D_USAGE_GART_BUFFER)||entry->TileMode||
+           entry->MemoryKind||!entry->SystemVirtual||!entry->GpuVa||
+           !Nvx3dClientAcceptsWorkLocked(engine,request.ClientToken)||
+           !Nvx3dValidatePresentCopy(&request,sizeof(request),entry->Bytes,
+              devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth,
+              devExt->Modes[devExt->CurrentModeIndex].VisScreenHeight)||
+           request.SourcePitch>0x01000000UL) {
+            Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
+        }
+        bytesPerLine=request.Width*4U;
+        dstPitch=devExt->Modes[devExt->CurrentModeIndex].ScreenStride;
+        surfaceBytes=(ULONG64)dstPitch*
+            devExt->Modes[devExt->CurrentModeIndex].VisScreenHeight;
+        sourceOffset=(ULONG64)request.SourceY*request.SourcePitch+
+            (ULONG64)request.SourceX*4U;
+        sourceSpan=(ULONG64)(request.Height-1U)*request.SourcePitch+
+            bytesPerLine;
+        destOffset=(ULONG64)request.DestinationY*dstPitch+
+            (ULONG64)request.DestinationX*4U;
+        destSpan=(ULONG64)(request.Height-1U)*dstPitch+bytesPerLine;
+        if(dstPitch<(ULONG64)devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth*4U||
+           sourceSpan>0x01000000ULL||destSpan>0x01000000ULL||
+           destOffset>surfaceBytes||destSpan>surfaceBytes-destOffset||
+           entry->GpuVa>~0ULL-sourceOffset) {
+            Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
+        }
+        entry->Busy=TRUE;saved=*entry;
+        Nvx3dUnlockBuffers();
+
+        dstBase=engine->GspVramGpuVa+
+            (devExt->IsSecondaryDisplay?0x2000000ULL:0ULL);
+        if(dstBase<=~0ULL-destOffset&&
+           saved.GpuVa<=~0ULL-sourceOffset)
+            copied=NvxGspSubmitCopy2D(engine,dstBase+destOffset,
+                saved.GpuVa+sourceOffset,request.SourcePitch,dstPitch,
+                bytesPerLine,request.Height);
+        if(Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,saved.Id);
+            if(entry&&entry->Busy&&entry->GpuVa==saved.GpuVa)
+                entry->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+        }
+        if(copied) {
+            status=NO_ERROR;statusBlock->Information=sizeof(request);
+            s_presentCopyCount++;
+            if(s_presentCopyCount<=5||s_presentCopyCount%10000==0) {
+                LogStr("NVX [PRESENT]: GPU GART-to-scanout copy #");
+                LogHex(s_presentCopyCount);LogStr(" src=");LogHex(saved.GpuVa+sourceOffset);
+                LogStr(" dst=");LogHex(dstBase+destOffset);
+                LogStr(" bytesPerLine=");LogHex(bytesPerLine);
+                LogStr(" lines=");LogHex(request.Height);LogStr("\\n");
+            }
+        } else status=ERROR_DEVICE_NOT_READY;
+        break;
+    }
 
     case IOCTL_NVX_ACCEL_COPY: {
         PNVX_ACCEL_COPY_PARAMS params = (PNVX_ACCEL_COPY_PARAMS)RequestPacket->InputBuffer;

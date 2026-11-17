@@ -114,6 +114,7 @@ Nvx3dDepthModeForOperation(uint32_t operation)
 #define NVX_ESCAPE_3D_CLIENT_CLOSE 0x800dU
 #define NVX_ESCAPE_3D_CHANNEL_LEASE 0x800eU
 #define NVX_ESCAPE_3D_SUBMIT_BATCH  0x800fU
+#define NVX_ESCAPE_3D_PRESENT_COPY  0x8010U
 #define NVX_3D_STATUS_SUCCESS            0U
 #define NVX_3D_STATUS_INVALID_PARAMETER 87U
 #define NVX_3D_STATUS_NOT_SUPPORTED     50U
@@ -879,6 +880,55 @@ typedef struct NVX_3D_DOWNLOAD_BUFFER {
     uint32_t Reserved[2];
     uint64_t ClientToken;
 } NVX_3D_DOWNLOAD_BUFFER;
+
+/* Copy a client-owned, linear GART staging image into a clipped scanout
+ * rectangle. The miniport derives both GPU addresses from owned metadata. */
+typedef struct NVX_3D_PRESENT_COPY {
+    uint32_t Size;
+    uint32_t Version;
+    uint64_t BufferId;
+    uint64_t ClientToken;
+    uint32_t SourceX;
+    uint32_t SourceY;
+    uint32_t SourcePitch;
+    uint32_t DestinationX;
+    uint32_t DestinationY;
+    uint32_t Width;
+    uint32_t Height;
+    uint32_t Reserved;
+} NVX_3D_PRESENT_COPY;
+
+static inline int
+Nvx3dValidatePresentCopy(const NVX_3D_PRESENT_COPY *request,
+                         uint32_t inputBytes, uint32_t allocatedBytes,
+                         uint32_t visibleWidth, uint32_t visibleHeight)
+{
+    uint64_t sourceXBytes, bytesPerLine, srcOffset, srcSpan, dstEndX, dstEndY;
+    if (!request || inputBytes != sizeof(*request) ||
+        request->Size != sizeof(*request) ||
+        request->Version != NVX_3D_ABI_VERSION || !request->BufferId ||
+        !request->ClientToken || request->Reserved || !request->Width ||
+        !request->Height || request->Width > NVX_3D_MAX_SURFACE_DIMENSION ||
+        request->Height > NVX_3D_MAX_SURFACE_DIMENSION ||
+        !request->SourcePitch || (request->SourcePitch & 3U))
+        return 0;
+    sourceXBytes = (uint64_t)request->SourceX * 4U;
+    bytesPerLine = (uint64_t)request->Width * 4U;
+    dstEndX = (uint64_t)request->DestinationX + request->Width;
+    dstEndY = (uint64_t)request->DestinationY + request->Height;
+    if (sourceXBytes + bytesPerLine > request->SourcePitch ||
+        dstEndX > visibleWidth || dstEndY > visibleHeight ||
+        (bytesPerLine & 3U) || bytesPerLine > 0x01000000ULL)
+        return 0;
+    srcOffset = (uint64_t)request->SourceY * request->SourcePitch +
+                sourceXBytes;
+    srcSpan = (uint64_t)(request->Height - 1U) * request->SourcePitch +
+              bytesPerLine;
+    if (srcOffset > allocatedBytes || srcSpan > allocatedBytes - srcOffset ||
+        srcSpan > 0x01000000ULL)
+        return 0;
+    return 1;
+}
 
 typedef struct NVX_3D_SUBMIT {
     uint32_t Size;

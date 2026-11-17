@@ -23,14 +23,17 @@ index b144b8977e7e..3cca4d9814fd 100644
  }
  
  
-@@ -144,6 +151,13 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
+@@ -144,6 +151,16 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
                               unsigned stride,
                               struct winsys_handle *whandle)
  {
 +#ifdef NVX_XP_WIN32_SHIMS
++   if (whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
++      whandle->stride = stride;
++      whandle->handle = (HANDLE)(uintptr_t)bo->handle;
++      return true;
++   }
 +   (void)pscreen;
-+   (void)bo;
-+   (void)stride;
 +   (void)whandle;
 +   return false;
 +#else

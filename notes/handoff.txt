@@ -1,6 +1,36 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest tested package: **3.0.0.241**.
+Updated November 16, 2026. Latest tested package: **3.0.0.242**.
+
+## Latest scanout test (3.0.0.242)
+
+Log: `test_logs/v3.0.0.242-20261116-203141.log`. The freshly built XP x64
+Mesa Nouveau ICD took the GPU-to-scanout route. 64-bit gears reported 23.667
+FPS; the 300-frame cube test reported 59.9 FPS. The cube reached NV170 and
+logged `WGL swap presented by GPU copy to clipped scanout`; miniport CE copies
+from the linear GART staging BO were also logged. The cube's rate is near the
+60 Hz limit. This is a diagnostic run, not an uncapped benchmark.
+
+The x86 Mesa ICD was not rebuilt. The system has
+`i686-w64-mingw32-gcc-posix` but lacks `i686-w64-mingw32-g++-posix`, which
+Meson needs for the x86 build. The recorded 18 FPS x86 gears run used the
+previous packaged DLL and does not validate this change.
+
+For the same 300x300 source image, the miniport logged scanout destinations
+`0x20039810` and `0x22039810`, 32 MiB apart. Both active heads received copies.
+This appears consistent with the XP dual-view/clone setup; check intended
+monitor topology before restricting copies to one head. Current copies wait
+for the Mesa staging blit fence and synchronously submit CE copies per visible
+rectangle.
+
+Performance is still limited by synchronous work: the cube submitted 1,201
+GPU batches in 300 frames (about four per frame), and each NVC0 batch polls for
+its fence before returning. The new present route also waits for the staged
+blit and CE copy. Logging may add overhead because `LogStr` serializes
+characters through polled COM1, but batch, upload, wait, and present IOCTL
+messages are suppressed and the log has no per-frame batch trace. The current
+run cannot isolate the logging cost; compare a diagnostics-light run and add
+timings around submit, stage blit/fence, and CE copy.
 
 ## Latest hardware test (3.0.0.241)
 
@@ -139,25 +169,26 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 ## Remaining issues and next work
 
 1. **Performance and presentation:** correctness is improved, but the CPU
-   presentation path is expensive. NvxGspSubmitNvc0Batch waits for every batch's fence before
-   returning, polling in 100 us intervals, serializing CPU/GPU work. WGL
-   maps/copies the rendered image for StretchDIBits. VRAM raw
+   presentation path is expensive. The x64 GPU-to-scanout route is now
+   verified. NvxGspSubmitNvc0Batch waits for each batch fence before
+   returning, polling in 100 us intervals and serializing CPU/GPU work. WGL
+   blits to a reusable linear GART stage, waits for its fence, then
+   synchronously submits CE copies per visible rectangle; unsupported layouts
+   retain the CPU/StretchDIBits fallback. VRAM raw
    downloads use a 4 KiB scratch window and a separate completed CE copy for
    each chunk (360000 bytes at 300x300 means 88 chunks if read via this helper).
    GART-backed staging downloads have a direct CPU-copy path and avoid that
    VRAM scratch loop; do not assume every present incurs those 88 CE copies.
    Shadow scans, changed-word uploads, waits, and serial diagnostics add cost.
    GPU timing/clock measurements have not been collected, so no percentage
-   attribution or GPU power-state diagnosis is established. Next add timings
-   around submission, shadow publication, transfer/readback, and GDI present;
-   then use a larger/ring staging buffer, batch copies and waits, and ultimately
-   present by GPU copy to scanout or directly mapped shared backing. Current
-   3.0.0.241 hardware numbers are 57.1 FPS for the cube, 19.167 FPS for the
-   first gears run, and 13.833 FPS for the later gears run with diagnostic
-   probes enabled. The x86 render/present image mismatch may explain the
-   black-window reports and should be resolved before comparing x86 speed.
-   Retain
-   coherency correctness while optimizing. Captures and first-48 range sample
+   attribution or GPU power-state diagnosis is established. 3.0.0.242 reports
+   59.9 FPS for the cube and 23.667 FPS for x64 gears with probes enabled.
+   `LogStr` sends characters through polled COM1, but high-frequency batch,
+   upload, wait, and present IOCTLs are suppressed; compare a diagnostics-light
+   run before assigning most slowdown to logging. Next time submit, stage
+   blit/fence, and CE copies, then consider batching or async work while
+   retaining coherency correctness. The fresh x86 build is blocked by the
+   missing i686 MinGW C++ compiler. Captures and first-48 range sample
    readbacks themselves add diagnostic overhead; current FPS is not a clean
    production benchmark. Fine-grained changed runs may issue many small uploads.
 2. **Direct3D / 3DMark05:** x86 WGL hardware rendering is verified, but the

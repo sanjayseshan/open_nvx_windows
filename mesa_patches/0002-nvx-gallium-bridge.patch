@@ -62,10 +62,24 @@ index d91946377d9f..6f07fc591862 100644
     case MESA_PRIM_POINTS:
        for (i = 0; i < nr; i++) {
 diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
-index 100753a18bf7..ae560910c9d9 100644
+index 100753a18bf7e..4339002d06f68 100644
 --- a/src/gallium/targets/wgl/wgl.c
 +++ b/src/gallium/targets/wgl/wgl.c
-@@ -48,6 +48,7 @@
+@@ -35,6 +35,7 @@
+ 
+ 
+ #include <windows.h>
++#include <stdint.h>
+ 
+ #include "util/u_debug.h"
+ #include "util/driconf.h"
+@@ -43,11 +44,13 @@
+ #include "gdi/gdi_sw_winsys.h"
+ #include "pipe/p_screen.h"
+ #include "pipe/p_context.h"
++#include "frontend/winsys_handle.h"
+ 
+ #ifdef GALLIUM_SOFTPIPE
  #include "softpipe/sp_texture.h"
  #include "softpipe/sp_screen.h"
  #include "softpipe/sp_public.h"
@@ -73,34 +87,127 @@ index 100753a18bf7..ae560910c9d9 100644
  #endif
  
  #ifdef GALLIUM_LLVMPIPE
-@@ -76,6 +77,9 @@ static bool use_zink = false;
+@@ -76,6 +79,102 @@ static bool use_zink = false;
  
  static const char *created_driver_name = NULL;
  
++extern int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle,
++                                   uint32_t stride, uint32_t width,
++                                   uint32_t height);
++
++/* Keep Nouveau's normal tiled render target. Blit it to a reusable linear
++ * GART image, then let the miniport CE copy only visible window rectangles. */
++static volatile LONG nvx_present_busy;
++static struct pipe_screen *nvx_present_screen;
++static struct pipe_resource *nvx_present_stage;
++static unsigned nvx_present_width;
++static unsigned nvx_present_height;
++static enum pipe_format nvx_present_format;
++
++static bool
++nvx_wgl_present_gpu(struct pipe_screen *screen, struct pipe_context *ctx,
++                    struct pipe_resource *res, HDC hDC)
++{
++   struct pipe_resource templ;
++   struct pipe_box box;
++   struct winsys_handle handle;
++   struct pipe_fence_handle *fence = NULL;
++   bool result = false;
++
++   if (!screen || !ctx || !res || !hDC || !screen->resource_create ||
++       !screen->resource_get_handle || !screen->fence_finish ||
++       !screen->fence_reference || !ctx->resource_copy_region ||
++       !ctx->flush || res->target != PIPE_TEXTURE_2D ||
++       res->format != PIPE_FORMAT_B8G8R8A8_UNORM || res->nr_samples > 1 ||
++       !res->width0 || !res->height0 || res->width0 > 4096 ||
++       res->height0 > 4096)
++      return false;
++   if (InterlockedCompareExchange(&nvx_present_busy, 1, 0) != 0)
++      return false;
++
++   if (nvx_present_stage &&
++       (nvx_present_screen != screen || nvx_present_width != res->width0 ||
++        nvx_present_height != res->height0 ||
++        nvx_present_format != res->format)) {
++      nvx_present_screen->resource_destroy(nvx_present_screen,
++                                           nvx_present_stage);
++      nvx_present_stage = NULL;
++      nvx_present_screen = NULL;
++   }
++   if (!nvx_present_stage) {
++      memset(&templ, 0, sizeof(templ));
++      templ.target = PIPE_TEXTURE_2D;
++      templ.format = res->format;
++      templ.width0 = res->width0;
++      templ.height0 = res->height0;
++      templ.depth0 = 1;
++      templ.array_size = 1;
++      templ.last_level = 0;
++      templ.nr_samples = 1;
++      templ.nr_storage_samples = 1;
++      templ.usage = PIPE_USAGE_STAGING;
++      templ.bind = PIPE_BIND_SHARED | PIPE_BIND_LINEAR;
++      nvx_present_stage = screen->resource_create(screen, &templ);
++      if (!nvx_present_stage)
++         goto done;
++      nvx_present_screen = screen;
++      nvx_present_width = res->width0;
++      nvx_present_height = res->height0;
++      nvx_present_format = res->format;
++   }
++
++   memset(&box, 0, sizeof(box));
++   box.width = res->width0;
++   box.height = res->height0;
++   box.depth = 1;
++   ctx->resource_copy_region(ctx, nvx_present_stage, 0, 0, 0, 0,
++                             res, 0, &box);
++   ctx->flush(ctx, &fence, 0);
++   if (!fence || !screen->fence_finish(screen, ctx, fence,
++                                       5000000000ULL))
++      goto done;
++
++   memset(&handle, 0, sizeof(handle));
++   handle.type = WINSYS_HANDLE_TYPE_SHARED;
++   if (screen->resource_get_handle(screen, ctx, nvx_present_stage,
++                                   &handle, 0) &&
++       handle.handle && handle.stride)
++      result = nvx_wgl_present_gpu_copy(hDC,
++                                        (uint32_t)(uintptr_t)handle.handle,
++                                        handle.stride,
++                                        res->width0, res->height0) != 0;
++
++done:
++   if (fence)
++      screen->fence_reference(screen, &fence, NULL);
++   InterlockedExchange(&nvx_present_busy, 0);
++   return result;
++}
++
 +extern void nvx_wgl_set_hdc(HDC hdc);
 +extern struct pipe_screen *nvx_wgl_create_native_nouveau_screen(void);
 +
  /* this must outlive later option lookups, which reuse the getenv buffer on windows */
  DEBUG_GET_ONCE_OPTION(gallium_driver, "GALLIUM_DRIVER", "")
  
-@@ -108,7 +112,16 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+@@ -108,7 +206,16 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
  #ifdef GALLIUM_SOFTPIPE
     if (strcmp(driver, "softpipe") == 0) {
        screen = softpipe_create_screen(winsys);
 +      if (screen)
 +         use_softpipe = true;
-+   }
+    }
 +#ifdef GALLIUM_NOUVEAU
 +   if (strcmp(driver, "nouveau") == 0) {
 +      screen = nvx_wgl_create_native_nouveau_screen();
 +      if (screen)
 +         return screen;
-    }
++   }
 +#endif
  #endif
  
     return screen;
-@@ -117,6 +130,8 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+@@ -117,6 +224,8 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
  static struct pipe_screen *
  wgl_screen_create(HDC hDC)
  {
@@ -109,7 +216,7 @@ index 100753a18bf7..ae560910c9d9 100644
     struct sw_winsys *winsys;
     UNUSED bool sw_only = debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false);
  
-@@ -126,6 +141,7 @@ wgl_screen_create(HDC hDC)
+@@ -126,6 +235,7 @@ wgl_screen_create(HDC hDC)
  
     const char *const drivers[] = {
        debug_get_option_gallium_driver(),
@@ -117,7 +224,7 @@ index 100753a18bf7..ae560910c9d9 100644
  #ifdef GALLIUM_D3D12
        sw_only ? "" : "d3d12",
  #endif
-@@ -203,10 +219,41 @@ wgl_present(struct pipe_screen *screen,
+@@ -203,10 +313,43 @@ wgl_present(struct pipe_screen *screen,
  #endif
  
  #ifdef GALLIUM_SOFTPIPE
@@ -135,6 +242,8 @@ index 100753a18bf7..ae560910c9d9 100644
 +      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
 +      return;
 +   }
++   if (nvx_wgl_present_gpu(screen, ctx, res, hDC))
++      return;
 +   if (ctx && res && hDC && ctx->texture_map && ctx->texture_unmap) {
 +      struct pipe_box box;
 +      memset(&box, 0, sizeof(box));
