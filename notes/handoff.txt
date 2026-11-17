@@ -2,7 +2,21 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.262**.
 
-## Pending .264 WineD3D fix and corrected runner
+## Pending .265 matching Wine DLL set
+
+.264 verifies the x64 callback fix: HAL device created, 60 Direct3D frames
+rendered at 52.4 FPS, x64 GPU test exits 0. Corrected runner confirms both
+gears processes exit 0: the old x86 crash report was stale ERRORLEVEL.
+However x86 D3D9 fails LoadLibrary (127), with missing
+wined3d_device_get_front_buffer_data. Further version check found original
+x86 libwine/D3D wrappers were Wine 1.7.52, while x64 was 1.7.55. Rebuilt
+matching D3D9/D3D8/DirectDraw/libwine for BOTH architectures from the pinned
+Wine submodule. Build script now produces the whole five-DLL set. The image
+updater now audits x86 DLL imports against packaged exports as well.
+.264 log: `test_logs/v3.0.0.264-20261117-125111.log`.
+.265 hardware pending.
+
+## .264 WineD3D fix and corrected runner
 
 Correction: the .262 "x86 exit exception" was based on invalid batch-script
 reporting. ERRORLEVEL inside (...) expanded before x86 gears ran, repeating

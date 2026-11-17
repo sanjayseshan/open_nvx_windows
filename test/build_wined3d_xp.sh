@@ -31,10 +31,14 @@ for nvx_arch in x64 x86; do
         ../source/configure --host="$nvx_target" "${nvx_options[@]}" \
             --with-wine-tools="$NVX_WINE_BUILD/host-tools" --without-x --without-freetype \
             CFLAGS='-O2 -fcommon -DUSE_WIN32_OPENGL -D_WIN32_WINNT=0x0502 -DWINVER=0x0502'
-        make -j"$NVX_WINE_JOBS" dlls/wined3d
+        make -j"$NVX_WINE_JOBS" dlls/wined3d dlls/d3d9 dlls/d3d8 dlls/ddraw
     )
     mkdir -p "$NVX_ROOT/test/wined3d_xp/$nvx_arch"
-    cp "$NVX_WINE_BUILD/$nvx_arch/dlls/wined3d/wined3d.dll" \
-        "$NVX_ROOT/test/wined3d_xp/$nvx_arch/wined3d.dll"
-    sha256sum "$NVX_ROOT/test/wined3d_xp/$nvx_arch/wined3d.dll"
+    for nvx_dll in wined3d d3d9 d3d8 ddraw; do
+        cp "$NVX_WINE_BUILD/$nvx_arch/dlls/$nvx_dll/$nvx_dll.dll" \
+            "$NVX_ROOT/test/wined3d_xp/$nvx_arch/$nvx_dll.dll"
+    done
+    cp "$NVX_WINE_BUILD/$nvx_arch/libs/wine/libwine.dll" \
+        "$NVX_ROOT/test/wined3d_xp/$nvx_arch/libwine.dll"
+    sha256sum "$NVX_ROOT/test/wined3d_xp/$nvx_arch/"{wined3d,d3d9,d3d8,ddraw,libwine}.dll
 done

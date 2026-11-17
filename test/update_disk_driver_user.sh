@@ -88,6 +88,13 @@ fi
 if [ -f "$NVX_ROOT/test/3d_tests/wglgears32.exe" ]; then
     NVX_AUDIT_ARGS+=(--package "$NVX_ROOT/test/3d_tests/wglgears32.exe")
 fi
+# Resolve x86 WineD3D imports against the DLLs being installed, not stale
+# copies in SysWOW64. Mixing packaged Wine versions otherwise passes unnoticed.
+for nvx_dll in d3d9 d3d8 ddraw wined3d libwine; do
+    if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$nvx_dll.dll" ]; then
+        NVX_AUDIT_ARGS+=(--package "$NVX_ROOT/test/wined3d_xp/x86/$nvx_dll.dll")
+    fi
+done
 python3 "$NVX_ROOT/test/audit_xp_imports.py" "${NVX_AUDIT_ARGS[@]}"
 
 cp -v "$NVX_PACKAGE/nvxmp.sys" "$NVX_DRIVERS/nvxmp.sys"
