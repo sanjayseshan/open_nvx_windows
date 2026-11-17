@@ -1,6 +1,131 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.265**.
+Updated November 17, 2026. Latest hardware suite: **3.0.0.268**. The next
+package is **3.0.0.269**, with fixes to the opt-in 3DMark05 runner; do not treat
+the .268 invocation as a successful benchmark run.
+
+## .267 hardware result and .268 3DMark automation
+
+The .267 VFIO suite reached `[ALL_BENCHMARKS_FINISHED] Status: PASS` and logged
+hardware OpenGL and D3D9 smoke rendering. Its log is
+`test_logs/v3.0.0.267-20261117-134922.log`. FPS varied across repeated startup
+invocations: gears ranged from about 47.7 to 58.2, while cube results stayed
+around 60-61 FPS. Large GART reservations still failed (64.5 MiB TLS, 32.5 MiB,
+and channel backing requests), so the suite PASS is not evidence that 3DMark05
+works. The runner powered down after the completion marker, which explains why
+the user's manual 3DMark launch did not get a reliable run window.
+
+The .267 source changes:
+- Pin the first successful WGL miniport client for the lifetime of the ICD
+  process, including before Gallium creates its screen. HDC/context changes
+  previously reopened sessions during that interval and could strand BOs.
+- Make DRM device unregister report failure. The WGL bridge now preserves the
+  descriptor and token when BO/client teardown fails instead of discarding the
+  only reference and opening another client.
+- Add a host regression check for retrying unregister after a client-close
+  failure.
+
+The .266 mode-transition/RPC safety changes remain in the package:
+- Preserve the RM display instance-memory registration across display-channel
+  teardown; OpenRM creates and registers that instance at device display
+  instance-memory initialization, not per user channel.
+- Quarantine the synchronous GSP RPC queue after timeout, malformed stream or
+  unexpected reply. Completion is ambiguous, so later teardown/modeset calls
+  must not reuse the queue or free its backing.
+- Reject native/secondary mode requests when scanout setup fails instead of
+  returning success with no committed scanout; restore old logical mode fields
+  when the direct native setup failed.
+- Log session-table saturation and GART allocation failures with owner,
+  alignment and capacity context.
+- Add GSP mock coverage for persistent instance registration and timeout
+  teardown quarantine.
+
+Host/mock suite and `make -C src_disp check` pass with the .267 session-lifetime
+changes. Both x64 and x86 miniport builds complete. The umbrella
+`test/run_all_tests.sh` previously exited at the unrelated
+Windows 98 VxD stage, where `src_win98/shim/videoprt_shim.c` has conflicting
+VideoPort declarations. Run the `.267` VFIO suite before calling this fixed.
+The timeout guard is fail-closed: it prevents further RM/display mutations,
+but recovery from the first failed RM channel allocation still needs hardware
+validation and potentially further work.
+
+For .268, `NVX_RUN_3DMARK=1` launched the installed 3DMark05 executable, but
+this did not establish a benchmark run: the process returned code 0, the
+captured `3dmark05.log` was empty, and no game-test progress appeared in COM1.
+The host runner shut down at its unconditional 180-second desktop cutoff while
+the later x86 smoke tests were in progress. The `.268` serial log is
+`test_logs/v3.0.0.268-20261117-140757.log`; the separate 3DMark output file is
+empty. Other measurements in that log include x64 gears at 50.2 FPS, x64 cube
+at 60.8 FPS with `[NVX_3D_RESULT] PASS`, and D3D9 at 55.9 FPS. The x86 cube
+reported 60.3 FPS but failed the native GPU test (`gpu_batches=0`); do not count
+that as hardware acceleration. GART allocation failures persist, including
+14 MiB channel backing and later 4 MiB requests.
+
+The runner fixes for the next package write suite/3DMark lifecycle markers to
+COM1, invoke 3DMark synchronously instead of via `start /wait /b`, propagate
+`NVX_RUN_3DMARK` into the autoretry runner, and disable its normal 180-second
+desktop cutoff during 3DMark mode. The total timeout remains 20 minutes. The
+local executable contains `-gtall` and related CLI strings, but its zero exit
+and empty output mean actual game-test launch is still unverified; verify test
+progress and GPU submissions in the next serial and guest logs.
+
+## Manual 3DMark05 run: resource exhaustion and black screen
+
+VM is off (no qemu-system process found). Failed-run snapshot:
+`test_logs/3dmark05-v265-black-screen-20261117.log`.
+IMPORTANT: vm_serial.log was a symlink to the .265 suite archive; the manual
+launcher wrote through it, replacing that archive with this manual run. The
+passing smoke measurements below describe the earlier run, not this log.
+
+Confirmed in the manual-run log:
+- 40 client-session opens and 8 closes leave 32 outstanding sessions, matching
+  the kernel session limit. Opens often occur in pairs. Duplicate escape
+  dispatch versus genuinely separate clients is NOT yet established.
+- TLS allocations fail at 64.5, 32.5 and 16.5 MiB; later 14 MiB channel backing
+  allocations fail in NvxGartReserve. This is a resource/lifetime problem,
+  not evidence that 3DMark is successfully rendering on the GPU.
+- The 64.5 MiB TLS request cannot fit in the remaining selected VRAM span: the
+  attempt starts at physical offset 46.125 MiB and the selected region ends at
+  62 MiB, leaving about 15.75 MiB. The Mesa DRM shim retries the ordinary
+  allocation in the 230 MiB GART window, but `NvxGartReserve` also fails. The
+  .266 log confirms this large contiguous allocation failure on hardware.
+- The firmware reports other VRAM regions as reserved; simply raising the
+  custom VRAM heap limit would map memory the firmware did not mark available.
+  Grow the GART VA/PTE mapping only if the leaked-client cleanup still leaves
+  the 64.5 MiB TLS request without a contiguous range. Longer term, normal
+  VRAM placement should be RM-managed rather than assigning physical offsets.
+- Mode changes release native display channels. BIOS SET_MODE returns 0x57;
+  the driver proceeds to native mode setup and display-channel reinitialization.
+- Final reinitialization submits display-instance registration, receives two
+  runtime firmware assertions (total count rises from 1 to 3), quarantines
+  graphics and times out the RPC. Display-instance registration then fails.
+  This is a separate display recovery failure. The user's “ending program”
+  report is Windows trying to terminate the stalled benchmark, not the guest
+  runner's completion message.
+- No MMU fault is recorded in that final sequence. Do not describe this as
+  merely low FPS, or as a successful sustained D3D workload.
+
+Next fixes/investigation:
+1. Trace session-open/close ownership across WGL/Wine device probing and
+   multi-monitor ExtEscape dispatch. Make repeat requests safe only with an
+   explicit ownership/replay contract; do not reclaim possibly live channels.
+2. Trace TLS/BO retention and the bounded GART/FB allocation windows before
+   increasing limits. Add failure diagnostics for session-table exhaustion.
+3. Compare native display teardown, instance registration and mode restoration
+   with upstream. The current path frees channels and reuses instance state;
+   identify why repeated registration asserts before changing RM lifetime.
+4. Run .269 with `NVX_RUN_3DMARK=1 NVX_AUTO_RETRY=1 NVX_BUILD_MESA_ICD=1`.
+   Watch COM1 for `[3DMARK05_START]`, `[3DMARK05_EXIT]` and suite completion.
+   Verify the game tests actually start and submit GPU work; an exit code of 0
+   or an empty log is not a pass. Check session counts, allocation failures,
+   display state and final guest output artifacts.
+
+Relevant: src_driver/nvxmp.c (CLIENT_OPEN/CLOSE),
+src_driver/nvx_3d_abi.h (session ABI), src_disp/opengl.c (escape forwarding),
+mesa_patches/nvx_winsys.c, nvx_winsys_win32.c and nvx_wgl_bridge.c (ownership),
+src_driver/nvx_gr_context.h (GART capacity), src_driver/nvx_vbe.c
+(NvxVbeSetMode), src_driver/nvx_disp_rpc.c (release/init display channels),
+and src_driver/nvx_gsp.c (RPC/assertion handling).
 
 ## Latest .265: x64/x86 OpenGL and D3D9 smoke tests pass
 
@@ -23,8 +148,8 @@ logging overhead. The old .262 x86 exception claim below is historical and
 incorrect; the corrected runner confirms exit 0.
 
 Current issues / next work:
-- 3DMark05 has NOT been retested after these fixes; its earlier near-zero FPS
-  and black screen are not cleared by the D3D9 triangle smoke test.
+- Manual 3DMark05 retest failed: near-zero FPS, allocation exhaustion, then
+  display reinitialization firmware assertions and black screens (see above).
 - Investigate the one startup firmware assertion separately.
 - WineD3D still advertises GTX 470/nv4_disp.dll from its old identity table.
 - Sustained performance and simultaneous application stress remain untested.

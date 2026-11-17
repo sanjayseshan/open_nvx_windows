@@ -20,6 +20,11 @@ case "$NVX_MESA_APPLOCAL" in
     0|1) ;;
     *) echo "NVX_MESA_APPLOCAL must be 0 or 1" >&2; exit 1 ;;
 esac
+NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
+case "$NVX_RUN_3DMARK" in
+    0|1) ;;
+    *) echo "NVX_RUN_3DMARK must be 0 or 1" >&2; exit 1 ;;
+esac
 
 for tool in guestmount guestunmount mountpoint qemu-img; do
     command -v "$tool" >/dev/null || { echo "Missing $tool; see ROOTLESS_TESTING.md." >&2; exit 1; }
@@ -261,6 +266,8 @@ cd /d C:\test_accel
 if exist C:\nvx_exception.log del C:\nvx_exception.log
 if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
+echo [NVX_TEST_SUITE_START] > \\.\COM1
+if exist C:\3dmark05.log del C:\3dmark05.log
 if exist C:\test_accel\p2mf_probe_gart.flag (
     echo [TEST] Isolated GART P2MF probe... >> C:\test_accel.log
     nvx_p2mf_probe.exe gart >> C:\test_accel.log 2>&1
@@ -285,6 +292,24 @@ test_gpu_accel.exe >> C:\test_accel.log 2>&1
 set NVX_TEST_RC=!ERRORLEVEL!
 echo [TEST] 64-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
 if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+if exist C:\test_accel\run_3dmark.flag (
+    echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
+    echo [3DMARK05_START] > \\.\COM1
+    if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
+        cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
+        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -verbose -res=800x600 > C:\3dmark05.log 2>&1
+        set NVX_TEST_RC=!ERRORLEVEL!
+        echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
+        echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1
+        if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+        echo [3DMARK05] RUN_COMPLETE >> C:\test_accel.log
+    ) else (
+        echo [3DMARK05] NOT_INSTALLED: expected 3DMark05.exe under Program Files (x86) >> C:\test_accel.log
+        echo [3DMARK05_NOT_INSTALLED] > \\.\COM1
+        set NVX_SUITE_FAILED=1
+    )
+    cd /d C:\test_accel
+)
 if exist C:\test_accel\x86\wglgears32.exe (
     cd /d C:\test_accel\x86
     set GALLIUM_DRIVER=nouveau
@@ -301,8 +326,10 @@ if exist C:\test_accel\x86\test_gpu_accel32.exe (
     echo [TEST] 32-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
-rmdir C:\test_accel\startup_test.lock >nul 2>&1
+rem Keep the boot lock: both XP Startup folders can launch this batch at
+rem different times, so releasing it here could run the benchmark suite twice.
 if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL >> C:\test_accel.log)
+if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS > \\.\COM1) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL > \\.\COM1)
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
@@ -318,6 +345,12 @@ case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in
         ;;
 esac
 rm -rf "$NVX_MOUNT/test_accel/startup_test.lock"
+if [ "$NVX_RUN_3DMARK" = "1" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    : > "$NVX_MOUNT/test_accel/run_3dmark.flag"
+else
+    rm -f "$NVX_MOUNT/test_accel/run_3dmark.flag"
+fi
 NVX_STARTUP_ADMIN="$NVX_MOUNT/Documents and Settings/Administrator/Start Menu/Programs/Startup"
 NVX_STARTUP_ALL="$NVX_MOUNT/Documents and Settings/All Users/Start Menu/Programs/Startup"
 for NVX_STARTUP in "$NVX_STARTUP_ADMIN" "$NVX_STARTUP_ALL"; do

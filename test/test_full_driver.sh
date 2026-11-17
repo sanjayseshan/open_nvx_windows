@@ -4,8 +4,14 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.265"
+NVX_TEST_VERSION="3.0.0.269"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
+NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
+case "$NVX_RUN_3DMARK" in
+    0) NVX_TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-240}" ;;
+    1) NVX_TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-1200}" ;;
+    *) echo "NVX_RUN_3DMARK must be 0 or 1" >&2; exit 1 ;;
+esac
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
 NVX_MESA_TEST_FLAGS=()
@@ -199,7 +205,8 @@ echo "==> Updating the offline XP guest with dist_full"
 if [ -n "${NVX_NVC0_P2MF_PROBE_TARGET:-}" ]; then
     echo "==> Guest diagnostic enabled: same-channel P2MF target=$NVX_NVC0_P2MF_PROBE_TARGET"
 fi
-"$NVX_ROOT/test/update_disk_driver_user.sh" full
+NVX_RUN_3DMARK="$NVX_RUN_3DMARK" \
+    "$NVX_ROOT/test/update_disk_driver_user.sh" full
 
 if [ ! -e /dev/vfio/vfio ]; then
     echo "VFIO is not ready. See ROOTLESS_TESTING.md." >&2
@@ -210,13 +217,18 @@ finish() {
     echo
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
-        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log; do
+        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log 3dmark05.log; do
             echo "==> Guest OpenGL trace: $guest_log"
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || \
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/test_accel/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || true
         done
+        if [ "$NVX_RUN_3DMARK" = "1" ] && \
+           guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i download \
+               /3dmark05.log "${NVX_RUN_LOG%.log}-3dmark05.log" 2>/dev/null; then
+            echo "==> 3DMark05 output: ${NVX_RUN_LOG%.log}-3dmark05.log"
+        fi
         # Only collect captures recorded by this run, rather than old files
         # left on the guest disk when hardware context creation fails.
         for capture in wglgears-render.ppm wglgears-present.ppm; do
@@ -336,6 +348,8 @@ echo "==> Use 'quit' only for a pre-boot hang or failed graceful shutdown."
 ln -sfn "$NVX_RUN_LOG" "$NVX_ROOT/vm_serial.log"
 if [ "${NVX_AUTO_RETRY:-0}" = "1" ]; then
     MAX_RETRIES="${MAX_RETRIES:-10}" BOOT_TIMEOUT="${BOOT_TIMEOUT:-35}" \
+        NVX_TEST_TIMEOUT="$NVX_TEST_TIMEOUT" \
+        NVX_RUN_3DMARK="$NVX_RUN_3DMARK" \
         NVX_DRIVER_ISO="${NVX_DRIVER_ISO:-$NVX_ROOT/nvx_driver_full.iso}" \
         NVX_SERIAL_LOG="$NVX_RUN_LOG" \
         "$NVX_ROOT/test/run_vfio_xp_autoretry.sh"

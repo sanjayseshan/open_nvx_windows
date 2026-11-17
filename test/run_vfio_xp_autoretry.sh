@@ -92,7 +92,9 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
 
             # Allow the ICD enough time to initialize on slower XP boots.
             NVX_DESKTOP_TIMEOUT="${NVX_DESKTOP_TIMEOUT:-180}"
-            if [ "$s" -ge "$NVX_DESKTOP_TIMEOUT" ] && grep -q "GPU solid fill" "$NVX_RUN_LOG" 2>/dev/null; then
+            if [ "${NVX_RUN_3DMARK:-0}" != "1" ] && \
+               [ "$s" -ge "$NVX_DESKTOP_TIMEOUT" ] && \
+               grep -q "GPU solid fill" "$NVX_RUN_LOG" 2>/dev/null; then
                 echo "==> Desktop active session completed ($s s; limit ${NVX_DESKTOP_TIMEOUT}s). Sending soft ACPI powerdown..."
                 echo "system_powerdown" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
                 sleep 6

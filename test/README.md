@@ -53,6 +53,22 @@ inspect the `[NVX_3D_STAGE]` lines in the generated `test_logs` file. These
 tests exercise the existing NVX boundary and fixed C797 clear profile; they do
 not test a native Gallium Nouveau screen or arbitrary NVC0 batches.
 
+### Optional 3DMark05 game-test run
+
+The XP image contains 3DMark05 under `Program Files (x86)`. Set
+`NVX_RUN_3DMARK=1` when invoking `test_full_driver.sh` to attempt the game's
+tests after the x64 smoke test, using `-gtall -nosysteminfo`. The autoretry
+runner allows 20 minutes by default and disables its normal 180-second desktop
+cutoff in this mode; override the limit with `NVX_TEST_TIMEOUT` if needed.
+Startup, 3DMark exit, and suite completion are also written to COM1 so the host
+can monitor the run live. The guest writes `C:\\3dmark05.log`, collected as a
+separate artifact. A zero exit code alone does not prove the game tests ran;
+confirm the log contains actual test progress and GPU submissions.
+
+```sh
+NVX_RUN_3DMARK=1 NVX_AUTO_RETRY=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh
+```
+
 ### 3. `run_vfio_xp_autoretry.sh`
 Monitors and auto-retries Windows XP x64 VM bringup with RTX 3070 VFIO passthrough until guest driver activity appears in the serial log. It launches `run_vfio_vm.sh` for every attempt, so it uses the same Logitech evdev input devices, passthrough devices, and QEMU settings as a direct run. Set `MAX_RETRIES` and `BOOT_TIMEOUT` to adjust retry behavior. When run through `test_full_driver.sh`, set `NVX_AUTO_RETRY=1` to enable this path.
 
