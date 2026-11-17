@@ -51,6 +51,7 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" batches=");LogHex(channel->PerfSubmitCount);
     LogStr(" dwords=");LogHex(channel->PerfDwordCount);
     LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
+    LogStr(" fence_fast_poll_1us=");LogHex(channel->PerfFenceFastPolls);
     LogStr(" fence_wait_poll_100us=");LogHex(channel->PerfFenceWaitPolls);
     LogStr(" max_fence_wait_polls=");LogHex(channel->PerfFenceWaitMaxPolls);
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
@@ -3754,6 +3755,16 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     userd[0x8c/4]=channel->Put;
     __sync_synchronize();
     (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
+    /* Small Nouveau batches usually finish within a few microseconds. Avoid
+       rounding each completion up to a 100 us stall. Bound the fine poll to
+       20 us, then retain the existing long wait and doorbell recovery. Keep
+       completion synchronous so every pinned BO remains protected. */
+    for(i=0;i<20U;i++) {
+        if(fence[0]==(ULONG)fenceValue||channel->Faulted||
+           dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
+        VideoPortStallExecution(1U);
+    }
+    channel->PerfFenceFastPolls+=i;
     totalPolls=0;
     for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {

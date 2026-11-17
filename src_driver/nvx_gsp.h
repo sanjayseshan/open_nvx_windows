@@ -325,6 +325,7 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG DrawTraceCount, CompletedBatches;
     ULONG64 PerfSubmitCount, PerfDwordCount, PerfSubmitLookupSlots;
     ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
+    ULONG64 PerfFenceFastPolls;
     ULONG64 PerfSubmitLockPolls, PerfDoorbellRetries;
     BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;
     BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated, HardwareIdAllocated;

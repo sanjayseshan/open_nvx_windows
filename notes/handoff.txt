@@ -2,6 +2,18 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.258**.
 
+## Pending optimization test (.259)
+
+Bounded 20 x 1 us fence polling before the existing 100 us completion
+wait avoids rounding small GPU batches up to 100 us. Synchronous completion,
+BO pins, timeout recovery and validation remain in place. New counter
+`fence_fast_poll_1us` distinguishes short waits from long polls.
+The cube benchmark deliberately paces at 60 FPS; do not modify application
+pacing to claim driver throughput. Hardware .259: x64 gears 55.833 FPS (335 frames / 6 s), cube 58.5 FPS.
+16,090 batches needed 65,288 short polls and just 3 long polls.
+The x86 run again exhibits allocation replay/GART exhaustion; final runner
+status pending. Log: `test_logs/v3.0.0.259-20261117-121430.log`.
+
 ## Latest miniport submit optimization test (3.0.0.258)
 
 Full VFIO log: `test_logs/v3.0.0.258-20261117-120815.log`. Host and driver
