@@ -244,11 +244,14 @@ fi
 
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off
+setlocal EnableDelayedExpansion
+set NVX_SUITE_FAILED=0
 rem All Users and Administrator Startup can both invoke this batch. Keep the
 rem lock directory for this boot so only the first invocation runs benchmarks.
 mkdir C:\test_accel\startup_test.lock >nul 2>&1
 if errorlevel 1 exit /b 0
 cd /d C:\test_accel
+if exist C:\nvx_exception.log del C:\nvx_exception.log
 if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 if exist C:\test_accel\p2mf_probe_gart.flag (
@@ -266,25 +269,33 @@ if exist C:\test_accel\wglgears.exe (
     set GALLIUM_DRIVER=nouveau
     echo [TEST] Running 64-bit wglgears 3D benchmark... >> C:\test_accel.log
     wglgears.exe -info -seconds 6 >> C:\test_accel.log 2>&1
-    echo [TEST] 64-bit wglgears Return Code: %ERRORLEVEL% >> C:\test_accel.log
+    set NVX_TEST_RC=!ERRORLEVEL!
+    echo [TEST] 64-bit wglgears Return Code: !NVX_TEST_RC! >> C:\test_accel.log
+    if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
 cd /d C:\test_accel
 test_gpu_accel.exe >> C:\test_accel.log 2>&1
-echo [TEST] 64-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
+set NVX_TEST_RC=!ERRORLEVEL!
+echo [TEST] 64-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
+if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 if exist C:\test_accel\x86\wglgears32.exe (
     cd /d C:\test_accel\x86
     set GALLIUM_DRIVER=nouveau
     echo [TEST] Running 32-bit wglgears 3D benchmark... >> C:\test_accel.log
     wglgears32.exe -info -seconds 6 >> C:\test_accel.log 2>&1
-    echo [TEST] 32-bit wglgears Return Code: %ERRORLEVEL% >> C:\test_accel.log
+    set NVX_TEST_RC=!ERRORLEVEL!
+    echo [TEST] 32-bit wglgears Return Code: !NVX_TEST_RC! >> C:\test_accel.log
+    if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
-if exist x86\test_gpu_accel32.exe (
+if exist C:\test_accel\x86\test_gpu_accel32.exe (
     cd /d C:\test_accel\x86
     test_gpu_accel32.exe >> C:\test_accel.log 2>&1
-    echo [TEST] 32-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
+    set NVX_TEST_RC=!ERRORLEVEL!
+    echo [TEST] 32-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
+    if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
 rmdir C:\test_accel\startup_test.lock >nul 2>&1
-echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
+if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL >> C:\test_accel.log)
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true

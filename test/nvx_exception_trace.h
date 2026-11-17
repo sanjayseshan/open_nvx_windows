@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 static void nvx_exception_write(const char *text)
 {
@@ -25,7 +26,8 @@ static void nvx_exception_address(const char *label, uintptr_t address)
     uintptr_t base = 0;
     if (VirtualQuery((void *)address, &memory, sizeof(memory))) {
         base = (uintptr_t)memory.AllocationBase;
-        GetModuleFileNameA((HMODULE)base, module, sizeof(module));
+        if (base && memory.Type == MEM_IMAGE)
+            GetModuleFileNameA((HMODULE)base, module, sizeof(module));
     }
     snprintf(line, sizeof(line), "[NVX_EXCEPTION] %s=%p module=%s base=%p offset=%p\r\n",
         label, (void *)address, module, (void *)base, (void *)(address-base));

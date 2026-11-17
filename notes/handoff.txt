@@ -2,7 +2,28 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.262**.
 
-## Pending .263 exception capture
+## Pending .264 WineD3D fix and corrected runner
+
+Correction: the .262 "x86 exit exception" was based on invalid batch-script
+reporting. ERRORLEVEL inside (...) expanded before x86 gears ran, repeating
+the previous x64 D3D crash code. .263 VEH diagnostics captured only the x64
+D3D fault, not an x86 gears exception. .264 uses delayed expansion and saves
+each actual return code. The suite no longer prints unconditional PASS, and
+the previously skipped x86 GPU test now uses an absolute executable path.
+
+The .263 crash is execution at NULL from wined3d.dll+0x1dde0, context_enter,
+calling gl_info->gl_ops.wgl.p_wglGetPixelFormat. The packaged libwine identifies
+Wine 1.7.55. Added wine/ as a submodule pinned to matching tag/commit
+`a786dca935c3e9b3d85853db4b61700e590a1c8b`. External patch initializes that
+callback with native OpenGL32/GDI. Both patched WineD3D DLLs compiled with
+MinGW, XP target and -fcommon; full image import audit/hardware pending.
+Relevant: wine_patches/0001-native-wgl-pixel-format-query.patch,
+test/build_wined3d_xp.sh, test/update_disk_driver_user.sh,
+test/nvx_exception_trace.h. The submodule remains pristine; builds use /tmp.
+A newer WineD3D with matching D3D wrappers should be evaluated after this
+controlled baseline; the XP compiler target alone is not an API audit.
+
+## .263 exception capture
 
 Added a test-only vectored exception logger to both benchmark executables.
 It records the faulting module/offset, access address and stack candidates in

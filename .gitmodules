@@ -4,3 +4,6 @@
 [submodule "mesa"]
 	path = mesa
 	url = https://gitlab.freedesktop.org/mesa/mesa.git
+[submodule "wine"]
+	path = wine
+	url = https://github.com/wine-mirror/wine.git
