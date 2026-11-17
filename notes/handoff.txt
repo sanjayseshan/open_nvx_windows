@@ -1,8 +1,46 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.262**.
+Updated November 17, 2026. Latest tested package: **3.0.0.265**.
 
-## Pending .265 matching Wine DLL set
+## Latest .265: x64/x86 OpenGL and D3D9 smoke tests pass
+
+VFIO log: `test_logs/v3.0.0.265-20261117-125411.log`.
+Host checks and XP import audits passed, including the actual x86 Wine DLLs.
+Both gears processes and both full GPU tests exited 0. Both GPU tests report
+TEST_COMPLETE PASS, and ALL_BENCHMARKS_FINISHED reports PASS with corrected
+return-code handling. No vectored access-violation records, GART exhaustion
+or MMU faults were observed. One known startup firmware assertion remains.
+
+Measured FPS (short smoke benchmarks, not sustained performance guarantees):
+- x64 gears 60.0; x86 gears 57.5.
+- x64 cube 60.9; x86 cube 60.2 (application deliberately paces around 60).
+- x64 D3D9 HAL: 60 frames at 55.8; x86 D3D9 HAL: 60 frames at 53.8.
+
+Resolved: native WineD3D NULL wglGetPixelFormat callback, mismatched x86
+Wine DLL imports, false x86 exit-crash reports, unconditional runner PASS,
+GART exhaustion due stale mapped completion data, and allocation success
+logging overhead. The old .262 x86 exception claim below is historical and
+incorrect; the corrected runner confirms exit 0.
+
+Current issues / next work:
+- 3DMark05 has NOT been retested after these fixes; its earlier near-zero FPS
+  and black screen are not cleared by the D3D9 triangle smoke test.
+- Investigate the one startup firmware assertion separately.
+- WineD3D still advertises GTX 470/nv4_disp.dll from its old identity table.
+- Sustained performance and simultaneous application stress remain untested.
+- Full coherent mapped GART and asynchronous submission remain future work;
+  small readable GPU-written BOs currently need bounded shadow refreshes.
+- Evaluate a newer WineD3D with a matching complete wrapper set and XP API
+  shims/import audits. Keep this verified Wine 1.7.55 baseline reproducible.
+
+Relevant files: wine/ (pinned submodule),
+wine_patches/0001-native-wgl-pixel-format-query.patch,
+test/build_wined3d_xp.sh, test/update_disk_driver_user.sh (accurate batch
+results and x86 DLL auditing), test/nvx_exception_trace.h (test diagnostics),
+mesa_patches/nvx_xf86drm.c (mapped-fence visibility and NOWAIT),
+mesa_patches/nvx_winsys.c and src_driver/nvx_gsp.c (nonblocking wait).
+
+## .265 matching Wine DLL set implementation
 
 .264 verifies the x64 callback fix: HAL device created, 60 Direct3D frames
 rendered at 52.4 FPS, x64 GPU test exits 0. Corrected runner confirms both
@@ -14,7 +52,7 @@ matching D3D9/D3D8/DirectDraw/libwine for BOTH architectures from the pinned
 Wine submodule. Build script now produces the whole five-DLL set. The image
 updater now audits x86 DLL imports against packaged exports as well.
 .264 log: `test_logs/v3.0.0.264-20261117-125111.log`.
-.265 hardware pending.
+.265 hardware passed as recorded above.
 
 ## .264 WineD3D fix and corrected runner
 
@@ -30,7 +68,7 @@ calling gl_info->gl_ops.wgl.p_wglGetPixelFormat. The packaged libwine identifies
 Wine 1.7.55. Added wine/ as a submodule pinned to matching tag/commit
 `a786dca935c3e9b3d85853db4b61700e590a1c8b`. External patch initializes that
 callback with native OpenGL32/GDI. Both patched WineD3D DLLs compiled with
-MinGW, XP target and -fcommon; full image import audit/hardware pending.
+MinGW, XP target and -fcommon; full import audits and hardware passed in .265.
 Relevant: wine_patches/0001-native-wgl-pixel-format-query.patch,
 test/build_wined3d_xp.sh, test/update_disk_driver_user.sh,
 test/nvx_exception_trace.h. The submodule remains pristine; builds use /tmp.
@@ -539,50 +577,11 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 
 ## Remaining issues and next work
 
-1. **Submission performance:** v3.0.0.256 raised x64 gears from the earlier
-   17.8 FPS profile run to 51.5 FPS after disabling high-frequency pushbuf
-   trace writes. The measured WGL presenter costs about 110 us per swap.
-   `nouveau_pushbuf_kick` remains about 860 us on average; almost all measured
-   kick time is in `pushbuf_flush`, not `pushbuf_validate`. Within successful
-   shim submissions, translation is only 3.48 ms total, while the synchronous
-   miniport escape accounts for 923 ms and staging-ring reuse waits for 35 ms.
-   The kick count (3,535), shim successful-submit count (3,265), and miniport
-   batch count do not agree, so these aggregates still have different or
-   incomplete scopes. Reconcile those counters and time the internal escape
-   stages before choosing between optimizing flush dispatch, the miniport, or
-   fence lifetime. The profiling run is x64 only: x86 gears created NV170 and
-   captured its initial frame, then stopped producing output until watchdog
-   powerdown. The x86 Mesa ICD builds and passes import audits; its previous
-   compiler-blocked status is resolved. The current 51.5 FPS is not a clean
-   production benchmark because capture, remaining diagnostics, and test probes
-   are still enabled.
-2. **Direct3D / 3DMark05:** x86 WGL hardware rendering is verified, but the
-   user's 3DMark05 run reported near-zero FPS and then black screens. Verify
-   its 32-bit D3D9-to-WineD3D-to-WGL renderer and repair the mode-set and large
-   allocation failures above. The existing 64-bit D3D9 smoke test crashes with
-   0xC0000005; a successful WGL gears run does not establish D3D9 works.
-3. **WineD3D identity / crash:** D3D9 loads and creates IDirect3D9, identifies its adapter as GTX
-   470/nv4_disp.dll, then the 64-bit test crashes (0xC0000005). Trace the failing
-   D3D caps/device call and collect a crash address/stack. The adapter name is
-   consistent with WineD3D's capability-based fallback identity, not a change
-   in physical GPU. Upstream select_card_handler/wined3d_guess_card uses a
-   fallback when renderer matching fails; its NVIDIA D3D11 fallback is GTX470.
-   The NT5 driver-name table supplies nv4_disp.dll. The packaged old DLL has
-   these strings/functions; its exact build revision and decision trace have
-   not been established. Reference source:
-   https://github.com/wine-mirror/wine/blob/wine-3.0/dlls/wined3d/directx.c
-   Expose actual PCI identity through an appropriate query or adapt WineD3D's
-   renderer mapping later; changing the label alone does not improve rendering.
-4. **Test reporting:** batch ERRORLEVEL is expanded inside parenthesized blocks,
-   so recorded child return codes can be stale. The final PASS is unconditional.
-   Correct those and report per-application failures, including x86 availability.
-5. **Capacity:** only the confirmed aperture-backed VRAM heap is allocated;
-   the 64.5 MiB TLS BO falls back to GART. Preserve placement and alignment.
-   Broader VRAM management and shader-TLS placement remain performance work.
-6. **Firmware / synchronization:** investigate the initialization assertion.
-   XP patch 0020 still bypasses the upstream WGL end-of-frame wait, while the
-   CPU texture transfer supplies its own synchronization. Audit this lifecycle
-   before expanding asynchronous/multiple-application workloads.
+See the current .265 status at the top of this file. The original x86 exit
+fault report was stale batch ERRORLEVEL, and the WineD3D device-creation
+crash is now fixed and verified on both architectures. Retest 3DMark05,
+investigate the startup firmware assertion, and measure sustained/multiple
+application behavior before claiming broad game compatibility.
 
 ## Diagnostics and relevant files
 
