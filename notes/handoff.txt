@@ -2,6 +2,8 @@
 
 Updated November 17, 2026. Latest tested package: **3.0.0.257**.
 
+Next test package: **3.0.0.258**, reducing redundant miniport submit work.
+
 ## Latest submission-path test (3.0.0.257)
 
 Full run log: `test_logs/v3.0.0.257-20261117-115705.log`. Host tests, x64/x86
@@ -34,6 +36,14 @@ copy per kick. Its API accepts the caller buffer capacity and checks for room
 for the inserted staging BO reference. x64 and x86 Mesa builds both passed.
 Keep the sync fence wait: decoupling it still requires fence-based protection
 for every referenced BO and the staging ring.
+
+The .258 change reuses BO-table entries found during ownership collection,
+pins them before releasing the buffer lock, and removes the second 2048-slot
+lookup pass and its later lock/unlock cycle. It combines the stable batch copy
+and exact-size ownership metadata into one nonpaged allocation rather than two
+allocations and a fixed 64-record metadata buffer. A `buffer_lookup_slots`
+counter records the actual table slots traversed during submit ownership
+collection. Build and hardware results are pending.
 
 ## Latest profiling run (3.0.0.256)
 

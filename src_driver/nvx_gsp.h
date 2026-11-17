@@ -323,7 +323,7 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG Objects[5], ClassIds[5]; /* 3D, compute, I2M, 2D, CE */
     ULONG SubmitToken, RunlistBase, Put, HardwareChannelId;
     ULONG DrawTraceCount, CompletedBatches;
-    ULONG64 PerfSubmitCount, PerfDwordCount;
+    ULONG64 PerfSubmitCount, PerfDwordCount, PerfSubmitLookupSlots;
     ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
     ULONG64 PerfSubmitLockPolls, PerfDoorbellRetries;
     BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;

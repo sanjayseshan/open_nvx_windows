@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.257
+ * Driver Version: 3.0.0.258
  */
 
 #include "miniport.h"
@@ -1450,13 +1450,21 @@ static BOOLEAN Nvx3dHeapBounds(PNVX_DEVICE_EXTENSION engine,
     return TRUE;
 }
 
+static PNVX_3D_USER_BUFFER_ENTRY Nvx3dFindBufferCounted(
+    PNVX_DEVICE_EXTENSION engine,ULONG64 id,ULONG64 *slotScans)
+{
+    ULONG i;
+    for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
+        if(slotScans) (*slotScans)++;
+        if(engine->Nvx3dBuffers[i].Id==id) return &engine->Nvx3dBuffers[i];
+    }
+    return NULL;
+}
+
 static PNVX_3D_USER_BUFFER_ENTRY Nvx3dFindBuffer(PNVX_DEVICE_EXTENSION engine,
                                                 ULONG64 id)
 {
-    ULONG i;
-    for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++)
-        if(engine->Nvx3dBuffers[i].Id==id) return &engine->Nvx3dBuffers[i];
-    return NULL;
+    return Nvx3dFindBufferCounted(engine,id,NULL);
 }
 
 /* The validator needs ownership metadata only for buffers named by this
@@ -1467,7 +1475,8 @@ static PNVX_3D_USER_BUFFER_ENTRY Nvx3dFindBuffer(PNVX_DEVICE_EXTENSION engine,
 static BOOLEAN Nvx3dCollectBatchAllocations(
     PNVX_DEVICE_EXTENSION engine,const void *input,
     const NVX_3D_BATCH_HEADER *header,ULONG64 clientToken,
-    NVX_3D_ALLOC_BUFFER *allocations,ULONG *allocationCount)
+    NVX_3D_ALLOC_BUFFER *allocations,ULONG *allocationCount,
+    PNVX_3D_USER_BUFFER_ENTRY *entries,ULONG64 *slotScans)
 {
     const UCHAR *references=(const UCHAR *)input+sizeof(*header);
     ULONG i;
@@ -1481,7 +1490,7 @@ static BOOLEAN Nvx3dCollectBatchAllocations(
         PNVX_3D_USER_BUFFER_ENTRY entry;
         VideoPortMoveMemory(&reference,(PVOID)(references+
             (ULONG64)i*sizeof(reference)),sizeof(reference));
-        entry=Nvx3dFindBuffer(engine,reference.BufferId);
+        entry=Nvx3dFindBufferCounted(engine,reference.BufferId,slotScans);
         if(!entry||entry->Busy||entry->ClientToken!=clientToken)
             return FALSE;
         allocation=&allocations[(*allocationCount)++];
@@ -1498,6 +1507,7 @@ static BOOLEAN Nvx3dCollectBatchAllocations(
         allocation->TileMode=entry->TileMode;
         allocation->MemoryKind=entry->MemoryKind;
         allocation->ClientToken=entry->ClientToken;
+        if(entries) entries[i]=entry;
     }
     return TRUE;
 }
@@ -3454,7 +3464,7 @@ BOOLEAN NTAPI HwVidStartIO(
             status=ERROR_INVALID_PARAMETER;goto validate_batch_done;
         }
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
-                header.ClientToken,ownedAllocations,&ownedCount)) {
+                header.ClientToken,ownedAllocations,&ownedCount,NULL,NULL)) {
             LogStr("NVX [NVC0-VALIDATE]: reject buffer ownership dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr("\n");
@@ -3501,11 +3511,14 @@ validate_batch_done:
         PVOID copiedInput=NULL;
         NVX_3D_ALLOC_BUFFER *ownedAllocations=NULL;
         PNVX_3D_USER_BUFFER_ENTRY pinned[NVX_3D_MAX_BATCH_BUFFERS];
+        PNVX_3D_USER_BUFFER_ENTRY *referencedEntries[NVX_3D_MAX_BATCH_BUFFERS];
         PNVX_3D_USER_BUFFER_ENTRY pushEntry=NULL;
         uint32_t classIds[5],requiredBytes,*dwords;
         uint32_t addressFailMethod=0xffffffffU;
         uint64_t addressFailVa=0;
-        ULONG ownedCount=0,pinnedCount=0,i;
+        ULONG ownedCount=0,pinnedCount=0,i,ownedOffset,ownedBytes;
+        ULONG64 scratchBytes;
+        ULONG64 lookupSlotScans=0;
         ULONG64 fenceValue;
         BOOLEAN submitted=FALSE,clientReserved=FALSE;
         NVX_GR_CLIENT_CHANNEL *channel=NULL;
@@ -3523,18 +3536,27 @@ validate_batch_done:
            !header.ClientToken) {
             status=ERROR_INVALID_PARAMETER;break;
         }
+        ownedOffset=(requiredBytes+(sizeof(ULONG64)-1U))&
+                    ~(sizeof(ULONG64)-1U);
+        ownedBytes=(header.BufferReferenceCount?header.BufferReferenceCount:1U)*
+                   sizeof(*ownedAllocations);
+        scratchBytes=(ULONG64)ownedOffset+ownedBytes;
+        if(scratchBytes>0xffffffffULL) {
+            status=ERROR_INVALID_PARAMETER;goto submit_batch_done;
+        }
+        /* One nonpaged allocation holds the stable batch copy and precisely
+         * the ownership records needed for this batch. The old path made two
+         * pool allocations and always reserved records for all 64 refs. */
         copiedInput=VideoPortAllocatePool(devExt,VpNonPagedPool,
-                            requiredBytes,0x4258564eUL);
-        ownedAllocations=(NVX_3D_ALLOC_BUFFER *)VideoPortAllocatePool(
-                            devExt,VpNonPagedPool,
-                            NVX_3D_MAX_BATCH_BUFFERS*sizeof(*ownedAllocations),
-                            0x4158564eUL);
-        if(!copiedInput||!ownedAllocations) {
+                            (ULONG)scratchBytes,0x4258564eUL);
+        if(!copiedInput) {
             LogStr("NVX [NVC0-BATCH]: reject allocation dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr("\n");
             status=ERROR_NOT_ENOUGH_MEMORY;goto submit_batch_done;
         }
+        ownedAllocations=(NVX_3D_ALLOC_BUFFER *)((PUCHAR)copiedInput+
+                                                   ownedOffset);
         VideoPortMoveMemory(copiedInput,RequestPacket->InputBuffer,
                             requiredBytes);
         if(!engine||!Nvx3dLockBuffers()) {
@@ -3559,14 +3581,49 @@ validate_batch_done:
         }
         channel->Submitting=TRUE;clientReserved=TRUE;
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
-                header.ClientToken,ownedAllocations,&ownedCount)) {
+                header.ClientToken,ownedAllocations,&ownedCount,
+                referencedEntries,&lookupSlotScans)) {
             LogStr("NVX [NVC0-BATCH]: reject buffer ownership dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;
             goto submit_batch_done;
         }
+        channel->PerfSubmitLookupSlots+=lookupSlotScans;
+        /* Pin the entries resolved above before dropping the lock. Retaining
+         * these pointers avoids a second 2048-slot ID scan per reference and
+         * closes the gap in which another request could free/reuse a BO while
+         * the packet validators inspect the copied batch. */
+        for(i=0;i<header.BufferReferenceCount;i++) {
+            PNVX_3D_USER_BUFFER_ENTRY entry=referencedEntries[i];
+            ULONG j;
+            for(j=0;j<pinnedCount;j++)
+                if(pinned[j]==entry) break;
+            if(j!=pinnedCount||!entry||entry->Busy||
+               entry->ClientToken!=header.ClientToken) {
+                status=ERROR_INVALID_PARAMETER;
+                break;
+            }
+            entry->Busy=TRUE;
+            pinned[pinnedCount++]=entry;
+            if((entry->Usage&NVX_3D_USAGE_GART_BUFFER)&&
+               entry->SystemVirtual&&entry->GartPageCount&&
+               entry->Bytes>=header.DwordCount*sizeof(ULONG)+
+                              7U*sizeof(ULONG))
+                pushEntry=entry;
+        }
+        if(status==ERROR_DEVICE_NOT_READY&&
+           (pinnedCount!=header.BufferReferenceCount||!pushEntry)) {
+            status=ERROR_INVALID_PARAMETER;
+        } else if(status==ERROR_DEVICE_NOT_READY) {
+            status=NO_ERROR;
+        }
+        if(status!=NO_ERROR) {
+            for(i=0;i<pinnedCount;i++) pinned[i]->Busy=FALSE;
+            pinnedCount=0;
+        }
         Nvx3dUnlockBuffers();
+        if(status!=NO_ERROR) goto submit_batch_done;
         dwords=(uint32_t *)((PUCHAR)copiedInput+sizeof(header)+
             (ULONG64)header.BufferReferenceCount*
             sizeof(NVX_3D_BUFFER_REFERENCE));
@@ -3585,10 +3642,9 @@ validate_batch_done:
                 LogStr(" address=");LogHex(addressFailVa);
             } else LogStr(" addressMethods=PASS");
             LogStr("\n");
-            status=ERROR_INVALID_PARAMETER;goto submit_batch_done;
+            status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
         }
         {
-            ULONG64 refsOffset=sizeof(header);
             uint32_t bindingFailSubchannel=0xffffffffU,bindingFailValue=0;
             classIds[0]=channel->ClassIds[0];
             classIds[1]=channel->ClassIds[1];
@@ -3606,40 +3662,8 @@ validate_batch_done:
                 LogStr(" subchannel=");LogHex(bindingFailSubchannel);
                 LogStr(" value=");LogHex(bindingFailValue);
                 LogStr("\n");
-                status=ERROR_INVALID_PARAMETER;goto submit_batch_done;
+                status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
             }
-            if(!Nvx3dLockBuffers()) {
-                status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
-            }
-            for(i=0;i<header.BufferReferenceCount;i++) {
-                NVX_3D_BUFFER_REFERENCE ref;
-                NVX_3D_USER_BUFFER_ENTRY *entry;
-                VideoPortMoveMemory(&ref,(PUCHAR)copiedInput+refsOffset+
-                    (ULONG64)i*sizeof(ref),sizeof(ref));
-                entry=Nvx3dFindBuffer(engine,ref.BufferId);
-                if(!entry||entry->Busy||entry->ClientToken!=header.ClientToken) {
-                    status=ERROR_BUSY;
-                    for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
-                    pinnedCount=0;
-                    break;
-                }
-                if((entry->Usage&NVX_3D_USAGE_GART_BUFFER)&&
-                   entry->SystemVirtual&&entry->GartPageCount&&
-                   entry->Bytes>=header.DwordCount*sizeof(ULONG)+
-                                  7U*sizeof(ULONG))
-                    pushEntry=entry;
-                entry->Busy=TRUE;pinned[pinnedCount++]=entry;
-            }
-            if(status!=ERROR_BUSY&&(!pushEntry||!pinnedCount))
-                status=ERROR_INVALID_PARAMETER;
-            if(status!=ERROR_INVALID_PARAMETER&&status!=ERROR_BUSY)
-                status=NO_ERROR;
-            if(status!=NO_ERROR) {
-                for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
-                pinnedCount=0;
-            }
-            Nvx3dUnlockBuffers();
-            if(status!=NO_ERROR) goto submit_batch_done;
             fenceValue=engine->Nvx3dLastFence+1U;
             if(!fenceValue||fenceValue>0xffffffffULL) {
                 status=ERROR_DEVICE_NOT_READY;goto release_batch_buffers;
@@ -3652,7 +3676,6 @@ validate_batch_done:
                 LogHex(pushEntry->Id);LogStr(" va=");LogHex(pushEntry->GpuVa);
                 LogStr(" bytes=");LogHex(pushEntry->Bytes);LogStr("\n");
                 status=ERROR_DEVICE_NOT_READY;
-                if(channel->Faulted) goto submit_batch_done;
                 goto release_batch_buffers;
             }
             if(!Nvx3dLockBuffers()) {
@@ -3689,7 +3712,6 @@ submit_batch_done:
             }
             LogStr("\n");
         }
-        if(ownedAllocations) VideoPortFreePool(devExt,ownedAllocations);
         if(copiedInput) VideoPortFreePool(devExt,copiedInput);
         break;
     }
@@ -4264,7 +4286,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.257 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.258 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

@@ -50,6 +50,7 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr("NVX [NVC0-PERF]: token=");LogHex(clientToken);
     LogStr(" batches=");LogHex(channel->PerfSubmitCount);
     LogStr(" dwords=");LogHex(channel->PerfDwordCount);
+    LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" fence_wait_poll_100us=");LogHex(channel->PerfFenceWaitPolls);
     LogStr(" max_fence_wait_polls=");LogHex(channel->PerfFenceWaitMaxPolls);
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
