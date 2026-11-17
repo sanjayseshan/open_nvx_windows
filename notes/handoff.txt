@@ -1,6 +1,26 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest tested package: **3.0.0.240**.
+Updated November 16, 2026. Latest tested package: **3.0.0.241**.
+
+## Latest hardware test (3.0.0.241)
+
+The full host/build/XP import audit and VFIO run completed successfully. Log:
+`test_logs/v3.0.0.241-20261116-200304.log`; WGL render/present captures are
+stored beside it. The Ampere GR probe completed its triangle draw, readback,
+and semaphore; the cube rendered 300 frames in 5.2527 seconds (57.1 FPS).
+64-bit gears reported NV170 and 115 frames / 6 seconds (19.167 FPS). The
+later gears run reported NV170 and 83 frames / 6 seconds (13.833 FPS).
+
+The x86 gears render capture contains the expected red/green/blue gear pixels,
+but its captured presented window contains only 45 red and 69 green pixels
+(versus 17214 red, 4750 green, and 3637 blue in the render capture). This is a
+presentation-path failure or capture mismatch to investigate; it means the
+x86 test does not prove that its visible window was drawn correctly. The
+current WGL fallback still maps the resource to the CPU and calls
+`StretchDIBits`; a validated GPU-to-scanout presenter has not been implemented
+or tested yet. The log reports one firmware assertion during initialization.
+No display modeset failure occurred in this run, but the reported 3DMark
+black-screen/modeset issue remains unresolved.
 
 ## Latest x86 / 3DMark preparation (3.0.0.240)
 
@@ -70,9 +90,10 @@ image reaches the window unchanged; it is not exhaustive rendering validation.
   including a READ-labelled mapping. Samples check at most 64 bytes per range.
 - Host checks and XP import/subsystem audits passed. Mesa is clean after the
   build script restored its temporary patches. VM has shut down.
-- v240 confirms x86 gears uses NV170 and renders on hardware. The runner
-  initiated shutdown at its 180-second desktop timeout, before the guest batch
-  completion marker or x86 child return code appeared. D3D9 remains unresolved.
+- v240 confirmed the x86 gears renderer and completed 3D-session cleanup, but
+  did not record its child return code. v241 likewise reports NV170 for x86;
+  its render/present capture mismatch is now a separate investigation item.
+  D3D9 remains unresolved.
 - One firmware assertion is logged during initialization, as in earlier runs.
 
 ## Changes that restored drawing
@@ -117,8 +138,8 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 
 ## Remaining issues and next work
 
-1. **Performance:** correctness is improved, but the CPU presentation path is
-   expensive. NvxGspSubmitNvc0Batch waits for every batch's fence before
+1. **Performance and presentation:** correctness is improved, but the CPU
+   presentation path is expensive. NvxGspSubmitNvc0Batch waits for every batch's fence before
    returning, polling in 100 us intervals, serializing CPU/GPU work. WGL
    maps/copies the rendered image for StretchDIBits. VRAM raw
    downloads use a 4 KiB scratch window and a separate completed CE copy for
@@ -130,7 +151,12 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
    attribution or GPU power-state diagnosis is established. Next add timings
    around submission, shadow publication, transfer/readback, and GDI present;
    then use a larger/ring staging buffer, batch copies and waits, and ultimately
-   present by GPU copy to scanout or directly mapped shared backing. Retain
+   present by GPU copy to scanout or directly mapped shared backing. Current
+   3.0.0.241 hardware numbers are 57.1 FPS for the cube, 19.167 FPS for the
+   first gears run, and 13.833 FPS for the later gears run with diagnostic
+   probes enabled. The x86 render/present image mismatch may explain the
+   black-window reports and should be resolved before comparing x86 speed.
+   Retain
    coherency correctness while optimizing. Captures and first-48 range sample
    readbacks themselves add diagnostic overhead; current FPS is not a clean
    production benchmark. Fine-grained changed runs may issue many small uploads.
