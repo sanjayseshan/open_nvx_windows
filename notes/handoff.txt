@@ -1,6 +1,39 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest tested package: **3.0.0.256**.
+Updated November 17, 2026. Latest tested package: **3.0.0.257**.
+
+## Latest submission-path test (3.0.0.257)
+
+Full run log: `test_logs/v3.0.0.257-20261117-115705.log`. Host tests, x64/x86
+Mesa builds, XP import audits, image update, and VFIO boot completed. The x64
+gears run reported 249 frames / 6 seconds = 41.5 FPS; cube rendered 300 frames
+in 5.0545 seconds = 59.4 FPS. Both selected NV170. GR triangle/readback/
+semaphore and the 3D ABI/native-clear cases passed. One startup firmware
+assertion was reported; no MMU fault appeared. The x86 gears process selected
+NV170 and captured its first frame, then stalled without printing a completed
+FPS result; the runner ended the guest session at its desktop timeout, so the
+all-benchmarks marker is absent. D3D availability still exits with
+`0xC0000005`.
+
+The new x64 profile compared with .256:
+
+- Kick count/dwords were unchanged at 3,535 / 184,915. Kick/flush time rose
+  from 3.043 / 3.024 seconds to 3.529 / 3.511 seconds, while validation stayed
+  near 3.6 ms.
+- Successful shim submits stayed at 3,265 with 186,299 dwords. Total time rose
+  from 1.291 to 1.318 seconds. Prep improved from 273 to 256 ms, while the
+  escape/fence portion rose from 998 to 1,043 ms.
+- Measured gears rate fell from 51.5 to 41.5 FPS. This single run does not
+  establish that the change caused the slowdown: the upstream kick/flush time
+  shifted substantially, while the local buffer-edit change saved only about
+  17 ms of prep time. Treat the optimization as correctness/build validated,
+  but not as a demonstrated FPS gain.
+
+The in-place submit change removes one heap allocation/free and one batch-sized
+copy per kick. Its API accepts the caller buffer capacity and checks for room
+for the inserted staging BO reference. x64 and x86 Mesa builds both passed.
+Keep the sync fence wait: decoupling it still requires fence-based protection
+for every referenced BO and the staging ring.
 
 ## Latest profiling run (3.0.0.256)
 
@@ -46,7 +79,7 @@ now uses `push->cur - nvpb->bgn` for dword counting and splits kick flush from
 validation. `test/update_disk_driver_user.sh` clears the guest trace before a
 new run.
 
-## Submission-path optimization in progress
+## Submission-path optimization
 
 `NvxWinsysSubmitBatch` previously allocated a temporary heap buffer and copied
 every translated batch into it just to insert the staging pushbuffer BO
@@ -62,6 +95,10 @@ The miniport still waits for each GPU fence before returning from
 `NvxGspSubmitNvc0Batch`. Removing that wait could offer a larger gain, but needs
 fence-based lifetime protection for every referenced BO and the staging ring;
 do not remove it until that asynchronous ownership path is implemented.
+
+Both XP x64 and x86 Mesa WGL ICDs built successfully with the in-place change
+using `test/build_mesa_xp64.sh` and `test/build_mesa_xp32.sh`. The full .257
+VFIO run is recorded above. No FPS improvement has been demonstrated.
 
 ## Latest hardware status (3.0.0.253)
 

@@ -34,4 +34,4 @@ dd49d6858839d38191bc51221f8bf4b1e0f265d5ffc8c6939095c6b1a89ddf3a  /home/sanjay/t
 eb6dffc7867e1e1ec4ad78a84aa05af34668978a87fc17c7ab6c4b5ddb0bdd1c  /home/sanjay/temp/xddm/mesa_patches/0033-nouveau-xp-tls-allocation-fallback.patch
 ab6cac63440b195b56a2f8474f7811ac6c70dfc366a98d7655afd15d6cb53d0d  /home/sanjay/temp/xddm/mesa_patches/0034-nouveau-wgl-present-before-flush.patch
 05b288c77d915081977f9b3c7a2c9164534153eb7a5e80e49b2517a027bec9b2  /home/sanjay/temp/xddm/mesa_patches/0035-nouveau-xp-submission-profile.patch
-b61fca1221ab3f5c7c4d9e2ffa25243bcbdf461af931b899f905b392ae336c67  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
+7f8de86fa330ef846ece0363c3942e7da47919d8c11e17eb1def7b22ba721056  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
