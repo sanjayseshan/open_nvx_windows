@@ -1,8 +1,53 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest hardware run: **3.0.0.269**. The x64
-OpenGL/D3D smoke tests passed, but automated 3DMark05 crashed and the later
-x86 test stalled after allocation failures; the suite did not complete.
+Updated November 17, 2026. Latest hardware run: **3.0.0.271**. The x64
+OpenGL and D3D smoke tests passed, but automated 3DMark05 did not finish before
+the 20-minute timeout. It encountered fence allocation failure during NVC0
+context setup and pushbuffer submission errors; there is no benchmark FPS or
+score.
+
+## .271 VFIO run: 3DMark startup stalls after allocation/submission failures
+
+Run log: `test_logs/v3.0.0.271-20261117-144352.log`; collected output:
+`test_logs/v3.0.0.271-20261117-144352-3dmark05.log`.
+
+Results:
+- x64 cube: 300 frames at 60.9 FPS, `[NVX_3D_RESULT] PASS`; D3D9 smoke test:
+  60 frames at 53.3 FPS. Gears reported 49.5 FPS.
+- 3DMark emitted `[3DMARK05_START]` but no exit or game-test progress marker.
+  The runner reached its 20-minute limit and shut down the guest. No 3DMark
+  FPS or score was captured, so this is a timeout/stall, not a measured
+  low-FPS result or a confirmed process crash.
+- Serial output shows an NVC0 layer-context creation attempt where
+  `nouveau_fence_new()` failed to allocate a 4 KiB GART BO. The recovery
+  added in .271 retried the allocation, which also failed; the subsequent
+  NVC0 context creation failed. The fence patch prevents the prior null-fence
+  dereference but does not make the context usable.
+- The miniport rejected multiple 64.5 MiB VRAM allocations because the
+  firmware-confirmed framebuffer heap is too small for that contiguous
+  request. This is an independent resource-placement limit; do not enlarge
+  the heap beyond firmware-confirmed memory.
+- The 3DMark output contains two `kernel rejected pushbuf: Operation not
+  permitted` messages and large command-buffer dumps. That text is not a
+  reliable diagnosis: the XP `drmCommandWriteRead` shim returns `-1`, while
+  Mesa prints `strerror(-ret)`, which turns every such failure into the
+  misleading `EPERM` label. The underlying `nvx_drm_submit_pushbuf()` false
+  return reason is not recorded.
+- Startup firmware assertion count remains 1; no later increase, MMU fault,
+  or copy-queue timeout appears in the run.
+
+Next actions:
+1. Add a precise failure code at each `nvx_drm_submit_pushbuf()` rejection
+   site and preserve libdrm's negative-errno convention so the log reports
+   the real failure rather than `EPERM` for every `-1`.
+2. Trace why the 4 KiB GART fence allocation fails. Record allocator stage,
+   GART free pages/bytes, buffer-table occupancy, and client token at failure;
+   distinguish exhausted GART/slots from an ABI or escape validation failure.
+3. Address BO lifetime/resource pressure and the large contiguous TLS
+   allocation separately. Do not treat the .271 fence retry as a fix for
+   resource exhaustion.
+4. Rerun the short x64 OpenGL/D3D checks, then 3DMark, and require actual
+   game-test progress plus an exit/score before calling it working.
 
 ## .269 VFIO run: 3DMark crash and x86 allocation stall
 
