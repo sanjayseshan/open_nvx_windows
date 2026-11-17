@@ -37,6 +37,18 @@ Results:
   or copy-queue timeout appears in the run.
 
 Next actions:
+0. Code-path audit found a definite reason for the captured pushbuf failures:
+   both 3DMark dumps have 93/94 BO references, while
+   `NVX_3D_MAX_BATCH_BUFFERS` is 64. `nvx_drm_submit_pushbuf()` rejects
+   `request->nr_buffers > NVX_3D_MAX_BATCH_BUFFERS` at entry, before calling
+   the miniport. Upstream Nouveau permits 1024 BO references. The XP adapter
+   also adds direct-address references and one staging-pushbuffer reference,
+   so simply accepting 64 incoming references is insufficient. Extend the
+   shared ABI/validation/storage consistently, with room for bridge-owned
+   references; audit kernel stack arrays and escape-size limits before raising
+   this constant. Do not split GPU commands arbitrarily to fit the old cap.
+   This establishes why these two submissions fail; it does not establish
+   the cause of the separate 4 KiB fence BO allocation failure.
 1. Add a precise failure code at each `nvx_drm_submit_pushbuf()` rejection
    site and preserve libdrm's negative-errno convention so the log reports
    the real failure rather than `EPERM` for every `-1`.
