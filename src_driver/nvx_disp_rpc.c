@@ -42,6 +42,12 @@ BOOLEAN NvxGspReleaseDisplayChannels(PVOID extension)
     if(!dev) return FALSE;
     if(dev->IsSecondaryDisplay) dev=dev->PrimaryDeviceExtension;
     if(!dev) return FALSE;
+    if(dev->GspRpcFaulted) {
+        dev->NativeDisplayAttempted=TRUE;
+        dev->NativeDisplayFaulted=TRUE;
+        LogStr("NVX [NATIVE]: refusing modeset; GSP RPC completion is uncertain.\n");
+        return FALSE;
+    }
     dev->NativeDisplayChannelsReady=FALSE;
     dev->NativeDualActive=FALSE;
     dev->NativeDisplayNotifierReady=FALSE;
@@ -157,23 +163,32 @@ BOOLEAN NvxGspInitDisplayChannels(PVOID extension)
        already prepared transmitter can replace the state those channels use. */
     NvxGspTrainSecondaryDpLink(dev);
     dev->NativeDisplayAttempted=TRUE;
-    /* Reserve the top 64KB of our existing 32MB CE VRAM aperture. This is
-       outside all supported primary framebuffers (at most 16MB) and the CE
-       smoke-test word at 16MB. Never use firmware-owned/protected regions. */
-    base=0x1ff0000ULL;
+    /* Keep the instance offscreen and inside firmware-approved VRAM.
+       GA10x's normal layout reserves more than the old fixed 32 MiB block.
+       The BO allocator excludes this block for the device lifetime. */
+    base=dev->GspFbFreeBase>0x1ff0000ULL?
+        (dev->GspFbFreeBase+0x200ffffULL)&~0xffffULL:0x1ff0000ULL;
     if(dev->GspFbFreeBase>base || dev->GspFbFreeLimit<base+0xffff ||
        dev->GspVramMapBytes<base+0x10000 ||
        (dev->GspScanoutMapped && dev->GspScanoutPhysical<base+0x10000 &&
         base<dev->GspScanoutPhysical+dev->GspScanoutBytes)) return FALSE;
+    if(dev->NativeDisplayInstanceReady&&dev->NativeDisplayInstance!=base) {
+        /* The registered instance address is RM-owned for the device lifetime. */
+        LogStr("NVX [NATIVE]: refusing to move registered display instance.\n");
+        return FALSE;
+    }
     dev->NativeDisplayInstance=base;
     va=dev->GspVramGpuVa+base;
     bar0=dev->Bar0MmioVirtual;
-    if(!NvxGspSubmitFill(dev,va,0,0x10000)) return FALSE;
-    /* GPU readback of the entire instance/RAMHT, not the unreliable BAR1 map. */
-    if(!NvxGspVerifyZeroRange(dev,va,0x10000)) return FALSE;
-    instance.physical=base;instance.size=0x10000;instance.addressSpace=2;instance.cache=2;
-    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM,&instance,sizeof(instance))) {
-        LogStr("NVX [NATIVE]: display instance registration failed; no channels submitted.\n");return FALSE;
+    if(!dev->NativeDisplayInstanceReady) {
+        if(!NvxGspSubmitFill(dev,va,0,0x10000)) return FALSE;
+        /* GPU readback of the entire instance/RAMHT, not the unreliable BAR1 map. */
+        if(!NvxGspVerifyZeroRange(dev,va,0x10000)) return FALSE;
+        instance.physical=base;instance.size=0x10000;instance.addressSpace=2;instance.cache=2;
+        if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM,&instance,sizeof(instance))) {
+            LogStr("NVX [NATIVE]: display instance registration failed; no channels submitted.\n");return FALSE;
+        }
+        dev->NativeDisplayInstanceReady=TRUE;
     }
     /* Audit the hardware root after RM registration; do not override GSP's
        instance configuration based solely on an inferred cold-boot cause. */
@@ -224,6 +239,10 @@ BOOLEAN NvxGspInitDisplayChannels(PVOID extension)
     LogStr("NVX [NATIVE]: core, Window0 and Window2 DMA verified; native handoff pending.\n");
     return TRUE;
 failed:
+    if(dev->GspRpcFaulted) {
+        dev->NativeDisplayFaulted=TRUE;
+        LogStr("NVX [NATIVE]: display RPC state is uncertain; retaining RM-visible backing.\n");
+    }
     /* Avoid leaked live channels on partial allocation. Keep backing pinned
        if RM cannot acknowledge teardown; whole-client shutdown also retains it. */
     for(ULONG channel=3;channel>0;channel--) {
@@ -1000,6 +1019,8 @@ static BOOLEAN NvxGspCreateObjects(PNVX_DEVICE_EXTENSION dev,ULONG rxSequence)
     ULONG device[14]={0},subdevice=0;
     NVX_VASPACE_535 va={0};
     dev->RpcTxSequence=2;dev->RpcRxSequence=rxSequence;
+    /* A new RM client must publish its own display instance registration. */
+    dev->NativeDisplayInstanceReady=FALSE;
     if(!NvxGspAlloc(dev,0,0xc1d00001,0,client,sizeof(client))) return FALSE;
     dev->GspClientHandle=0xc1d00001;
     device[1]=dev->GspClientHandle; /* hClientShare = client handle (Nouveau r535_gsp_device_ctor) */

@@ -11,11 +11,13 @@ fi
 mkdir -p "$NVX_WINE_BUILD/source" "$NVX_WINE_BUILD/host-tools"
 # Keep the submodule pristine; all generated files and patched sources live in /tmp.
 git -C "$NVX_ROOT/wine" archive "$NVX_WINE_COMMIT" | tar -xf - -C "$NVX_WINE_BUILD/source"
-patch -d "$NVX_WINE_BUILD/source" -p1 < "$NVX_ROOT/wine_patches/0001-native-wgl-pixel-format-query.patch"
+git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0001-native-wgl-pixel-format-query.patch"
+git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0002-log-3dmark-d3d9-caps.patch"
+git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0003-log-3dmark-d3d9-failed-probes.patch"
 (
     cd "$NVX_WINE_BUILD/host-tools"
     ../source/configure --enable-win64 --without-x --without-freetype
-    make -j"$NVX_WINE_JOBS" tools/winebuild tools/widl tools/wrc tools/winegcc tools/makedep tools/make_xftmpl
+    make -j"$NVX_WINE_JOBS" tools/winebuild tools/widl tools/wrc tools/winegcc tools/makedep tools
 )
 for nvx_arch in x64 x86; do
     nvx_target=i686-w64-mingw32

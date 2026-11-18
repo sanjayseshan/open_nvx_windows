@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.270
+ * Driver Version: 3.0.0.297
  */
 
 #include "miniport.h"
@@ -687,8 +687,11 @@ VOID NvxProbeFwsecRom(PVOID hwDeviceExtension,PUCHAR bar0)
             LogStr(" lock_hi=");LogHex(lockHi);
             LogStr(" wpr2_lo=");LogHex(wpr2Lo);
             LogStr(" wpr2_hi=");LogHex(wpr2Hi);LogStr("\n");
-            if (NvxComputeFrtsLayout(fbSize,workspace,lockPlm,lockLo,lockHi,&frtsLayout)) {
+            if (NvxComputeFrtsLayout((VideoPortReadRegisterUlong((PULONG)bar0)>>20)&0x1ffU,
+                                     fbSize,workspace,lockPlm,lockLo,lockHi,&frtsLayout)) {
                 frtsLayoutValid=1;
+                LogStr("NVX [FRTS]: OpenRM chip policy MMU lock applicable=");
+                LogHex(frtsLayout.MmuLockValid);LogStr("\n");
                 LogStr("NVX [FRTS]: vga=");LogHex(frtsLayout.VgaWorkspaceOffset);
                 LogStr(" reserved=");LogHex(frtsLayout.VbiosReservedOffset);
                 LogStr(" wpr_end=");LogHex(frtsLayout.GspFwWprEnd);
@@ -1537,7 +1540,7 @@ static BOOLEAN Nvx3dFillBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 gpuVa,
 /* The caller holds the global buffer lock. Publish the allocation only after
  * the common buffer is mapped and the RM TLB invalidate is confirmed. */
 static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
-    NVX_3D_ALLOC_BUFFER *request,ULONG slot)
+    NVX_3D_ALLOC_BUFFER *request,ULONG slot,ULONG *failureStage)
 {
     NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[slot];
     PHYSICAL_ADDRESS physical;
@@ -1546,6 +1549,8 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     uint32_t vaAlignment;
     ULONG64 gpuVa,id;
     BOOLEAN mapped;
+
+    if(failureStage) *failureStage=1;
 
     if(!engine->GspGartReady||!engine->DmaAdapter) {
         LogStr("NVX [GART]: alloc rejected ready=");
@@ -1563,6 +1568,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
         vaAlignment=NVX_GART_MIN_VA_ALIGNMENT;
     if(!NvxGartReserve(&engine->GspGartHeap,request->Bytes,
                        vaAlignment,&firstPage,&pageCount,&gpuVa)) {
+        if(failureStage) *failureStage=2;
         LogStr("NVX [GART]: NvxGartReserve failed for bytes=");
         LogHex(request->Bytes);LogStr(" alignment=");LogHex(vaAlignment);
         LogStr(" client=");LogHex(request->ClientToken);
@@ -1578,6 +1584,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     entry->GpuVa=gpuVa;
     entry->Bytes=request->Bytes;
     entry->Usage=NVX_3D_USAGE_GART_BUFFER;
+    entry->RequestUsage=request->Usage;
     entry->GartFirstPage=firstPage;
     entry->GartPageCount=pageCount;
     entry->Alignment=request->Alignment;
@@ -1590,6 +1597,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     if(!virtualAddress||physical.QuadPart<0||
        ((ULONG64)physical.QuadPart&0xfffULL)||
        (ULONG64)physical.QuadPart>0x100000000ULL-request->Bytes) {
+        if(failureStage) *failureStage=3;
         LogStr("NVX [GART]: VideoPortAllocateCommonBuffer failed bytes=");
         LogHex(request->Bytes);LogStr(" virt=");LogHex((ULONG64)virtualAddress);
         LogStr(" phys=");LogHex((ULONG64)physical.QuadPart);LogStr("\n");
@@ -1615,6 +1623,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     mapped=NvxGspMapGartRange(engine,firstPage,pageCount,
                               (ULONG64)physical.QuadPart,request->Bytes);
     if(!mapped) {
+        if(failureStage) *failureStage=4;
         BOOLEAN unmapped=NvxGspUnmapGartRange(engine,firstPage,pageCount);
         LogStr("NVX [GART]: map failed id=");LogHex(id);
         LogStr(" first_page=");LogHex(firstPage);LogStr(" pages=");
@@ -1641,6 +1650,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     }
 
     if(!Nvx3dLockBuffers()) {
+        if(failureStage) *failureStage=5;
         /* Leave the mapping and backing retained; exposing or freeing it
          * without committing ownership would be unsafe. */
         LogStr("NVX [GART]: buffer lock timeout after mapping id=");
@@ -1651,6 +1661,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     }
     entry=Nvx3dFindBuffer(engine,id);
     if(!entry||!entry->Busy||entry->SystemVirtual!=virtualAddress) {
+        if(failureStage) *failureStage=6;
         LogStr("NVX [GART]: pending allocation changed before commit id=");
         LogHex(id);LogStr(" entry=");LogHex((ULONG64)entry);
         LogStr(" busy=");LogHex(entry&&entry->Busy);
@@ -1670,12 +1681,99 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
        mapping. GART-backed Nouveau vertex/push buffers are sufficient; this
        flag must not depend on a separate FB allocation having happened. */
     engine->GspGraphicsUserAllocReady=TRUE;
+    if(failureStage) *failureStage=0;
 #if NVX_TRACE_ALLOCATIONS
     LogStr("NVX [GART]: committed client BO id=");LogHex(id);
     LogStr(" va=");LogHex(gpuVa);LogStr(" bytes=");LogHex(request->Bytes);
     LogStr(" pages=");LogHex(pageCount);LogStr("\n");
 #endif
     return TRUE;
+}
+
+static BOOLEAN Nvx3dFindRmRangeInIntervalLocked(
+    PNVX_DEVICE_EXTENSION engine,NVX_3D_ALLOC_BUFFER *request,ULONG slot,
+    ULONG64 start,ULONG64 end,ULONG alignment,ULONG64 *rangeStart)
+{
+    ULONG64 candidate;
+    ULONG i;
+    if(start>=end||start>~0ULL-(alignment-1ULL)) return FALSE;
+    candidate=(start+(alignment-1ULL))&~((ULONG64)alignment-1ULL);
+    for(;;) {
+        BOOLEAN moved=FALSE;
+        if(engine->NativeDisplayInstance) {
+            ULONG64 instance=engine->NativeDisplayInstance;
+            if(candidate<instance+0x10000ULL &&
+               instance<candidate+request->Bytes) {
+                candidate=(instance+0x10000ULL+alignment-1ULL)&
+                          ~((ULONG64)alignment-1ULL);
+            }
+        }
+        if(candidate>end||request->Bytes>end-candidate) return FALSE;
+        for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
+            NVX_3D_USER_BUFFER_ENTRY *other=&engine->Nvx3dBuffers[i];
+            ULONG64 otherStart,otherEnd;
+            if(!other->Id||i==slot) continue;
+            if(other->RmMemoryHandle)
+                otherStart=other->RmPhysicalOffset;
+            else if(other->GpuVa>=engine->GspVramGpuVa)
+                otherStart=other->GpuVa-engine->GspVramGpuVa;
+            else continue; /* system-memory/GART BO */
+            if(otherStart>~0ULL-other->Bytes) continue;
+            otherEnd=otherStart+other->Bytes;
+            if(candidate<otherEnd&&otherStart<candidate+request->Bytes) {
+                if(otherEnd>~0ULL-(alignment-1ULL)) return FALSE;
+                candidate=(otherEnd+(alignment-1ULL))&
+                    ~((ULONG64)alignment-1ULL);
+                moved=TRUE;
+                break;
+            }
+        }
+        if(!moved) break;
+    }
+    if(rangeStart) *rangeStart=candidate;
+    return TRUE;
+}
+
+/* Search the firmware-approved free framebuffer range around the two fixed
+ * scanout windows. The display surfaces live at offsets 0 and 32 MiB, so
+ * starting every allocation after both surfaces needlessly strands the gap
+ * between them. The caller holds Nvx3dBuffersLock. */
+static BOOLEAN Nvx3dFindRmRangeLocked(PNVX_DEVICE_EXTENSION engine,
+    NVX_3D_ALLOC_BUFFER *request,ULONG slot,ULONG64 *rangeStart)
+{
+    PNVX_DEVICE_EXTENSION primary,secondary;
+    ULONG64 start,end,primaryBytes,secondaryBytes,secondScanout=0x2000000ULL;
+    ULONG alignment=request->Alignment;
+    if(alignment<NVX_3D_VRAM_PTE_ALIGNMENT)
+        alignment=NVX_3D_VRAM_PTE_ALIGNMENT;
+    if(!engine||!request||!rangeStart||!engine->GspFbLayoutValid||
+       !engine->GspVramGpuVa||!engine->GspVramMapBytes||
+       engine->GspFbFreeLimit==~0ULL) return FALSE;
+    primary=engine->IsSecondaryDisplay?
+        (PNVX_DEVICE_EXTENSION)engine->PrimaryDeviceExtension:engine;
+    secondary=primary?(PNVX_DEVICE_EXTENSION)primary->SecondaryDeviceExtension:NULL;
+    primaryBytes=Nvx3dMaxSurfaceBytes(primary);
+    secondaryBytes=Nvx3dMaxSurfaceBytes(secondary);
+    start=engine->GspFbFreeBase;
+    end=engine->GspFbFreeLimit+1ULL;
+    if(end>engine->GspVramMapBytes) end=engine->GspVramMapBytes;
+    if(start>=end) return FALSE;
+
+    if(secondaryBytes) {
+        ULONG64 firstStart=start>primaryBytes?start:primaryBytes;
+        ULONG64 firstEnd=secondScanout<end?secondScanout:end;
+        ULONG64 secondStart;
+        if(Nvx3dFindRmRangeInIntervalLocked(engine,request,slot,
+            firstStart,firstEnd,alignment,rangeStart)) return TRUE;
+        if(secondaryBytes>~0ULL-secondScanout) return FALSE;
+        secondStart=secondScanout+secondaryBytes;
+        if(secondStart<start) secondStart=start;
+        return Nvx3dFindRmRangeInIntervalLocked(engine,request,slot,
+            secondStart,end,alignment,rangeStart);
+    }
+    start=start>primaryBytes?start:primaryBytes;
+    return Nvx3dFindRmRangeInIntervalLocked(engine,request,slot,
+        start,end,alignment,rangeStart);
 }
 
 /* Register each normal Nouveau VRAM BO with OpenRM, while retaining the
@@ -1685,45 +1783,19 @@ static BOOLEAN Nvx3dAllocateRmBuffer(PNVX_DEVICE_EXTENSION engine,
     NVX_3D_ALLOC_BUFFER *request,ULONG slot)
 {
     NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[slot];
-    ULONG64 id,gpuVa=0,start,end,candidate;
-    ULONG i;
+    ULONG64 id,gpuVa=0,candidate;
     ULONG memoryHandle,alignment=request->Alignment;
-    if(alignment<NVX_3D_VRAM_ALLOCATION_ALIGNMENT)
-        alignment=NVX_3D_VRAM_ALLOCATION_ALIGNMENT;
+    if(alignment<NVX_3D_VRAM_PTE_ALIGNMENT)
+        alignment=NVX_3D_VRAM_PTE_ALIGNMENT;
     engine->Nvx3dNextBufferId++;
     if(!engine->Nvx3dNextBufferId) engine->Nvx3dNextBufferId++;
     id=engine->Nvx3dNextBufferId;
     memoryHandle=0x70000000U|((ULONG)id&0x0fffffffU);
     if(memoryHandle==0x70000000U) memoryHandle++;
-    if(!Nvx3dHeapBounds(engine,&start,&end)) {
+    if(!Nvx3dFindRmRangeLocked(engine,request,slot,&candidate)) {
+        LogStr("NVX [RM-BO]: framebuffer heap exhausted bytes=");
+        LogHex(request->Bytes);LogStr("\n");
         Nvx3dUnlockBuffers();return FALSE;
-    }
-    candidate=(start+(alignment-1ULL))&~((ULONG64)alignment-1ULL);
-    for(;;) {
-        BOOLEAN moved=FALSE;
-        if(candidate>end||request->Bytes>end-candidate) {
-            LogStr("NVX [RM-BO]: framebuffer heap exhausted bytes=");
-            LogHex(request->Bytes);LogStr(" candidate=");LogHex(candidate);
-            LogStr(" end=");LogHex(end);LogStr("\n");
-            Nvx3dUnlockBuffers();return FALSE;
-        }
-        for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
-            NVX_3D_USER_BUFFER_ENTRY *other=&engine->Nvx3dBuffers[i];
-            ULONG64 otherStart,otherEnd;
-            if(!other->Id||other==entry) continue;
-            if(other->RmMemoryHandle)
-                otherStart=other->RmPhysicalOffset;
-            else if(other->GpuVa>=engine->GspVramGpuVa)
-                otherStart=other->GpuVa-engine->GspVramGpuVa;
-            else continue; /* system-memory/GART BO */
-            if(otherStart>~0ULL-other->Bytes) continue;
-            otherEnd=otherStart+other->Bytes;
-            if(candidate<otherEnd&&otherStart<candidate+request->Bytes) {
-                candidate=(otherEnd+(alignment-1ULL))&~((ULONG64)alignment-1ULL);
-                moved=TRUE;break;
-            }
-        }
-        if(!moved) break;
     }
     VideoPortZeroMemory(entry,sizeof(*entry));
     entry->Id=id;
@@ -1731,6 +1803,7 @@ static BOOLEAN Nvx3dAllocateRmBuffer(PNVX_DEVICE_EXTENSION engine,
     entry->AllocationToken=0;
     entry->Bytes=request->Bytes;
     entry->Usage=request->Usage;
+    entry->RequestUsage=request->Usage;
     entry->Width=request->Width;
     entry->Height=request->Height;
     entry->PitchBytes=request->PitchBytes;
@@ -1832,6 +1905,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
 {
     ULONG i,slot=NVX_3D_USER_BUFFER_SLOTS;
     ULONG64 start,end,candidate;
+    ULONG alignment=request->Alignment;
     if(!engine||!request||!Nvx3dValidateAlloc(request)||
        !request->AllocationToken||
        !engine->GspCopyVerified||engine->GspChannelFaulted||
@@ -1850,7 +1924,8 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
             NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[i];
             if(entry->Id&&entry->ClientToken==request->ClientToken&&
                entry->AllocationToken==request->AllocationToken) {
-                if(entry->Bytes!=request->Bytes||entry->Usage!=request->Usage||
+                if(entry->Bytes!=request->Bytes||
+                   entry->RequestUsage!=request->Usage||
                    entry->Width!=request->Width||entry->Height!=request->Height||
                    entry->PitchBytes!=request->PitchBytes||
                    entry->TileMode!=request->TileMode||
@@ -1898,20 +1973,42 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
         Nvx3dUnlockBuffers();return FALSE;
     }
     if(request->Usage&NVX_3D_USAGE_GART_BUFFER)
-        return Nvx3dAllocateGartBuffer(engine,request,slot);
-    if(!(request->Usage&NVX_3D_USAGE_DEPTH_TARGET))
+        return Nvx3dAllocateGartBuffer(engine,request,slot,NULL);
+    if(!(request->Usage&NVX_3D_USAGE_DEPTH_TARGET)) {
+        /* Nouveau/WineD3D may request large ordinary linear allocations that
+         * exceed the currently firmware-approved contiguous VRAM heap. Route
+         * only untyped generic BOs to the existing GART path; render targets,
+         * tiled surfaces and depth allocations still require VRAM placement. */
+        if(request->Usage==0&&request->MemoryKind==0&&request->TileMode==0&&
+           request->Width==0&&request->Height==0&&request->PitchBytes==0&&
+           engine->GspGartReady&&engine->DmaAdapter&&
+           !Nvx3dFindRmRangeLocked(engine,request,slot,&candidate)) {
+            LogStr("NVX [3D-ALLOC]: safe VRAM heap has no fit; using GART for generic linear BO bytes=");
+            LogHex(request->Bytes);LogStr(" client=");
+            LogHex(request->ClientToken);LogStr("\n");
+            ULONG failureStage=0;
+            BOOLEAN allocated=Nvx3dAllocateGartBuffer(engine,request,slot,
+                                                       &failureStage);
+            LogStr("NVX [3D-ALLOC]: GART fallback result=");
+            LogHex(allocated);LogStr(" failure_stage=");
+            LogHex(failureStage);LogStr(" bytes=");
+            LogHex(request->Bytes);LogStr("\n");
+            return allocated;
+        }
         return Nvx3dAllocateRmBuffer(engine,request,slot);
+    }
     if(!Nvx3dHeapBounds(engine,&start,&end)) {
         Nvx3dUnlockBuffers();return FALSE;
     }
     /* The GPU VRAM mapping uses 64 KiB leaf PTEs. A depth target may change
        the PTE kind for its entire leaf, so keep all allocations at least
        leaf-aligned and reserve the depth page without sharing the leaf. */
-    /* Nouveau's NVC0 screen requests 128 KiB aligned code/TLS BOs. Keep
-       every VRAM allocation at that alignment so the GEM shim can honor
-       those requests without inventing an offset inside a miniport BO. */
-    candidate=(start+(NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL))&
-        ~((ULONG64)NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL);
+    /* Preserve the client's alignment, with a 64 KiB minimum for the VRAM
+       PTE leaf. Code/TLS requests that need 128 KiB already say so; forcing
+       that alignment on small tiled surfaces wastes every other 64 KiB slot. */
+    if(alignment<NVX_3D_VRAM_PTE_ALIGNMENT)
+        alignment=NVX_3D_VRAM_PTE_ALIGNMENT;
+    candidate=(start+(alignment-1ULL))&~((ULONG64)alignment-1ULL);
     for(;;) {
         BOOLEAN moved=FALSE;
         if(candidate>end||request->Bytes>end-candidate) {
@@ -1927,16 +2024,15 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
             entryStart=entry->GpuVa-engine->GspVramGpuVa;
             entryEnd=entryStart+entry->Bytes;
             if(candidate<entryEnd&&entryStart<candidate+request->Bytes) {
-                candidate=(entryEnd+(NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL))&
-                    ~((ULONG64)NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL);
+                candidate=(entryEnd+(alignment-1ULL))&
+                    ~((ULONG64)alignment-1ULL);
                 moved=TRUE;break;
             }
         }
         if(!moved) break;
     }
     if(request->Usage&NVX_3D_USAGE_DEPTH_TARGET)
-        candidate=(candidate+(NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL))&
-            ~((ULONG64)NVX_3D_VRAM_ALLOCATION_ALIGNMENT-1ULL);
+        candidate=(candidate+(alignment-1ULL))&~((ULONG64)alignment-1ULL);
     if(candidate>end||request->Bytes>end-candidate) {
         LogStr("NVX [3D-ALLOC]: aligned VRAM range exhausted bytes=");
         LogHex(request->Bytes);LogStr(" candidate=");LogHex(candidate);
@@ -1954,6 +2050,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
     engine->Nvx3dBuffers[slot].AllocationToken=request->AllocationToken;
     engine->Nvx3dBuffers[slot].Bytes=request->Bytes;
     engine->Nvx3dBuffers[slot].Usage=request->Usage;
+    engine->Nvx3dBuffers[slot].RequestUsage=request->Usage;
     engine->Nvx3dBuffers[slot].Width=request->Width;
     engine->Nvx3dBuffers[slot].Height=request->Height;
     engine->Nvx3dBuffers[slot].PitchBytes=request->PitchBytes;
@@ -3169,6 +3266,12 @@ BOOLEAN NTAPI HwVidStartIO(
             caps->PciLocation=Nvx3dPackPciLocation(engine->PciBusNumber,
                                                    engine->PciSlot);
             caps->VramApertureBytes=engine->GspVramMapBytes;
+            if(engine->GspFbLayoutValid && engine->GspFbFreeLimit>=engine->GspFbFreeBase) {
+                ULONG64 end=engine->GspFbFreeLimit+1;
+                if(end>engine->GspVramMapBytes) end=engine->GspVramMapBytes;
+                caps->VramApertureBytes=end>engine->GspFbFreeBase?
+                    end-engine->GspFbFreeBase:0;
+            }
             caps->GartBytes=engine->GspGartReady?NVX_GART_TOTAL_BYTES:0;
         }
         if(engine&&!(caps->Features&NVX_3D_FEATURE_GR_CHANNEL)) {
@@ -3207,8 +3310,13 @@ BOOLEAN NTAPI HwVidStartIO(
                                                     ERROR_NOT_SUPPORTED;
             LogStr("NVX [3D-ALLOC]: failed usage=");LogHex(request.Usage);
             LogStr(" bytes=");LogHex(request.Bytes);
+            LogStr(" alignment=");LogHex(request.Alignment);
+            LogStr(" tile_mode=");LogHex(request.TileMode);
+            LogStr(" memory_kind=");LogHex(request.MemoryKind);
             LogStr(" width=");LogHex(request.Width);
             LogStr(" height=");LogHex(request.Height);
+            LogStr(" pitch=");LogHex(request.PitchBytes);
+            LogStr(" client=");LogHex(request.ClientToken);
             LogStr(" copy_verified=");LogHex(engine&&engine->GspCopyVerified);
             LogStr(" channel_faulted=");LogHex(engine&&engine->GspChannelFaulted);
             LogStr("\n");
@@ -4325,7 +4433,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.270 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.297 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

@@ -12,6 +12,7 @@ typedef int (*NVX_WINSYS_ESCAPE)(void *opaque, uint32_t escape,
 typedef struct NVX_WINSYS_DEVICE {
    NVX_WINSYS_ESCAPE escape;
    void *opaque;
+   void (*release_transport)(void *opaque);
    NVX_3D_QUERY_CAPS caps;
    uint64_t ClientToken;
    uint64_t NextAllocationToken;

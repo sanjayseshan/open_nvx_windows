@@ -268,6 +268,7 @@ if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 echo [NVX_TEST_SUITE_START] > \\.\COM1
 if exist C:\3dmark05.log del C:\3dmark05.log
+if exist C:\3dmark_caps.log del C:\3dmark_caps.log
 if exist C:\test_accel\p2mf_probe_gart.flag (
     echo [TEST] Isolated GART P2MF probe... >> C:\test_accel.log
     nvx_p2mf_probe.exe gart >> C:\test_accel.log 2>&1
@@ -293,24 +294,9 @@ set NVX_TEST_RC=!ERRORLEVEL!
 echo [TEST] 64-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
 if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 findstr /l /c:"[NVX_3D_RESULT] FAIL" C:\test_accel.log >nul && set NVX_SUITE_FAILED=1
-if exist C:\test_accel\run_3dmark.flag (
-    echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
-    echo [3DMARK05_START] > \\.\COM1
-    if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
-        cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
-        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -verbose -res=800x600 > C:\3dmark05.log 2>&1
-        set NVX_TEST_RC=!ERRORLEVEL!
-        echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
-        echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1
-        if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
-        echo [3DMARK05] RUN_COMPLETE >> C:\test_accel.log
-    ) else (
-        echo [3DMARK05] NOT_INSTALLED: expected 3DMark05.exe under Program Files (x86) >> C:\test_accel.log
-        echo [3DMARK05_NOT_INSTALLED] > \\.\COM1
-        set NVX_SUITE_FAILED=1
-    )
-    cd /d C:\test_accel
-)
+rem Run the WOW64 checks before the optional 3DMark GUI. This preserves the
+rem x86 D3D capability and WGL diagnostics if the benchmark opens a modal
+rem unsupported-hardware dialog or stalls before returning to the batch file.
 if exist C:\test_accel\x86\wglgears32.exe (
     cd /d C:\test_accel\x86
     set GALLIUM_DRIVER=nouveau
@@ -328,12 +314,46 @@ if exist C:\test_accel\x86\test_gpu_accel32.exe (
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
     findstr /l /c:"[NVX_3D_RESULT] FAIL" C:\test_accel.log >nul && set NVX_SUITE_FAILED=1
 )
+if exist C:\test_accel\run_3dmark.flag (
+    echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
+    echo [3DMARK05_START] > \\.\COM1
+    if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
+        cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
+        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -verbose -res=800x600 > C:\3dmark05.log 2>&1
+        set NVX_TEST_RC=!ERRORLEVEL!
+        echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
+        echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1
+        if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+        echo [3DMARK05] RUN_COMPLETE >> C:\test_accel.log
+    ) else (
+        echo [3DMARK05] NOT_INSTALLED: expected 3DMark05.exe in the configured benchmark directory >> C:\test_accel.log
+        echo [3DMARK05_NOT_INSTALLED] > \\.\COM1
+        set NVX_SUITE_FAILED=1
+    )
+    cd /d C:\test_accel
+)
 rem Keep the boot lock: both XP Startup folders can launch this batch at
 rem different times, so releasing it here could run the benchmark suite twice.
 if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL >> C:\test_accel.log)
 if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS > \\.\COM1) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL > \\.\COM1)
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
+if [ "$NVX_RUN_3DMARK" = "1" ]; then
+    NVX_3DMARK_EXE="$(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print -quit)"
+    if [ -z "$NVX_3DMARK_EXE" ]; then
+        echo "3DMark05.exe was not found in the guest image." >&2
+        exit 1
+    fi
+    python3 - "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_MOUNT" "$NVX_3DMARK_EXE" <<'PY'
+from pathlib import Path
+import sys
+batch, mount, executable = sys.argv[1:]
+directory = 'C:\\' + str(Path(executable).parent.relative_to(mount)).replace('/', '\\')
+p = Path(batch)
+p.write_text(p.read_text().replace(r'C:\Program Files (x86)\Futuremark\3DMark05', directory))
+print('3DMark05 guest directory:', directory)
+PY
+fi
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
 rm -f "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
 case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in

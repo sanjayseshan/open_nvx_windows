@@ -1,10 +1,352 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Latest hardware run: **3.0.0.271**. The x64
-OpenGL and D3D smoke tests passed, but automated 3DMark05 did not finish before
-the 20-minute timeout. It encountered fence allocation failure during NVC0
-context setup and pushbuffer submission errors; there is no benchmark FPS or
-score.
+Updated November 17, 2026. Current candidate: **3.0.0.297**.
+
+## .297: move display instance into the new free region and reserve it
+
+.296 proves CE GPU copy/write/read/restore works with the 8 GiB VA layout.
+Native dual display still failed because its instance block was fixed at
+0x1ff0000, below the new firmware free base 0x2080000. The user observed a
+striped/distorted primary and no secondary; this run is NOT a display pass.
+Sent ACPI shutdown to end that unusable session.
+
+.297 places the instance at freeBase+32 MiB (64 KiB aligned) when the old
+instance is below freeBase, and excludes the instance block in the BO gap
+allocator so later application allocations cannot overwrite RAMHT/instance
+state. Expanded GSP mock scenario 0 now uses captured ~7.78 GiB free bounds,
+checks leaves above physical 4 GiB and at the final available page, tests the
+new CE probe address, and validates the relocated display instance. Other
+scenarios retain coverage for the old ~60 MiB layout. Host tests pass.
+The .297 hardware run confirms both native heads active/locked at 2560x1440,
+x64/x86 OpenGL NV170 with cube 60.6/61.0 FPS and NVX_3D_RESULT PASS,
+x64 gears 59.5 FPS, x86 gears 53.3 FPS, D3D9 HAL 65.0/59.4 FPS.
+3DMark started and switched primary to 1024x768 while secondary stayed
+2560x1440; both heads remained active/locked. No display channel teardown,
+RPC timeout or framebuffer heap exhaustion observed through this transition.
+Successful 3DMark FB allocations extend to physical 0x0cc70000 (>128 MiB),
+proving the old physical heap and VA aperture limits have been exceeded.
+The standby regression path also ran: at log line 12205 the native VBE
+bypass restored the primary to 2560x1440, and both heads remained active and
+locked after the commit. No channel release/recreation or RPC timeout.
+
+3DMark subsequently exhausted the 460 MiB GART VA allocator on repeated
+8 MiB GART-buffer requests (usage 0x40). This is a separate system-memory
+mapping-pool limit; local VRAM still has room. Sent ACPI shutdown to end the
+failing run and collect logs. This is NOT a complete 3DMark pass or score.
+Visual confirmation was requested from the user and remains pending.
+.297 log: test_logs/v3.0.0.297-20261117-212851.log.
+
+Additional observed limit: one ~64.5 MiB linear BO registration fails before
+sending RPC because its 4 KiB PFN list exceeds the current 16-element record
+limit; Mesa falls back for that request. Upstream `_issuePteDescRpc` uses
+`_issueRpcAndWaitLarge` / CONTINUATION_RECORD for large page lists. This is a
+separate transport limit to investigate if it blocks 3DMark after display is
+restored; raising physical heap limits alone cannot fix that RPC limit.
+
+.296 log: test_logs/v3.0.0.296-20261117-212539.log.
+Relevant code: src_driver/nvx_ce.c, src_driver/nvx_disp_rpc.c,
+src_driver/nvxmp.c (Nvx3dFindRmRangeInIntervalLocked),
+src_driver/tests/gsp_mock_test.c, src_driver/nvx_rpc.{c,h}, upstream
+open-gpu-kernel-modules/src/nvidia/kernel/vgpu/nv/rpc.c.
+
+## .296: choose the startup CE probe from the corrected free layout
+
+The .295 hardware run CONFIRMED the memory root cause and correction:
+FRTS/WPR is now at the top of VRAM, and GSP reports free physical memory
+0x02080000..0x1f3ddffff (~7.78 GiB). The 8 GiB GPU VA mapping is installed.
+It then fell back because the startup copy-engine smoke test hardcoded
+physical 16 MiB, below the new free region (32.5 MiB). Its guard correctly
+refused the access, leaving acceleration unavailable. This was not a new
+out-of-memory or GPU fault. .296 chooses a free offscreen page beyond the
+firmware reservation and scanout windows. Retest pending; Mesa ICDs from
+.295 already contain the removal of the 32 MiB reported-memory cap.
+.295 log: test_logs/v3.0.0.295-20261117-212312.log.
+
+## .295: correct GA100-only MMU-lock policy; preserve native modesets
+
+Root cause found: our FRTS layout applied `memmgrReadMmuLock_GA100`
+semantics to GA104. OpenRM's generated `g_mem_mgr_nvoc.c` dispatches that
+implementation ONLY on GA100; GA104 selects `memmgrReadMmuLock_e133c0`,
+which returns valid=FALSE. Captured GA104 raw registers (LO=0x100000,
+HI=0x1effff0) must therefore not clamp WPR below 256 MiB. That clamp placed
+GSP firmware/heap below 256 MiB and left only ~60 MiB available. Earlier
+statements below that the whole boot calculation matched upstream were
+incorrect: they overlooked chip HAL dispatch. No reserved GSP region is
+being overridden; the corrected boot layout must produce its own region table.
+
+Changes:
+- `NvxComputeFrtsLayout` now accepts the hardware chipset, decoded from
+  PMC_BOOT_0. Only chipset 0x170 (GA100) interprets MMU lock registers.
+  Captured GA104 0x174 register regression checks retain top-of-VRAM WPR.
+- Separate coherent page-table backing maps up to 8 GiB of physical VRAM
+  at GPU VA 4 GiB. Sixteen PD0 pages and 4096 large-page leaf tables avoid
+  the low GART/upload VA ranges. Allocation still obeys GSP free bounds.
+- Mesa GETPARAM_FB_SIZE no longer caps VRAM at 32 MiB; miniport caps expose
+  the mapped firmware-approved region size. Both ICD builds need rebuilding.
+- Once healthy native display channels own scanout, `NvxVbeSetMode` returns
+  to the caller's native modeset path without INT10 or releasing channels.
+  This avoids release -> BIOS failure 0x57 -> channel-recreation timeout,
+  which caused both monitors to enter standby in .294.
+
+Validation so far: VBE mock and GSP host tests pass, including directory/leaf
+coverage and unchanged upload mapping. Hardware test pending. Check new FRTS
+WPR end near 8 GiB, firmware free region, NV170 rendering, 3DMark allocations,
+and native mode transitions. Do not claim 3DMark or standby resolved until
+hardware evidence is available.
+
+Relevant files: src_driver/nvx_vbios.{c,h}, src_driver/nvxmp.c,
+src_driver/nvx_gsp.{c,h}, src_driver/nvx_gsp_boot.c,
+src_driver/nvx_vbe.c, mesa_patches/nvx_xf86drm.c,
+src_driver/tests/{vbios_test,vbe_mock_test,gsp_mock_test}.c,
+test/xf86drm_shim_test.c. Upstream evidence:
+open-gpu-kernel-modules/src/nvidia/generated/g_mem_mgr_nvoc.c:446 and
+open-gpu-kernel-modules/src/nvidia/generated/g_mem_mgr_nvoc.h:2006.
+
+## .294: close Mesa clients through their owned transport DCs
+
+The .293 run shows 3DMark still failing after two 15 MiB tiled BOs fit. It
+also shows Mesa client sessions from the preceding graphics tests surviving
+into 3DMark, retaining BOs in the limited local VRAM heap. `.294` fixes the
+process-detach cleanup path: it now sends each close escape through that
+client's owned winsys DC (`device->opaque`). The old path passed the WGL
+application HDC, which can be stale or different after the owned transport
+DC was created.
+
+The `.294` VFIO run must rebuild both Mesa ICD architectures
+(`NVX_BUILD_MESA_ICD=1`) so the process-detach patch is installed. Check that
+all pre-benchmark Mesa session tokens have `closed client token` log entries
+and that 3DMark advances beyond its depth-texture `GL_OUT_OF_MEMORY` failure.
+This cleanup can reclaim client BOs; it does not expand the roughly 60 MiB
+firmware-approved tiled-VRAM range.
+
+Relevant code: `mesa_patches/nvx_xf86drm.c`,
+`mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/xp_include/xf86drm.h`,
+`mesa_patches/0032-nouveau-xp-process-session-close.patch`, and
+`test/test_full_driver.sh`.
+
+## .293: framebuffer limits and 3DMark allocation failure
+
+The .292 real-hardware run confirms the local-memory registration fix:
+OpenGL reports `NV170`, the cube submitted GPU batches at about 60 FPS, both
+x64/x86 OpenGL probes report `RENDERED`, and both D3D9 smoke probes report
+`RENDERED`. The old GDI Generic / D3D9-create failure is resolved.
+
+3DMark switches modes and allocates two 15 MiB tiled BOs, then exhausts local
+VRAM while creating more surfaces. WineD3D reports `GL_OUT_OF_MEMORY` from
+`glTexImage2D(GL_DEPTH_COMPONENT32)` and an unsupported FBO. The `.293` gap
+search is working; it can place allocations before and after the secondary
+scanout, but the firmware-approved local-memory range is still only
+`0x180000..0x3ddffff` (about 60 MiB).
+
+The 128 MiB figure is the GPU virtual mapping aperture. The 460 MiB GART is
+system memory and currently supports linear BOs. Neither increases tiled local
+VRAM. GSP reports the other framebuffer ranges with nonzero `reserved` values;
+OpenRM's `memmgrInitGspClient()` marks those ranges reserved, and its allocator
+does not use them. The MMU lock and WPR calculations in this boot follow the
+same policy as upstream, so expanding the page table or ignoring those ranges
+would risk overwriting firmware or VBIOS-protected memory. The `.293` log
+therefore does not prove a parser or aperture-size bug.
+
+The `.292` 3DMark run did not exit; its log shows repeated framebuffer heap
+exhaustion, but no new `NV01_MEMORY_LOCAL_USER` unsupported status or MMU
+fault. Firmware assertion count remains at the startup baseline of 1.
+
+Next: investigate whether the current VBIOS MMU lock / GSP region table is
+expected for this card and boot state. For immediate 3DMark progress, trace
+the many persistent pre-benchmark BOs and close-session lifetime, then explore
+only memory placements Nouveau supports. Upstream NVC0 uses GART for linear
+BOs and requests VRAM for block-linear miptrees, so sending kind-6 tiled
+surfaces through the present GART path is not a safe drop-in fix. Do not map
+or allocate from the firmware-reserved ranges without proving an upstream
+allocation path authorizes them.
+
+Relevant files: `src_driver/nvxmp.c` (`Nvx3dFindRmRangeLocked`),
+`src_driver/nvx_gsp.c` (`NvxGspGetFbLayout` / FB registration),
+`open-gpu-kernel-modules/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c`,
+`open-gpu-kernel-modules/src/nvidia/src/kernel/gpu/mem_mgr/arch/ampere/mem_mgr_ga100.c`,
+`mesa/src/gallium/drivers/nouveau/nv50/nv50_miptree.c`,
+`test/test_full_driver.sh`, `dist_full/nvx.inf`, and `.292` log
+`test_logs/v3.0.0.293-20261117-203804.log`.
+
+## .292: restore supported GSP framebuffer registration
+
+The .291 run regressed to `GL_RENDERER = GDI Generic` and 3DMark reported
+`Direct3DCreate9` failure. The failure was traced to a new `GSP_RM_ALLOC`
+request for class `0x40` (`NV01_MEMORY_LOCAL_USER`): RM returned
+`0x56` (`NV_ERR_NOT_SUPPORTED`), after which the driver quarantined graphics.
+That made the renderer and D3D9 errors downstream symptoms.
+
+Restored the previously supported GSP `ALLOC_MEMORY` function-4 registration
+for class `0x82` (`NV01_MEMORY_LIST_FBMEM`), passing the framebuffer PFN list
+and using the already-installed aperture/PTE mapping. Added mock assertions
+for the class, flags, length, page count, and PFNs. The GSP host test passes.
+The `.292` hardware results are recorded above.
+
+Relevant files: `src_driver/nvx_gsp.c`,
+`src_driver/tests/gsp_mock_test.c`, `src_driver/nvxmp.c`,
+`dist_full/nvx.inf`, and `test/test_full_driver.sh`.
+
+## .292: restore supported GSP framebuffer registration
+
+The .291 run regressed to `GL_RENDERER = GDI Generic` and 3DMark reported
+`Direct3DCreate9` failure. The failure was traced to a new `GSP_RM_ALLOC`
+request for class `0x40` (`NV01_MEMORY_LOCAL_USER`): RM returned
+`0x56` (`NV_ERR_NOT_SUPPORTED`), after which the driver quarantined graphics.
+That made the renderer and D3D9 errors downstream symptoms.
+
+Restored the previously supported GSP `ALLOC_MEMORY` function-4 registration
+for class `0x82` (`NV01_MEMORY_LIST_FBMEM`), passing the framebuffer PFN list
+and using the already-installed aperture/PTE mapping. Added mock assertions
+for the class, flags, length, page count, and PFNs. `sh
+src_driver/tests/run_gsp_host_test.sh` passes.
+
+Next: validate `.292` on VFIO. Confirm the log has no runtime GSP allocation
+assertion/quarantine and that `[OPENGL_RESULT] HARDWARE` replaces GDI Generic;
+then check the D3D9 smoke/3DMark startup. Do not infer benchmark success from
+renderer initialization alone.
+
+Relevant files: `src_driver/nvx_gsp.c`,
+`src_driver/tests/gsp_mock_test.c`, `src_driver/nvxmp.c`,
+`dist_full/nvx.inf`, and `test/test_full_driver.sh`.
+
+## .288: own the winsys transport DC across probe window destruction
+
+WineD3D repeatedly fails to get a GL context; Mesa traces show NVC0 context creation failing a 512 KiB GART allocation at the escape boundary, without a miniport allocation failure. The process pins the Nouveau screen/client but previously retained the caller window HDC as its transport. WineD3D destroys temporary probe windows/DCs, leaving later BO operations using a stale HDC. `NvxWinsysInitHdc` now creates an owned display DC on the selected monitor and releases it after successful client teardown. ExtEscape must return positive to succeed. This is a concrete transport lifetime fix; real-hardware validation is still required to confirm it resolves 3DMark initialization.
+
+Both x64 and x86 Mesa ICD builds completed. The full .288 host/hardware runner is in progress.
+
+Correction to earlier .287 diagnosis: offline inspection confirms 3DMark05.exe exists at the expected path. The NOT_INSTALLED marker was unreliable CMD parsing output; it did not prove the executable was missing.
+
+Runner fixes: remove unescaped parentheses from an echo inside a CMD block (the previous NOT_INSTALLED marker was unreliable because of this parsing bug); locate 3DMark05.exe in the offline image; collect artifacts before evaluating results; reject missing installation and WineD3D GL-context failures. Exit zero alone remains insufficient evidence of rendered benchmark frames.
+
+Relevant changes: `mesa_patches/nvx_winsys_win32.c`, `nvx_winsys.c`, `nvx_winsys.h`, `test/update_disk_driver_user.sh`, `test/test_full_driver.sh`.
+
+## .287: tiled allocation placement improved; benchmark still stalls
+
+The .286 run reached 3DMark GPU initialization but repeatedly failed 192 KiB,
+kind-6 tiled allocations. The safe framebuffer allocator rounded every
+allocation to 128 KiB even when the caller requested 4 KiB alignment, wasting
+alternating 64 KiB chunks. .287 honors the request alignment with a 64 KiB
+hardware-page minimum; paths that explicitly request 128 KiB keep it. Host
+tests and driver build pass.
+
+In .287, the 64.5 MiB generic GART fallback succeeds, WGL reports `NV170`,
+2D/OpenGL/NVC0 probes pass, and D3D9 smoke runs report `RENDERED`. 3DMark
+starts and maps multiple kind-6 tiled surfaces. No framebuffer heap
+exhaustion, repeated allocation failure, or GART replay mismatch appears
+after launch. The benchmark itself did not run because it was not installed
+where the automation expects. The extracted `...-3dmark05.log` instead records
+WineD3D failing repeatedly to create a GL context. The serial trace ties that
+failure to NVC0 context creation: allocation of a 512 KiB GART BO is rejected
+(`kind=22`, `Usage=0x40`, `domain=0x0c`, `alignment=4 KiB`, non-contiguous
+flag). Thus the user's Direct3DCreate9 error is an upper-layer symptom of
+WineD3D failing to initialize its OpenGL adapter. The smaller GART allocation
+failure is unresolved; the `.287` fix only addressed tiled VRAM placement.
+
+The log also reports firmware assertion count 1 twice during RM startup. RM
+still reaches `INIT_DONE`, existing 3D probes complete, and this run records no
+MMU fault or copy-queue timeout. Track this assertion separately; it is not
+proven to cause the D3D9/WineD3D initialization failure.
+
+### Next actions
+
+1. Fix why the 512 KiB GART allocation with `Usage=NVX_3D_USAGE_GART_BUFFER`
+   is rejected. Add a bounded, actionable failure status at the miniport
+   escape/allocator boundary; current Mesa trace only records that the escape
+   returned false, with no kernel allocation reason.
+2. Confirm the intended 3DMark05 executable path in the guest, then rerun the
+   actual benchmark. `code=0` with `[3DMARK05_NOT_INSTALLED]` is not a pass.
+3. Keep the 64 KiB placement change unless hardware evidence shows tiled
+   surface corruption; allocation behavior improved in .287.
+
+Relevant files: `src_driver/nvx_3d_abi.h`, `src_driver/nvxmp.c`,
+`test/test_full_driver.sh`, `test/run_vfio_xp_autoretry.sh`, and the .287 log.
+
+## .284–.286: D3D9/3DMark allocation replay fix
+
+## .284–.286: D3D9/3DMark allocation replay fix
+
+The latest serial logs disprove a missing `Direct3DCreate9` export or a shader
+model failure: the in-house D3D9 smoke test reaches `[D3D9_RESULT] RENDERED`
+and prior 3DMark capability traces report VS/PS 3.0. The specific guest UI
+message still needs confirmation from the current run.
+
+The 3DMark startup path requests a 64.5 MiB generic BO (`Usage=0`, no tile
+mode/kind/dimensions). Firmware-approved contiguous framebuffer space cannot
+fit it, so .284 first failed at that allocation. .285 routed this eligible
+generic linear BO through the existing GART allocator. Instrumentation proved
+the allocation itself succeeds (`failure_stage=0`), but a subsequent replay
+of the same client allocation was rejected: the entry's internal backing
+marker `NVX_3D_USAGE_GART_BUFFER` was compared to the original client usage 0.
+
+In .286, `NVX_3D_USER_BUFFER_ENTRY` now stores `RequestUsage` separately from
+the internal backing `Usage`; allocation replay compares the requested value.
+This keeps GART lifetime/free/submit classification intact while allowing
+idempotent client allocation replay. Current .286 log has five successful
+64.5 MiB GART fallback allocations and no matching `failed usage=0 ...` line.
+The D3D9 smoke tests again report `RENDERED`; the later .287 run shows GART
+fallback allocations and replay succeeding, then exposes the separate tiled
+VRAM placement issue fixed in .287.
+
+Relevant code: `src_driver/nvxmp.c` (`Nvx3dAllocateBuffer`,
+`Nvx3dAllocateGartBuffer`) and `src_driver/nvx_gsp.h`
+(`NVX_3D_USER_BUFFER_ENTRY`). Test runner/package version is in
+`test/test_full_driver.sh` and `dist_full/nvx.inf`.
+
+Earlier .284 hardware run: `test_logs/v3.0.0.284-20261117-185219.log`; the
+benchmark did not exit. .285 diagnostic run:
+`test_logs/v3.0.0.285-20261117-185904.log`; GART fallback returned success,
+then replay was rejected. .286 is the first run with the replay identity fix.
+
+Do not claim 3DMark works based only on D3D9 smoke rendering or successful BO
+allocation. The remaining hang after `[3DMARK05_START]` is unresolved.
+
+## Earlier .278 capability investigation
+
+## .278: 3DMark05 requirements gate
+
+The dialog wording is: “does not support features required … Pixel Shader 2.0
+is one of these.” This names a list of required features; it does not say that
+Pixel Shader 2.0 is the specific failed check. The .278 run added a WineD3D
+trace restricted to the 3DMark05 process and proved that actual benchmark calls
+receive D3D9 Pixel Shader 3.0 and Vertex Shader 3.0 caps, including both adapter
+and device `GetDeviceCaps`. The x86 smoke test independently reports PS 3.0.
+Shader-model version is therefore not the cause of this dialog.
+
+3DMark05 still failed to exit and produced no game-test progress. Its captured
+stdout/stderr file is empty, but the actual cap trace is in the serial run log
+at `[D3D9-CAPS]` near the 3DMark start marker. It reports `PS20Caps=0x1f`, 128
+pixel-shader temps, 512 instruction slots, 8 texture stages/simultaneous
+textures, and texture-filter caps `0x07030700`. This narrows the problem to
+another 3DMark05 requirement or a subsequent selection/startup failure.
+
+The rest of the .278 hardware run passed: x86 and x64 D3D9 rendered 60 frames
+at 61–64 FPS, OpenGL reported NV170, the native 3D validation passed, and the
+run ended with no successful 3DMark game-test result. The benchmark launch
+continues to generate many allocate/free operations before stalling or showing
+the unsupported-features gate.
+
+Changes in .278:
+- Added `wine_patches/0002-log-3dmark-d3d9-caps.patch`; Wine 1.7.55 stays
+  unmodified as a submodule. `test/build_wined3d_xp.sh` applies the patch and
+  writes adapter/device capability data to `C:\\3dmark_caps.log` only when the
+  process name matches 3DMark05.
+- Fixed the Wine build helper's host-tool target (`tools`, not the nonexistent
+  `tools/make_xftmpl`) so the x86/x64 WineD3D build completes.
+- Bumped driver/package test version to `3.0.0.278` and ran one VFIO test.
+
+Next:
+1. Trace failed D3D9 capability probes in the actual 3DMark05 process:
+   `CheckDeviceFormat`, `CheckDeviceType`, `CheckDepthStencilMatch`, and
+   `CheckDeviceMultiSampleType`. Correlate failures with the benchmark's other
+   required formats/features; do not change the advertised shader version.
+2. Get 3DMark05 past the unsupported-features gate and require game-test
+   progress plus a successful exit before considering it supported.
+
+Capacity note: 460 MiB is GPU virtual address space backed by system memory. It
+does not expose the reserved physical VRAM regions; physical VRAM allocation
+still requires understanding the GSP region table and using an OpenRM-managed
+local-memory allocation/mapping path.
 
 ## .271 VFIO run: 3DMark startup stalls after allocation/submission failures
 

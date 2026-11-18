@@ -16,20 +16,24 @@ int NvxGrBuildPtes(uint64_t *entries, uint32_t capacity, uint64_t physical, uint
 
 static int nvx_gart_range_valid(uint32_t first, uint32_t count)
 {
-    return count && first < NVX_GART_PAGE_COUNT &&
-        count <= NVX_GART_PAGE_COUNT - first;
+    return NvxGartPageRangeValid(first,count);
 }
 
 int NvxGartReserve(NVX_GART_HEAP *heap, uint64_t bytes, uint32_t alignment,
                    uint32_t *first,
                    uint32_t *count, uint64_t *gpu_va)
 {
-    uint32_t needed, alignment_pages, start, i;
+    uint32_t needed, alignment_pages, start, i, segment;
+    static const uint32_t segment_first[2]={0,NVX_GART_PRIMARY_PAGE_COUNT};
+    static const uint32_t segment_pages[2]={
+        NVX_GART_PRIMARY_PAGE_COUNT,
+        NVX_GART_PAGE_COUNT-NVX_GART_PRIMARY_PAGE_COUNT
+    };
     if (first) *first = 0;
     if (count) *count = 0;
     if (gpu_va) *gpu_va = 0;
     if (!heap || !bytes || !first || !count || !gpu_va ||
-        bytes > NVX_GART_TOTAL_BYTES ||
+        bytes > NVX_GART_SEGMENT_BYTES ||
         bytes > UINT64_MAX - (NVX_GART_PAGE_BYTES - 1U) ||
         (alignment && (alignment < NVX_GART_PAGE_BYTES ||
                        (alignment & (alignment - 1U)) ||
@@ -40,30 +44,33 @@ int NvxGartReserve(NVX_GART_HEAP *heap, uint64_t bytes, uint32_t alignment,
     needed = (uint32_t)((bytes + NVX_GART_PAGE_BYTES - 1U) /
                        NVX_GART_PAGE_BYTES);
     alignment_pages = alignment / NVX_GART_PAGE_BYTES;
-    for (start = 0; nvx_gart_range_valid(start, needed); start++) {
-        uint32_t remainder = start % alignment_pages;
-        if (remainder) {
-            start += alignment_pages - remainder - 1U;
-            continue;
+    for (segment = 0; segment < 2; segment++) {
+        uint32_t limit = segment_first[segment] + segment_pages[segment];
+        for (start = segment_first[segment];
+             start <= limit && needed <= limit - start; start++) {
+            uint32_t remainder = start % alignment_pages;
+            if (remainder) {
+                start += alignment_pages - remainder - 1U;
+                continue;
+            }
+            for (i = 0; i < needed; i++) {
+                uint32_t bit = start + i;
+                if (heap->used[bit / 32U] & (1U << (bit % 32U)))
+                    break;
+            }
+            if (i != needed) {
+                start += i;
+                continue;
+            }
+            for (i = 0; i < needed; i++) {
+                uint32_t bit = start + i;
+                heap->used[bit / 32U] |= 1U << (bit % 32U);
+            }
+            *first = start;
+            *count = needed;
+            *gpu_va = NvxGartGpuVaForPage(start);
+            return 1;
         }
-        for (i = 0; i < needed; i++) {
-            uint32_t bit = start + i;
-            if (heap->used[bit / 32U] & (1U << (bit % 32U)))
-                break;
-        }
-        if (i != needed) {
-            start += i;
-            continue;
-        }
-        for (i = 0; i < needed; i++) {
-            uint32_t bit = start + i;
-            heap->used[bit / 32U] |= 1U << (bit % 32U);
-        }
-        *first = start;
-        *count = needed;
-        *gpu_va = NVX_GART_GPU_VA_BASE +
-                  (uint64_t)start * NVX_GART_PAGE_BYTES;
-        return 1;
     }
     return 0;
 }
@@ -92,7 +99,7 @@ int NvxGartBuildPtes(uint64_t *entries, uint32_t capacity,
     uint64_t max_bytes;
     if (!entries || !nvx_gart_range_valid(first_page, page_count) ||
         !bytes || (bytes & (NVX_GART_PAGE_BYTES - 1U)) ||
-        capacity < NVX_GART_SLICE_COUNT * NVX_GART_PTES_PER_SLICE)
+        capacity < NVX_GART_PAGE_COUNT)
         return 0;
     max_bytes = (uint64_t)page_count * NVX_GART_PAGE_BYTES;
     if (bytes > max_bytes)

@@ -31,6 +31,29 @@ extern void NvxWglRecordNouveauWinsysProfile(uint32_t total_us,
  * a counter stored in each copy can collide for different BO requests. */
 static volatile uint32_t nvx_global_allocation_token;
 
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
+                                   uint32_t a, uint32_t b, uint32_t c,
+                                   uint32_t d, uint32_t e, uint32_t f);
+static volatile uint32_t nvx_alloc_failure_trace_count;
+static void
+nvx_winsys_trace_alloc_failure(uint32_t stage,
+                               const NVX_3D_ALLOC_BUFFER *request,
+                               const NVX_3D_ALLOC_BUFFER *output)
+{
+   if (__sync_add_and_fetch(&nvx_alloc_failure_trace_count, 1U) > 32U)
+      return;
+   NvxWglRecordNouveauPushbufItem(24U, stage,
+      request ? request->Usage : 0U,
+      request ? request->Bytes : 0U,
+      request ? request->Alignment : 0U,
+      output ? output->BufferId : 0U,
+      output ? (uint32_t)output->GpuVa : 0U,
+      output ? output->Version : 0U);
+}
+#endif
+
 static int
 nvx_winsys_ready(const NVX_WINSYS_DEVICE *device)
 {
@@ -230,8 +253,14 @@ NvxWinsysCloseClient(NVX_WINSYS_DEVICE *device)
    session.ClientToken = device->ClientToken;
    ok = device->escape(device->opaque, NVX_ESCAPE_3D_CLIENT_CLOSE,
                        sizeof(session), &session, 0, NULL);
-   if (ok)
+   if (ok) {
       device->ClientToken = 0;
+      if (device->release_transport) {
+         device->release_transport(device->opaque);
+         device->release_transport = NULL;
+         device->opaque = NULL;
+      }
+   }
    return ok;
 }
 
@@ -255,8 +284,13 @@ NvxWinsysAllocBuffer(NVX_WINSYS_DEVICE *device,
 
    if (!nvx_winsys_ready(device) || !request || !result ||
        !device->ClientToken || request->ClientToken != device->ClientToken ||
-       !Nvx3dValidateAlloc(request) || !device->ClientToken)
+       !Nvx3dValidateAlloc(request) || !device->ClientToken) {
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      nvx_winsys_trace_alloc_failure(3U, request, NULL);
+#endif
       return 0;
+   }
 
    input = *request;
    input.ClientToken = device->ClientToken;
@@ -268,8 +302,14 @@ NvxWinsysAllocBuffer(NVX_WINSYS_DEVICE *device,
    device->NextAllocationToken = input.AllocationToken;
    memset(&output, 0, sizeof(output));
    if (!device->escape(device->opaque, NVX_ESCAPE_3D_ALLOC,
-                       sizeof(input), &input, sizeof(output), &output) ||
-       output.Size != sizeof(output) ||
+                       sizeof(input), &input, sizeof(output), &output)) {
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      nvx_winsys_trace_alloc_failure(4U, &input, &output);
+#endif
+      return 0;
+   }
+   if (output.Size != sizeof(output) ||
        output.Version != NVX_3D_ABI_VERSION ||
        output.BufferId == 0 || output.GpuVa == 0 ||
        output.Bytes != request->Bytes || output.Usage != request->Usage ||
@@ -279,8 +319,13 @@ NvxWinsysAllocBuffer(NVX_WINSYS_DEVICE *device,
        output.MemoryKind != request->MemoryKind ||
        output.Alignment != input.Alignment ||
        output.ClientToken != input.ClientToken ||
-       output.AllocationToken != input.AllocationToken)
+       output.AllocationToken != input.AllocationToken) {
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      nvx_winsys_trace_alloc_failure(5U, &input, &output);
+#endif
       return 0;
+   }
 
    *result = output;
    return 1;

@@ -1,0 +1,127 @@
+diff --git a/dlls/d3d9/device.c b/dlls/d3d9/device.c
+index 16b27e5..a576494 100644
+--- a/dlls/d3d9/device.c
++++ b/dlls/d3d9/device.c
+@@ -427,6 +427,52 @@ static HRESULT WINAPI d3d9_device_GetDeviceCaps(IDirect3DDevice9Ex *iface, D3DCA
+ 
+     filter_caps(caps);
+ 
++    /* NVC0 reports a 63px GL limit; permit the D3D9 64px gate. GL safely
++     * clamps the actual rasterized point to the hardware limit. */
++    if (caps->MaxPointSize >= 63.0f && caps->MaxPointSize < 64.0f)
++        caps->MaxPointSize = 64.0f;
++
++    {
++        char process_name[MAX_PATH], line[1024];
++        DWORD length, written;
++        HANDLE file;
++
++        length = GetModuleFileNameA(NULL, process_name, sizeof(process_name));
++        if (length && (strstr(process_name, "3DMark05") || strstr(process_name, "3dmark05")))
++        {
++            file = CreateFileA("C:\\3dmark_caps.log", FILE_APPEND_DATA,
++                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
++                    FILE_ATTRIBUTE_NORMAL, NULL);
++            if (file != INVALID_HANDLE_VALUE)
++            {
++                length = wsprintfA(line,
++                        "[D3D9-CAPS] device hr=0x%08lx VS=0x%08lx PS=0x%08lx PS20Caps=0x%08lx temps=%lu slots=%lu texStages=%lu textures=%lu filter=0x%08lx caps=0x%08lx caps2=0x%08lx dev=0x%08lx dev2=0x%08lx misc=0x%08lx raster=0x%08lx texcaps=0x%08lx cubeFilter=0x%08lx texops=0x%08lx tex=%lux%lu clips=%lu prims=%lu streams=%lu stride=%lu index=%lu stretch=0x%08lx pointMilli=%lu\r\n",
++                        (unsigned long)hr,
++                        (unsigned long)caps->VertexShaderVersion,
++                        (unsigned long)caps->PixelShaderVersion,
++                        (unsigned long)caps->PS20Caps.Caps,
++                        (unsigned long)caps->PS20Caps.NumTemps,
++                        (unsigned long)caps->PS20Caps.NumInstructionSlots,
++                        (unsigned long)caps->MaxTextureBlendStages,
++                        (unsigned long)caps->MaxSimultaneousTextures,
++                        (unsigned long)caps->TextureFilterCaps,
++                        (unsigned long)caps->Caps,
++                        (unsigned long)caps->Caps2,
++                        (unsigned long)caps->DevCaps,
++                        (unsigned long)caps->DevCaps2,
++                        (unsigned long)caps->PrimitiveMiscCaps,
++                        (unsigned long)caps->RasterCaps,
++                        (unsigned long)caps->TextureCaps,
++                        (unsigned long)caps->CubeTextureFilterCaps,
++                        (unsigned long)caps->TextureOpCaps,
++                        (unsigned long)caps->MaxTextureWidth,
++                        (unsigned long)caps->MaxTextureHeight,
++                        (unsigned long)caps->MaxUserClipPlanes,
++                        (unsigned long)caps->MaxPrimitiveCount,
++                        (unsigned long)caps->MaxStreams,
++                        (unsigned long)caps->MaxStreamStride,
++                        (unsigned long)caps->MaxVertexIndex,
++                        (unsigned long)caps->StretchRectFilterCaps,
++                        (unsigned long)(caps->MaxPointSize * 1000.0f));
++                WriteFile(file, line, length, &written, NULL);
++                CloseHandle(file);
++            }
++        }
++    }
++
+     return hr;
+ }
+ 
+diff --git a/dlls/d3d9/directx.c b/dlls/d3d9/directx.c
+index 58c4d44..8ee6e9d 100644
+--- a/dlls/d3d9/directx.c
++++ b/dlls/d3d9/directx.c
+@@ -430,6 +430,52 @@ static HRESULT WINAPI d3d9_GetDeviceCaps(IDirect3D9Ex *iface, UINT adapter, D3DD
+ 
+     filter_caps(caps);
+ 
++    /* Keep adapter and device point-size caps consistent. */
++    if (caps->MaxPointSize >= 63.0f && caps->MaxPointSize < 64.0f)
++        caps->MaxPointSize = 64.0f;
++
++    {
++        char process_name[MAX_PATH], line[1024];
++        DWORD length, written;
++        HANDLE file;
++
++        length = GetModuleFileNameA(NULL, process_name, sizeof(process_name));
++        if (length && (strstr(process_name, "3DMark05") || strstr(process_name, "3dmark05")))
++        {
++            file = CreateFileA("C:\\3dmark_caps.log", FILE_APPEND_DATA,
++                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
++                    FILE_ATTRIBUTE_NORMAL, NULL);
++            if (file != INVALID_HANDLE_VALUE)
++            {
++                length = wsprintfA(line,
++                        "[D3D9-CAPS] adapter hr=0x%08lx adapter=%u type=%u VS=0x%08lx PS=0x%08lx PS20Caps=0x%08lx temps=%lu slots=%lu texStages=%lu textures=%lu filter=0x%08lx caps=0x%08lx caps2=0x%08lx dev=0x%08lx dev2=0x%08lx misc=0x%08lx raster=0x%08lx texcaps=0x%08lx cubeFilter=0x%08lx texops=0x%08lx tex=%lux%lu clips=%lu prims=%lu streams=%lu stride=%lu index=%lu stretch=0x%08lx pointMilli=%lu\r\n",
++                        (unsigned long)hr, adapter, device_type,
++                        (unsigned long)caps->VertexShaderVersion,
++                        (unsigned long)caps->PixelShaderVersion,
++                        (unsigned long)caps->PS20Caps.Caps,
++                        (unsigned long)caps->PS20Caps.NumTemps,
++                        (unsigned long)caps->PS20Caps.NumInstructionSlots,
++                        (unsigned long)caps->MaxTextureBlendStages,
++                        (unsigned long)caps->MaxSimultaneousTextures,
++                        (unsigned long)caps->TextureFilterCaps,
++                        (unsigned long)caps->Caps,
++                        (unsigned long)caps->Caps2,
++                        (unsigned long)caps->DevCaps,
++                        (unsigned long)caps->DevCaps2,
++                        (unsigned long)caps->PrimitiveMiscCaps,
++                        (unsigned long)caps->RasterCaps,
++                        (unsigned long)caps->TextureCaps,
++                        (unsigned long)caps->CubeTextureFilterCaps,
++                        (unsigned long)caps->TextureOpCaps,
++                        (unsigned long)caps->MaxTextureWidth,
++                        (unsigned long)caps->MaxTextureHeight,
++                        (unsigned long)caps->MaxUserClipPlanes,
++                        (unsigned long)caps->MaxPrimitiveCount,
++                        (unsigned long)caps->MaxStreams,
++                        (unsigned long)caps->MaxStreamStride,
++                        (unsigned long)caps->MaxVertexIndex,
++                        (unsigned long)caps->StretchRectFilterCaps,
++                        (unsigned long)(caps->MaxPointSize * 1000.0f));
++                WriteFile(file, line, length, &written, NULL);
++                CloseHandle(file);
++            }
++        }
++    }
++
+     return hr;
+ }
+ 

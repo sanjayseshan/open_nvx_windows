@@ -27,6 +27,7 @@
 int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
                              uint32_t width, uint32_t height);
 void NvxWglRecordMesaInitStage(const char *stage);
+void NvxWglRecordNouveauFenceError(const char *stage, int error);
 uint64_t nvx_wgl_present_timer(void);
 uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
@@ -80,6 +81,7 @@ static volatile LONG nvx_bridge_nouveau_aperture_high;
 static volatile LONG nvx_bridge_wgl_lock;
 static HDC nvx_bridge_bound_hdc;
 static volatile LONG nvx_bridge_trace_count;
+static volatile LONG nvx_bridge_transport_pin_logged;
 static volatile LONG nvx_bridge_nouveau_init_failed;
 static volatile LONG nvx_bridge_screen_count;
 static volatile LONG nvx_bridge_screen_active;
@@ -337,6 +339,20 @@ nvx_wgl_set_hdc(HDC hdc)
       return;
    }
 
+   /* A WGL ICD process owns one adapter transport. Pin it as soon as the
+    * miniport client is open, including during the interval before Gallium
+    * creates its pipe_screen. Reopening here leaked client tokens and their
+    * BOs on context/HDC changes before screen creation. */
+   if (nvx_bridge_bound_hdc && hdc != nvx_bridge_bound_hdc &&
+       InterlockedCompareExchange(&nvx_bridge_winsys_ready, 0, 0) &&
+       nvx_bridge_winsys.ClientToken) {
+      if (InterlockedCompareExchange(&nvx_bridge_transport_pin_logged,
+                                     1, 0) == 0)
+         nvx_bridge_trace("NVX bridge retained the process client across HDC changes");
+      InterlockedExchange(&nvx_bridge_wgl_lock, 0);
+      return;
+   }
+
    /* Mesa owns one WGL pipe_screen for the ICD process. Keep its adapter
     * transport alive after the first native screen is created; rebinding the
     * fd would invalidate BOs and channel state still owned by that screen. */
@@ -354,13 +370,17 @@ nvx_wgl_set_hdc(HDC hdc)
          InterlockedExchange(&nvx_bridge_wgl_lock, 0);
          return;
       }
-      InterlockedExchange(&nvx_bridge_drm_fd, 0);
-      nvx_bridge_cached_nouveau_screen = NULL;
       if (InterlockedCompareExchange(&nvx_bridge_nvx_adapter_ready, 0, 0)) {
          NvxNouveauScreenDestroy(&nvx_bridge_nouveau_screen);
          InterlockedExchange(&nvx_bridge_nvx_adapter_ready, 0);
       }
-      NvxXf86DrmUnregisterDevice(old_fd);
+      if (!NvxXf86DrmUnregisterDevice(old_fd)) {
+         nvx_bridge_trace("NVX bridge HDC switch deferred: DRM client teardown failed");
+         InterlockedExchange(&nvx_bridge_wgl_lock, 0);
+         return;
+      }
+      InterlockedExchange(&nvx_bridge_drm_fd, 0);
+      nvx_bridge_cached_nouveau_screen = NULL;
       /* Unregister closes the session through the device copy it owns. */
       nvx_bridge_winsys.ClientToken = 0;
    } else if (nvx_bridge_winsys.ClientToken) {
@@ -369,7 +389,11 @@ nvx_wgl_set_hdc(HDC hdc)
          InterlockedExchange(&nvx_bridge_wgl_lock, 0);
          return;
       }
-      (void)NvxWinsysCloseClient(&nvx_bridge_winsys);
+      if (!NvxWinsysCloseClient(&nvx_bridge_winsys)) {
+         nvx_bridge_trace("NVX bridge HDC switch deferred: client close failed");
+         InterlockedExchange(&nvx_bridge_wgl_lock, 0);
+         return;
+      }
    }
    nvx_bridge_bound_hdc = hdc;
    InterlockedExchangePointer((PVOID volatile *)&nvx_wgl_hdc, hdc);
@@ -704,6 +728,7 @@ nvx_bridge_trace(const char *message)
    if (count > 32 && strncmp(message, "NVC0 init rc=", 13) != 0 &&
        strncmp(message, "NVIF SCLASS", 11) != 0 &&
        strncmp(message, "Nouveau pushbuf", 15) != 0 &&
+       strncmp(message, "Nouveau fence", 13) != 0 &&
        strncmp(message, "Nouveau screen", 14) != 0 &&
        strncmp(message, "Native Nouveau", 14) != 0)
       return;
@@ -739,6 +764,22 @@ NvxWglRecordMesaInitFailure(const char *stage, int error)
    memcpy(message + prefix_length, stage, stage_length);
    message[prefix_length + stage_length] = '\0';
    InterlockedExchange(&nvx_bridge_nouveau_init_failed, 1);
+   nvx_bridge_nouveau_trace(message);
+}
+
+/* Keep fence allocation failures visible without marking screen creation as
+ * failed; Gallium may retry once a transient GART allocation pressure clears. */
+void
+NvxWglRecordNouveauFenceError(const char *stage, int error)
+{
+   static volatile LONG trace_count;
+   char message[128];
+
+   if (InterlockedIncrement(&trace_count) > 8)
+      return;
+   if (!stage)
+      stage = "unknown";
+   wsprintfA(message, "Nouveau fence rc=%d: %s", error, stage);
    nvx_bridge_nouveau_trace(message);
 }
 
@@ -884,12 +925,30 @@ NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                uint32_t a, uint32_t b, uint32_t c,
                                uint32_t d, uint32_t e, uint32_t f)
 {
+   static volatile LONG pushbuf_failure_trace_count;
+   static volatile LONG bo_failure_trace_count;
+   static volatile LONG bo_success_trace_count;
+   static volatile LONG allocation_failure_trace_count;
    char message[112];
 
    /* Kind 6 is the pushbuf result, emitted once for every batch. Keep that
     * status in the aggregate profile instead of reopening the log per batch. */
    if (kind == 6U)
       return;
+   /* Failure summaries are bounded and emitted in normal runs. */
+   if (kind == 21U) {
+      if (InterlockedIncrement(&pushbuf_failure_trace_count) > 32)
+         return;
+   } else if (kind == 22U) {
+      if (InterlockedIncrement(&bo_failure_trace_count) > 32)
+         return;
+   } else if (kind == 23U) {
+      if (InterlockedIncrement(&bo_success_trace_count) > 32)
+         return;
+   } else if (kind == 24U) {
+      if (InterlockedIncrement(&allocation_failure_trace_count) > 32)
+         return;
+   }
    /* BO/push/reloc dumps are high-volume diagnostics, never part of the
     * default performance run. Define NVX_XP_PUSHBUF_TRACE to restore them. */
 #if !defined(NVX_XP_PUSHBUF_TRACE)
@@ -2580,11 +2639,9 @@ done:
 void
 nvx_wgl_process_detach(void)
 {
-   /* PROCESS_DETACH runs under the loader lock. Reuse the context DC saved
-    * during winsys setup; acquiring/releasing a fresh DC here can recurse
-    * through GDI while the WOW64 ICD is unloading. */
-   HDC transport = nvx_bridge_bound_hdc;
+   /* PROCESS_DETACH runs under the loader lock. The DRM registry owns each
+    * client's transport DC, so close sessions through those saved transports
+    * without acquiring a fresh GDI DC or relying on the application's HDC. */
    nvx_wgl_log_performance_profile();
-   if (transport)
-      NvxXf86DrmCloseProcessClients(transport);
+   NvxXf86DrmCloseProcessClients();
 }

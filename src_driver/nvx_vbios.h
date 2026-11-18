@@ -78,7 +78,7 @@ int NvxParseFwsecRom(NVX_ROM_READ32 read32, void *context,
 int NvxSelectFwsecSignature(const NVX_FWSEC_INFO *info, uint32_t rawFuse,
                             uint32_t *fuseVersion, uint32_t *signatureIndex,
                             uint32_t *signatureOffset);
-int NvxComputeFrtsLayout(uint64_t fbSize, uint32_t workspaceReg,
+int NvxComputeFrtsLayout(uint32_t chipset, uint64_t fbSize, uint32_t workspaceReg,
                          uint32_t mmuLockPlm, uint32_t mmuLockLoReg,
                          uint32_t mmuLockHiReg, NVX_FRTS_LAYOUT *layout);
 int NvxValidateFrtsWpr2(uint64_t frtsOffset, uint32_t scratch,

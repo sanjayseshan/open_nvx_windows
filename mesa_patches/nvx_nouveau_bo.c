@@ -42,8 +42,19 @@ NvxNouveauBoCreate(NVX_WINSYS_DEVICE *device,
    memset(bo, 0, sizeof(*bo));
    if (!device || !description || !client_token ||
        client_token != device->ClientToken ||
-       description->Bytes > device->caps.MaxBufferBytes)
+       description->Bytes > device->caps.MaxBufferBytes) {
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      NvxWglRecordNouveauPushbufItem(24U, 1U,
+         device ? (uint32_t)device->ClientToken : 0U,
+         (uint32_t)client_token,
+         description ? description->Bytes : 0U,
+         device ? device->caps.MaxBufferBytes : 0U,
+         (device && client_token == device->ClientToken) ? 1U : 0U,
+         0U);
+#endif
       return 0;
+   }
 
    if (s_nvx_gart_pool_enabled &&
        description->Bytes == 4096 &&
@@ -70,8 +81,15 @@ NvxNouveauBoCreate(NVX_WINSYS_DEVICE *device,
    request.BufferId = 0;
    request.GpuVa = 0;
    request.ClientToken = client_token;
-   if (!NvxWinsysAllocBuffer(device, &request, &bo->allocation))
+   if (!NvxWinsysAllocBuffer(device, &request, &bo->allocation)) {
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      NvxWglRecordNouveauPushbufItem(24U, 2U,
+         request.Usage, request.Bytes, request.Alignment,
+         request.TileMode, request.MemoryKind, 0U);
+#endif
       return 0;
+   }
 
    bo->device = device;
    bo->references = 1;

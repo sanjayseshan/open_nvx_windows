@@ -109,18 +109,19 @@ int main(void)
         assert(NvxVbeSetMode(&dev,2));
         assert(!channelReleases && biosModeSets==sameModeSets);
         assert(dev.NativeDisplayChannelsReady && dev.NativeDualActive);
-        assert(NvxVbeSetMode(&dev,0));
-        assert(channelReleases==1 && !dev.NativeDisplayChannelsReady && !dev.NativeDualActive);
-        assert(NvxVbeSetMode(&dev,2));
-        dev.NativeDisplayAttempted=TRUE;dev.NativeDisplayChannelsReady=TRUE;
-        dev.NativeDisplayChannels[0]=0xc6700100;
+        assert(!NvxVbeSetMode(&dev,0)); /* Caller must perform native modeset. */
+        assert(!channelReleases && biosModeSets==sameModeSets);
+        assert(dev.NativeDisplayChannelsReady && dev.NativeDualActive);
+        assert(dev.CurrentModeIndex==2 && dev.NativeDisplayChannels[0]==0xc6700100);
+        /* Failed/incomplete native initialization still requires teardown
+           before the bootstrap BIOS path may run. */
+        dev.NativeDisplayChannelsReady=FALSE;dev.NativeDisplayFaulted=TRUE;
         channelReleaseAllowed=FALSE;
-        ULONG sets=biosModeSets;
         assert(!NvxVbeSetMode(&dev,0));
-        assert(biosModeSets==sets && dev.CurrentModeIndex==2);
+        assert(biosModeSets==sameModeSets && dev.CurrentModeIndex==2);
         channelReleaseAllowed=TRUE;
         assert(NvxVbeSetMode(&dev,0));
-        assert(channelReleases==3 && !dev.NativeDisplayAttempted);
+        assert(channelReleases==2 && !dev.NativeDisplayAttempted);
         assert(NvxVbeSetMode(&dev,2));
         assert(!NvxVbeSetMode(&dev,3) && dev.CurrentModeIndex==2);
         scenario=3;
@@ -139,6 +140,6 @@ int main(void)
         assert(dev.NumModes==(scenario==5?5U:4U));
         if(scenario==5) assert(dev.ModeVbeIds[4]==0x177 && dev.Modes[4].VisScreenWidth==1920);
     }
-    puts("VBE tests passed: modes, format/bounds, native-channel teardown before BIOS reset and blocked reset on teardown failure.");
+    puts("VBE tests passed: modes, format/bounds, native ownership preservation and bootstrap teardown failure.");
     return 0;
 }

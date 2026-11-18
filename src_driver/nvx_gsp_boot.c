@@ -817,6 +817,7 @@ BOOLEAN NvxGspInitSubsystem(PVOID HwDeviceExtension) {
             if (function==0x1001) {
                 if (!(VideoPortReadRegisterUlong((PULONG)(bar0+NV_PGSP_FALCON_RISCV_STAT))&0x80))
                     return FALSE;
+                devExt->GspRpcFaulted=FALSE;
                 devExt->GspInitialized=TRUE;
                 LogStr("NVX [GSP]: RM INIT_DONE received; display channels still unavailable.\n");
                 if(!NvxGspCreateObjects(devExt,rxSequence))
@@ -944,6 +945,14 @@ VOID NvxGspShutdown(PVOID HwDeviceExtension) {
                 entry->SystemVirtual=NULL;
                 entry->SystemPhysical.QuadPart=0;
             }
+        }
+        if(devExt->GspVramPteVirtual) {
+            VideoPortFreeCommonBuffer(HwDeviceExtension,
+                devExt->GspVramPteLength,devExt->GspVramPteVirtual,
+                devExt->GspVramPtePhysical,FALSE);
+            devExt->GspVramPteVirtual=NULL;
+            devExt->GspVramPteLength=0;
+            devExt->GspVramPtePhysical.QuadPart=0;
         }
         if(devExt->GspGartPteVirtual) {
             VideoPortFreeCommonBuffer(HwDeviceExtension,

@@ -4345,6 +4345,26 @@ static void TestDirect3D9(HWND hwnd)
     D3DADAPTER_IDENTIFIER9 adapter;
     if (SUCCEEDED(pD3D->lpVtbl->GetAdapterIdentifier(pD3D, 0, 0, &adapter)))
         LogMsg("-> D3D adapter: %s driver=%s\n", adapter.Description, adapter.Driver);
+    {
+        D3DCAPS9 caps;
+        HRESULT capsHr;
+        memset(&caps, 0, sizeof(caps));
+        capsHr=pD3D->lpVtbl->GetDeviceCaps(pD3D,D3DADAPTER_DEFAULT,
+                                           D3DDEVTYPE_HAL,&caps);
+        if(SUCCEEDED(capsHr)) {
+            LogMsg("-> D3D HAL caps: VS=0x%08lX PS=0x%08lX devcaps=0x%08lX caps2=0x%08lX maxVSConst=%lu maxTexture=%lux%lu\n",
+                   (unsigned long)caps.VertexShaderVersion,
+                   (unsigned long)caps.PixelShaderVersion,
+                   (unsigned long)caps.DevCaps,
+                   (unsigned long)caps.Caps2,
+                   (unsigned long)caps.MaxVertexShaderConst,
+                   (unsigned long)caps.MaxTextureWidth,
+                   (unsigned long)caps.MaxTextureHeight);
+        } else {
+            LogMsg("-> D3D HAL GetDeviceCaps failed: 0x%08lX\n",
+                   (unsigned long)capsHr);
+        }
+    }
     D3DDEVTYPE deviceType = D3DDEVTYPE_HAL;
     IDirect3DDevice9 *pDevice = NULL;
     HRESULT hr = pD3D->lpVtbl->CreateDevice(pD3D, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,

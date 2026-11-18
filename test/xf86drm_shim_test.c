@@ -22,6 +22,8 @@ static struct mock_buffer buffers[8];
 static uint64_t next_buffer_id = 1;
 static uint64_t next_gpu_va = 0x10000000ULL;
 static uint64_t next_gart_va = 0x11a00000ULL;
+static int mock_client_close_succeeds = 1;
+static int mock_vram_alloc_fails;
 
 static struct mock_buffer *
 find_buffer(uint64_t id)
@@ -60,7 +62,7 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
    }
    if (escape == NVX_ESCAPE_3D_CLIENT_CLOSE &&
        input_bytes == sizeof(NVX_3D_CLIENT_SESSION) && output_bytes == 0)
-      return 1;
+      return mock_client_close_succeeds;
    if (escape == NVX_ESCAPE_3D_ALLOC &&
        input_bytes == sizeof(NVX_3D_ALLOC_BUFFER) &&
        output_bytes == sizeof(NVX_3D_ALLOC_BUFFER)) {
@@ -77,7 +79,8 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       if (!buffer || !request || request->Bytes == 0)
          return 0;
       if (!(request->Usage & NVX_3D_USAGE_GART_BUFFER) &&
-          request->Bytes > 64U * 1024U * 1024U)
+          (mock_vram_alloc_fails ||
+           request->Bytes > 64U * 1024U * 1024U))
          return 0;
       buffer->data = calloc(1, request->Bytes);
       if (!buffer->data)
@@ -271,6 +274,23 @@ main(void)
       assert(create.info.domain == (NOUVEAU_GEM_DOMAIN_GART |
                                     NOUVEAU_GEM_DOMAIN_MAPPABLE));
       assert(drmCloseBufferHandle(fd, create.info.handle) == 0);
+      /* Mesa requests both domains and NONCONTIG for linear fence BOs. If
+       * VRAM placement fails, that flag must not suppress GART fallback. */
+      memset(&create, 0, sizeof(create));
+      create.info.size = 512U * 1024U;
+      create.info.domain = NOUVEAU_GEM_DOMAIN_VRAM |
+                           NOUVEAU_GEM_DOMAIN_GART;
+      create.info.tile_flags = NOUVEAU_GEM_TILE_NONCONTIG;
+      create.align = 512U * 1024U;
+      mock_vram_alloc_fails = 1;
+      assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
+                                 sizeof(create)) == 0);
+      mock_vram_alloc_fails = 0;
+      assert(create.info.handle != 0);
+      assert(create.info.domain == (NOUVEAU_GEM_DOMAIN_GART |
+                                    NOUVEAU_GEM_DOMAIN_MAPPABLE));
+      assert((create.info.offset & (create.align - 1U)) == 0);
+      assert(drmCloseBufferHandle(fd, create.info.handle) == 0);
       memset(&create, 0, sizeof(create));
       create.info.size = 4096;
       create.info.domain = NOUVEAU_GEM_DOMAIN_VRAM |
@@ -363,8 +383,7 @@ main(void)
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GETPARAM, &getparam,
                                  sizeof(getparam)) == 0);
       assert(getparam.value ==
-             (winsys.caps.VramApertureBytes > 0x02000000ULL ?
-              0x02000000ULL : winsys.caps.VramApertureBytes));
+             winsys.caps.VramApertureBytes);
       getparam.param = NOUVEAU_GETPARAM_EXEC_PUSH_MAX;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GETPARAM, &getparam,
                                  sizeof(getparam)) == 0);
@@ -486,6 +505,29 @@ main(void)
              NVX_XF86DRM_UNSUPPORTED_WRITE_READ);
       assert(status.LastUnsupportedOperation == DRM_NOUVEAU_GEM_PUSHBUF);
       {
+         struct drm_nouveau_gem_pushbuf_bo invalid_bo = {
+            .handle = 0xdeadU,
+            .read_domains = NOUVEAU_GEM_DOMAIN_GART,
+         };
+         struct drm_nouveau_gem_pushbuf_push invalid_push = {
+            .bo_index = 0,
+            .offset = 0,
+            .length = sizeof(uint32_t),
+         };
+         pushbuf.nr_buffers = 1;
+         pushbuf.buffers = (uint64_t)(uintptr_t)&invalid_bo;
+         pushbuf.push = (uint64_t)(uintptr_t)&invalid_push;
+#if defined(_WIN32) || defined(_WIN64)
+         assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_PUSHBUF, &pushbuf,
+                                    sizeof(pushbuf)) == -1);
+         assert(errno == EIO);
+#else
+         assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_PUSHBUF, &pushbuf,
+                                    sizeof(pushbuf)) == -1);
+         assert(errno == ENOSYS);
+#endif
+      }
+      {
          struct drm_nouveau_channel_free channel_free = {
             .channel = channel.channel
          };
@@ -494,7 +536,11 @@ main(void)
       }
    }
 
-   NvxXf86DrmUnregisterDevice(fd);
+   mock_client_close_succeeds = 0;
+   assert(!NvxXf86DrmUnregisterDevice(fd));
+   assert(NvxXf86DrmIsRegistered(fd));
+   mock_client_close_succeeds = 1;
+   assert(NvxXf86DrmUnregisterDevice(fd));
    assert(!NvxXf86DrmIsRegistered(fd));
    assert(find_buffer(2) == NULL);
    assert(drmGetVersion(fd) == NULL && errno == ENODEV);

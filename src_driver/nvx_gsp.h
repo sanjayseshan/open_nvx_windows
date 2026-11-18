@@ -144,11 +144,13 @@ extern volatile ULONG NvxGrUserSubmitBusy;
 #define GSP_SCRATCH_OFFSET             0x02F00000ULL
 #define GSP_SCRATCH_SIZE               0x20000UL
 #define GSP_PAGE_TABLES_OFFSET         0x02E00000ULL
-#define GSP_VRAM_GPU_VA                0x20000000ULL
-#define GSP_VRAM_MAP_BYTES             0x08000000ULL
+#define GSP_VRAM_GPU_VA                0x100000000ULL
+#define GSP_VRAM_MAP_BYTES             0x200000000ULL
 #define GSP_VRAM_SLICE_BYTES           0x00200000ULL
-#define GSP_VRAM_SLICE_COUNT           64UL
-#define GSP_VRAM_LPT_OFFSET            0x6000UL
+#define GSP_VRAM_SLICE_COUNT           4096UL
+#define GSP_VRAM_PD0_COUNT             16UL
+#define GSP_VRAM_TABLE_BYTES           0x110000UL
+#define GSP_VRAM_LPT_OFFSET            0x10000UL
 #define GSP_UPLOAD_PTE_OFFSET          0xA000UL
 #define GSP_PAGE_TABLES_SIZE           0xB000UL
 #define GSP_GR_CONTEXT_BYTES           0x00C00000UL
@@ -351,6 +353,7 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG64 AllocationToken;
     ULONG Bytes;
     ULONG Usage;
+    ULONG RequestUsage;
     ULONG Width;
     ULONG Height;
     ULONG PitchBytes;
@@ -423,6 +426,10 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG StatQueueSize;
     ULONG Reserved8;
     ULONG RpcSeqNumber;
+    /* A timed-out synchronous RPC has an unknown completion state. */
+    BOOLEAN GspRpcFaulted;
+    /* ALLOC/CONTROL/FREE share one command and one reply queue. */
+    volatile ULONG GspRpcBusy;
 
     /* FWSEC staging is kept alive on ambiguous DMA/Falcon timeouts. */
     PVOID FwsecDmaAdapter;
@@ -446,6 +453,8 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG NativeDisplayHandle;
     ULONG NativeDisplayCaps;
     BOOLEAN NativeDisplayAttempted,NativeDisplayChannelsReady;
+    /* RM display instance memory is device-global and survives channel teardown. */
+    BOOLEAN NativeDisplayInstanceReady;
     ULONG64 NativeDisplayInstance;
     ULONG NativeDisplayChannels[3];
     ULONG NativeDisplayCorePut;
@@ -516,6 +525,9 @@ typedef struct _NVX_DEVICE_EXTENSION {
     NVX_3D_CLIENT_SESSION_ENTRY Nvx3dClientSessions[NVX_3D_CLIENT_SESSION_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
     NVX_GART_HEAP GspGartHeap;
+    PVOID GspVramPteVirtual;
+    PHYSICAL_ADDRESS GspVramPtePhysical;
+    ULONG GspVramPteLength;
     PVOID GspGartPteVirtual;
     PHYSICAL_ADDRESS GspGartPtePhysical;
     ULONG GspGartPteLength;

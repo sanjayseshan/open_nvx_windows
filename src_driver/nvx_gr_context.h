@@ -15,18 +15,63 @@ int NvxGrBuildLayout(const NVX_GR_REQUIREMENT *, uint32_t, int, uint64_t, NVX_GR
 /* Encode 4KB coherent system-memory leaves into caller-owned PTEs. */
 int NvxGrBuildPtes(uint64_t *, uint32_t, uint64_t, uint64_t, int);
 
-/* Reserved Gallium/Nouveau GART window: 115 2 MiB slices immediately below
- * the existing VRAM aperture at 0x20000000. One 4 KiB small-page table maps
- * each slice. */
+/* Two Gallium/Nouveau GART VA windows, each 115 2 MiB slices. The primary
+ * window is below the VRAM aperture. The secondary starts after the VRAM and
+ * upload apertures, leaving their page-directory entries intact. One 4 KiB
+ * small-page table maps each slice; the allocator keeps logical pages
+ * contiguous while translating the two windows separately. */
 #define NVX_GART_GPU_VA_BASE UINT64_C(0x11a00000)
-#define NVX_GART_SLICE_BYTES UINT32_C(0x00200000)
-#define NVX_GART_SLICE_COUNT 115U
 #define NVX_GART_PTES_PER_SLICE 512U
+#define NVX_GART_PRIMARY_SLICE_COUNT 115U
+#define NVX_GART_PRIMARY_PAGE_COUNT \
+    (NVX_GART_PRIMARY_SLICE_COUNT * NVX_GART_PTES_PER_SLICE)
+#define NVX_GART_EXTRA_GPU_VA_BASE UINT64_C(0x28200000)
+#define NVX_GART_EXTRA_SLICE_COUNT 115U
+#define NVX_GART_SLICE_BYTES UINT32_C(0x00200000)
+#define NVX_GART_SLICE_COUNT \
+    (NVX_GART_PRIMARY_SLICE_COUNT + NVX_GART_EXTRA_SLICE_COUNT)
 #define NVX_GART_PAGE_BYTES 4096U
 #define NVX_GART_MIN_VA_ALIGNMENT 0x10000U
 #define NVX_GART_PAGE_COUNT (NVX_GART_SLICE_COUNT * NVX_GART_PTES_PER_SLICE)
 #define NVX_GART_TOTAL_BYTES ((uint64_t)NVX_GART_SLICE_COUNT * NVX_GART_SLICE_BYTES)
+#define NVX_GART_SEGMENT_BYTES \
+    ((uint64_t)NVX_GART_PRIMARY_SLICE_COUNT * NVX_GART_SLICE_BYTES)
 #define NVX_GART_BITMAP_WORDS ((NVX_GART_PAGE_COUNT + 31U) / 32U)
+static inline uint64_t NvxGartGpuVaForPage(uint32_t page)
+{
+    if (page >= NVX_GART_PAGE_COUNT)
+        return 0;
+    if (page < NVX_GART_PRIMARY_PAGE_COUNT)
+        return NVX_GART_GPU_VA_BASE + (uint64_t)page * NVX_GART_PAGE_BYTES;
+    return NVX_GART_EXTRA_GPU_VA_BASE +
+        (uint64_t)(page - NVX_GART_PRIMARY_PAGE_COUNT) * NVX_GART_PAGE_BYTES;
+}
+static inline int NvxGartPageRangeValid(uint32_t first, uint32_t count)
+{
+    if (!count || first >= NVX_GART_PAGE_COUNT ||
+        count > NVX_GART_PAGE_COUNT - first)
+        return 0;
+    return first < NVX_GART_PRIMARY_PAGE_COUNT ?
+        count <= NVX_GART_PRIMARY_PAGE_COUNT - first : 1;
+}
+static inline int NvxGartPageForGpuVa(uint64_t gpuVa, uint32_t *page)
+{
+    uint64_t offset;
+    if (gpuVa >= NVX_GART_GPU_VA_BASE &&
+        gpuVa < NVX_GART_GPU_VA_BASE + NVX_GART_SEGMENT_BYTES) {
+        offset = gpuVa - NVX_GART_GPU_VA_BASE;
+        if (page) *page = (uint32_t)(offset / NVX_GART_PAGE_BYTES);
+        return 1;
+    }
+    if (gpuVa >= NVX_GART_EXTRA_GPU_VA_BASE &&
+        gpuVa < NVX_GART_EXTRA_GPU_VA_BASE + NVX_GART_SEGMENT_BYTES) {
+        offset = gpuVa - NVX_GART_EXTRA_GPU_VA_BASE;
+        if (page) *page = NVX_GART_PRIMARY_PAGE_COUNT +
+                          (uint32_t)(offset / NVX_GART_PAGE_BYTES);
+        return 1;
+    }
+    return 0;
+}
 typedef struct NVX_GART_HEAP {
     uint32_t used[NVX_GART_BITMAP_WORDS];
 } NVX_GART_HEAP;

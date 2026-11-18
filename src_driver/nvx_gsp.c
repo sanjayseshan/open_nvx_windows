@@ -63,8 +63,8 @@ _Static_assert(GSP_VRAM_MAP_BYTES ==
                GSP_VRAM_SLICE_COUNT * GSP_VRAM_SLICE_BYTES,
                "VRAM PTE slices must cover the published aperture");
 _Static_assert(GSP_VRAM_LPT_OFFSET + GSP_VRAM_SLICE_COUNT * 0x100UL ==
-               GSP_UPLOAD_PTE_OFFSET,
-               "upload SPT must follow the VRAM LPT pool");
+               GSP_VRAM_TABLE_BYTES,
+               "VRAM allocation must contain all large-page tables");
 _Static_assert(GSP_UPLOAD_PTE_OFFSET + 0x1000UL <= GSP_PAGE_TABLES_SIZE,
                "page-table allocation must contain the upload SPT");
 _Static_assert(GSP_PAGE_TABLES_OFFSET + GSP_PAGE_TABLES_SIZE <=
@@ -339,13 +339,14 @@ static VOID NvxGspLogPbdmaFault(PNVX_DEVICE_EXTENSION dev)
 }
 
 /* One synchronous post-init RPC. Unexpected events remain unconsumed. */
-static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
-                         const void *payload,ULONG bytes)
+static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
+                               const void *payload,ULONG bytes)
 {
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
     ULONG write=cmd->WritePtr,next,available;
     uint32_t elements=1;
-    if(!dev->GspInitialized||write>=63||stat->ReadPtr>=63) return FALSE;
+    if(!dev->GspInitialized||dev->GspRpcFaulted||write>=63||stat->ReadPtr>=63)
+        return FALSE;
     if(bytes<=4016) {
         next=(write+1)%63;
         if(next==stat->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
@@ -374,10 +375,14 @@ static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
         __sync_synchronize();
         gathered=NvxGatherRpc((PUCHAR)dev->StatQueueVirtual+4096,63*4096,
             63,read,head,dev->RpcRxRecord,sizeof(dev->RpcRxRecord),&elements);
-        if(gathered<0) return FALSE;
+        if(gathered<0) {dev->GspRpcFaulted=TRUE;return FALSE;}
         if(!gathered) {VideoPortStallExecution(100);continue;}
         if(!NvxDecodeRpcRecord(dev->RpcRxRecord,elements*4096,&function,&result,&sequence,&decoded)||
-            decoded!=elements||sequence!=dev->RpcRxSequence) return FALSE;
+            decoded!=elements||sequence!=dev->RpcRxSequence) {
+            dev->GspRpcFaulted=TRUE;
+            LogStr("NVX [RM]: RPC stream validation failed; queue quarantined.\n");
+            return FALSE;
+        }
         LogStr("NVX [RM]: reply function=");LogHex(function);
         LogStr(" result=");LogHex(result);LogStr("\n");
         if(!result && (function==0x101b||function==0x100c||function==0x1004||function==0x1005||function==0x1006||function==0x100f)) {
@@ -449,12 +454,43 @@ static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             dev->RpcRxSequence++;
             continue;
         }
-        if(function!=expected) return FALSE;
+        if(function!=expected) {
+            dev->GspRpcFaulted=TRUE;
+            LogStr("NVX [RM]: unexpected RPC reply; queue quarantined. expected=");
+            LogHex(expected);LogStr(" actual=");LogHex(function);LogStr("\n");
+            return FALSE;
+        }
         __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
         dev->RpcRxSequence++;
         return result==0;
     }
-    LogStr("NVX [RM]: RPC timed out; staging retained.\n");return FALSE;
+    /* The request may still complete after our bounded wait. Do not send
+       another command into a queue with an unconsumed/ambiguous response. */
+    dev->GspRpcFaulted=TRUE;
+    LogStr("NVX [RM]: RPC timed out; queue quarantined and staging retained.\n");
+    return FALSE;
+}
+
+/* The GSP command/status queues are device-global. BO allocation, display
+ * modesets, and GR channel lifetime can reach them concurrently; serialize
+ * each request/reply pair so callers cannot consume each other's responses. */
+static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
+                         const void *payload,ULONG bytes)
+{
+    ULONG wait;
+    BOOLEAN result;
+    if(!dev) return FALSE;
+    for(wait=0;wait<500000U;wait++) {
+        if(!__sync_lock_test_and_set(&dev->GspRpcBusy,1)) break;
+        VideoPortStallExecution(10U);
+    }
+    if(wait==500000U) {
+        LogStr("NVX [RM]: RPC queue lock timeout before submission.\n");
+        return FALSE;
+    }
+    result=NvxGspCallLocked(dev,expected,payload,bytes);
+    __sync_lock_release(&dev->GspRpcBusy);
+    return result;
 }
 
 /* RM 535 GSP_RM_ALLOC: fixed 32-byte header followed by class parameters. */
@@ -466,8 +502,17 @@ static BOOLEAN NvxGspAlloc(PNVX_DEVICE_EXTENSION dev,ULONG parent,ULONG object,
     if(bytes>400||(bytes&&!params)) return FALSE;
     payload[0]=0xc1d00001;payload[1]=parent;payload[2]=object;payload[3]=hclass;payload[5]=bytes;
     if(bytes) VideoPortMoveMemory(payload+8,(PVOID)params,bytes);
-    if(!NvxGspCall(dev,103,payload,32+bytes)) return FALSE;
-    if(words[14]<64||words[20]!=payload[0]||words[21]!=parent||words[22]!=object||words[23]!=hclass) return FALSE;
+    if(!NvxGspCall(dev,103,payload,32+bytes)) {
+        LogStr("NVX [RM]: GSP_RM_ALLOC RPC failed class=");LogHex(hclass);
+        LogStr(" handle=");LogHex(object);LogStr("\n");return FALSE;
+    }
+    if(words[14]<64||words[20]!=payload[0]||words[21]!=parent||
+       words[22]!=object||words[23]!=hclass) {
+        LogStr("NVX [RM]: GSP_RM_ALLOC reply mismatch class=");LogHex(hclass);
+        LogStr(" length=");LogHex(words[14]);LogStr(" client=");LogHex(words[20]);
+        LogStr(" parent=");LogHex(words[21]);LogStr(" handle=");LogHex(words[22]);
+        LogStr(" reply class=");LogHex(words[23]);LogStr("\n");return FALSE;
+    }
     LogStr("NVX [RM]: allocation class=");LogHex(hclass);
     LogStr(" status=");LogHex(words[24]);LogStr("\n");
     return words[24]==0;
@@ -504,11 +549,10 @@ static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
     return TRUE;
 }
 
-/* Register framebuffer pages with OpenRM using the same ALLOC_MEMORY
-   rpc_alloc_memory_v13_01 path as upstream. On GA104, OpenRM's checked-in GSP
-   HAL deliberately stubs MAP_MEMORY_DMA and ALLOC_VIRTMEM, so the OS-specific
-   client side still installs the VA mapping in the shared RM VASpace. XP uses
-   its external page-table aperture for that part. */
+/* Register framebuffer pages with the GSP RM page-list RPC, which is the
+   supported OpenRM path for this client. GSP RM rejects NV01_MEMORY_LOCAL_USER
+   allocations from this miniport client; GPU VAs come from our existing
+   aperture and XP installs the matching GPU PTEs after page registration. */
 BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
                              ULONG64 physicalOffset,ULONG bytes,
                              ULONG alignment,ULONG64 *gpuVa)
@@ -526,8 +570,7 @@ BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
        bytes-1>dev->GspFbFreeLimit-physicalOffset||
        physicalOffset>~0ULL-dev->GspVramGpuVa) return FALSE;
     pageCount=bytes>>12;
-    /* RPC continuation records are staged in device-owned buffers; retain a
-       2MB margin below the 62-entry command queue limit for framing overhead. */
+    /* Keep enough RPC queue space for framing and sequence diagnostics. */
     if(!pageCount||pageCount>30000) return FALSE;
     mappedVa=dev->GspVramGpuVa+physicalOffset;
     if(mappedVa&(alignment-1)) return FALSE;
@@ -537,14 +580,10 @@ BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
     payload[1]=dev->GspDeviceHandle;
     payload[2]=memoryHandle;
     payload[3]=0x82; /* NV01_MEMORY_LIST_FBMEM */
-    /* Match OpenRM's NVOS02 conversion for an FB page-list object:
-       NO_MAP | NONCONTIGUOUS | VIDMEM. Even though this allocator chooses
-       consecutive VRAM PFNs, MEMORY_LIST_FBMEM consumes the supplied PFN
-       array as a page list and OpenRM rejects CONTIGUOUS with pageCount > 1. */
-    payload[4]=0x40000210U;
-    payload[8]=bytes; /* 64-bit aligned length */
+    payload[4]=0x40000010U; /* NO_MAP | page-list supplied */
+    payload[8]=bytes;
     payload[10]=pageCount;
-    payload[12]=pageCount<<16; /* pte_desc: IDR_NONE and page count */
+    payload[12]=pageCount<<16; /* IDR_NONE and page count */
     for(i=0;i<pageCount;i++) {
         ULONG64 pfn=(physicalOffset>>12)+i;
         payload[14+i*2]=(ULONG)pfn;
@@ -552,12 +591,10 @@ BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
     }
     payloadWords=14+pageCount*2;
     if(!NvxGspCall(dev,4,payload,payloadWords*sizeof(ULONG))) {
-        LogStr("NVX [RM-BO]: ALLOC_MEMORY FB registration RPC failed handle=");
+        LogStr("NVX [RM-BO]: OpenRM FB page-list registration failed handle=");
         LogHex(memoryHandle);LogStr(" offset=");LogHex(physicalOffset);
         LogStr(" pages=");LogHex(pageCount);LogStr("\n");return FALSE;
     }
-    /* ALLOC_MEMORY returns only the RPC common header on success; unlike
-       object allocation, it does not echo the page-list parameters. */
     *gpuVa=mappedVa;
     LogStr("NVX [RM-BO]: OpenRM registered FB pages handle=");LogHex(memoryHandle);
     LogStr(" va=");LogHex(mappedVa);LogStr(" physical-offset=");
@@ -610,14 +647,14 @@ BOOLEAN NvxGspSetVramPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
     ULONG page,slice;
     PULONG64 lpt;
     PULONG64 tables;
-    if(!dev||!dev->GspDmaVirtual||!dev->GspVaSpaceHandle||
+    if(!dev||!dev->GspVramPteVirtual||!dev->GspVaSpaceHandle||
        gpuVa<dev->GspVramGpuVa||(gpuVa&0xffffULL)||
        (map&&kind>0xffU)||(!map&&kind!=0U))
         return FALSE;
     offset=gpuVa-dev->GspVramGpuVa;
     if(offset>dev->GspVramMapBytes||0x10000ULL>dev->GspVramMapBytes-offset)
         return FALSE;
-    tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+GSP_PAGE_TABLES_OFFSET);
+    tables=(PULONG64)dev->GspVramPteVirtual;
     slice=(ULONG)(offset/GSP_VRAM_SLICE_BYTES);
     page=(ULONG)((offset%GSP_VRAM_SLICE_BYTES)/0x10000ULL);
     if(slice>=GSP_VRAM_SLICE_COUNT||page>=32U) return FALSE;
@@ -644,14 +681,14 @@ BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
     PULONG64 tables;
     ULONG done;
     ULONG64 offset;
-    if(!dev||!dev->GspDmaVirtual||!dev->GspVaSpaceHandle||!bytes||
+    if(!dev||!dev->GspVramPteVirtual||!dev->GspVaSpaceHandle||!bytes||
        gpuVa<dev->GspVramGpuVa||(gpuVa&0xffffULL)||(bytes&0xffffU)||
        (map&&kind>0xffU)||(!map&&kind!=0U))
         return FALSE;
     offset=gpuVa-dev->GspVramGpuVa;
     if(offset>dev->GspVramMapBytes||bytes>dev->GspVramMapBytes-offset)
         return FALSE;
-    tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+GSP_PAGE_TABLES_OFFSET);
+    tables=(PULONG64)dev->GspVramPteVirtual;
     for(done=0;done<bytes;done+=0x10000U) {
         ULONG64 pageOffset=offset+done;
         ULONG slice=(ULONG)(pageOffset/GSP_VRAM_SLICE_BYTES);
@@ -724,8 +761,7 @@ BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
     ULONG capacity=NVX_GART_SLICE_COUNT*NVX_GART_PTES_PER_SLICE;
     ULONG clearBytes;
     if(!dev||!dev->GspGartReady||!dev->GspGartPteVirtual||
-       !pageCount||firstPage>=NVX_GART_PAGE_COUNT||
-       pageCount>NVX_GART_PAGE_COUNT-firstPage||
+       !NvxGartPageRangeValid(firstPage,pageCount)||
        !bytes||(bytes&0xfffU)||(physical&0xfffULL)||
        physical>0x100000000ULL-bytes||
        (ULONG64)bytes>(ULONG64)pageCount*NVX_GART_PAGE_BYTES)
@@ -751,8 +787,7 @@ BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
 #if NVX_TRACE_ALLOCATIONS
     LogStr("NVX [GART]: mapped page=");LogHex(firstPage);
     LogStr(" count=");LogHex(pageCount);
-    LogStr(" gpuVa=");LogHex(NVX_GART_GPU_VA_BASE+
-                             (ULONG64)firstPage*NVX_GART_PAGE_BYTES);
+    LogStr(" gpuVa=");LogHex(NvxGartGpuVaForPage(firstPage));
     LogStr(" physical=");LogHex(physical);
     LogStr(" bytes=");LogHex(bytes);
     LogStr(" pteTable=");LogHex(dev->GspGartPtePhysical.QuadPart);
@@ -788,9 +823,8 @@ BOOLEAN NvxGspUnmapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
     PULONG64 entries;
     ULONG clearBytes;
-    if(!dev||!dev->GspGartReady||!dev->GspGartPteVirtual||!pageCount||
-       firstPage>=NVX_GART_PAGE_COUNT||
-       pageCount>NVX_GART_PAGE_COUNT-firstPage)
+    if(!dev||!dev->GspGartReady||!dev->GspGartPteVirtual||
+       !NvxGartPageRangeValid(firstPage,pageCount))
         return FALSE;
     if(!NvxGspLockGartPtes()) {
         LogStr("NVX [GART]: page-table lock timeout unmapping page=");
@@ -935,7 +969,7 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
        Follow Nouveau r535's shared, externally-managed VASpace setup: install the page directory
        with RM, then populate OS-owned Pascal+ page tables and invalidate TLBs.
        The small-page tree maps scratch at 0x10000000; an LPT pool maps the
-       firmware-reported free VRAM window at 0x20000000. */
+       firmware-reported free VRAM window at GSP_VRAM_GPU_VA. */
     ULONG setDirectory[8]={0};
     ULONG64 physical=dev->GspDmaPhysical.QuadPart+GSP_PAGE_TABLES_OFFSET;
     PULONG64 tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+GSP_PAGE_TABLES_OFFSET);
@@ -956,6 +990,20 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
         }
         VideoPortZeroMemory(dev->GspGartPteVirtual,dev->GspGartPteLength);
     }
+    if(!dev->GspVramPteVirtual) {
+        dev->GspVramPteLength=GSP_VRAM_TABLE_BYTES;
+        dev->GspVramPteVirtual=VideoPortAllocateCommonBuffer(dev,
+            dev->DmaAdapter,dev->GspVramPteLength,
+            &dev->GspVramPtePhysical,FALSE,NULL);
+        if(!dev->GspVramPteVirtual ||
+           (dev->GspVramPtePhysical.QuadPart&0xfff) ||
+           (ULONG64)dev->GspVramPtePhysical.QuadPart>
+               0x100000000ULL-dev->GspVramPteLength) {
+            LogStr("NVX [VRAM]: page-table allocation failed or exceeds DMA range.\n");
+            return FALSE;
+        }
+    }
+    VideoPortZeroMemory(dev->GspVramPteVirtual,dev->GspVramPteLength);
     VideoPortZeroMemory(tables,GSP_PAGE_TABLES_SIZE);
     /* PDEs: coherent-system aperture, volatile, next-table address >> 4. */
     tables[0]=((physical+0x1000)>>4)|0xc;
@@ -963,15 +1011,26 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
     tables[1024]=((physical+0x3000)>>4)|0xc;
     /* PD0 has paired large/small entries; VA>>21 == 128, small is +8. */
     tables[1536+128*2+1]=((physical+0x4000)>>4)|0xc;
-    /* Reserve PD0 entries 141..255 for GART at 0x11a00000..0x1fffffff.
-       The page-table pool is common system memory and is installed before
-       SET_PAGE_DIRECTORY; individual BO PTEs are populated on allocation. */
+    /* Map the primary GART window below VRAM in PD0. The secondary window
+       uses the VRAM directory at tables[2560..3071], after the 128 MiB VRAM
+       map and the upload SPT at PDE 64. This avoids replacing either mapping. */
     for(ULONG slice=0;slice<NVX_GART_SLICE_COUNT;slice++) {
-        ULONG pdIndex=(ULONG)(NVX_GART_GPU_VA_BASE>>21)+slice;
+        ULONG pdIndex;
+        PULONG64 pde;
         ULONG64 ptePhysical=(ULONG64)dev->GspGartPtePhysical.QuadPart+
                             (ULONG64)slice*4096U;
-        if(pdIndex>255U) return FALSE;
-        tables[1536+pdIndex*2+1]=(ptePhysical>>4)|0xc;
+        if(slice<NVX_GART_PRIMARY_SLICE_COUNT) {
+            pdIndex=(ULONG)(NVX_GART_GPU_VA_BASE>>21)+slice;
+            if(pdIndex>255U) return FALSE;
+            pde=tables+1536+pdIndex*2+1;
+        } else {
+            ULONG extraSlice=slice-NVX_GART_PRIMARY_SLICE_COUNT;
+            pdIndex=(ULONG)(NVX_GART_EXTRA_GPU_VA_BASE>>21)-
+                    (ULONG)(0x20000000ULL>>21)+extraSlice;
+            if(pdIndex>255U) return FALSE;
+            pde=tables+2560+pdIndex*2+1;
+        }
+        *pde=(ptePhysical>>4)|0xc;
     }
     for(ULONG i=0;i<32;i++)
         tables[2048+i]=((dev->GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET+i*4096)>>4)|0xd;
@@ -1021,17 +1080,23 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
         }
     }
 #endif
-    /* VA 0x20000000 selects level-2 index 1, so it needs a second PD0 page.
-       Its paired PD0 entries point to 64KB LPTs and a 4KB SPT. Each 256-byte
-       LPT covers one 2MB VA slice. Map 128MiB of VRAM for Nouveau screen BOs. */
+    /* Preserve the low directory for the upload window and extra GART.
+       VRAM occupies a separate 8 GiB VA range starting at 4 GiB. Its sixteen
+       PD0 pages and 64KB leaf tables have independent coherent DMA backing. */
     tables[1025]=((physical+0x5000)>>4)|0xc;
+    for(ULONG directory=0;directory<GSP_VRAM_PD0_COUNT;directory++) {
+        ULONG pd1=(ULONG)(GSP_VRAM_GPU_VA>>29)+directory;
+        tables[1024+pd1]=
+            (((ULONG64)dev->GspVramPtePhysical.QuadPart+directory*0x1000)>>4)|0xc;
+    }
     for(ULONG slice=0;slice<GSP_VRAM_SLICE_COUNT;slice++) {
-        ULONG64 *lpt=(ULONG64 *)((PUCHAR)tables+
-                                 GSP_VRAM_LPT_OFFSET+slice*0x100);
-        ULONG pdIndex=slice;
-        tables[2560+pdIndex*2]=
-            ((physical+GSP_VRAM_LPT_OFFSET+slice*0x100)>>4)|0xc;
-        tables[2560+pdIndex*2+1]=0;
+        PULONG64 pd0=(PULONG64)((PUCHAR)dev->GspVramPteVirtual+
+                                (slice/256U)*0x1000U);
+        PULONG64 lpt=(PULONG64)((PUCHAR)dev->GspVramPteVirtual+
+                                GSP_VRAM_LPT_OFFSET+slice*0x100U);
+        pd0[(slice%256U)*2]=
+            (((ULONG64)dev->GspVramPtePhysical.QuadPart+
+              GSP_VRAM_LPT_OFFSET+slice*0x100U)>>4)|0xc;
         for(ULONG page=0;page<32;page++) {
             ULONG64 address=(ULONG64)slice*GSP_VRAM_SLICE_BYTES+
                             (ULONG64)page*0x10000;
@@ -1039,12 +1104,9 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
                 lpt[page]=(address>>4)|1;
         }
     }
-    /* DMA allocations are only 4KB aligned. 64KB leaves silently discard
-       low physical address bits and read unrelated bytes on real XP boots.
-       One SPT maps the 64KB staging window used by bounded upload requests. */
-    tables[2560+GSP_VRAM_SLICE_COUNT*2]=0;
-    tables[2560+GSP_VRAM_SLICE_COUNT*2+1]=
-        ((physical+GSP_UPLOAD_PTE_OFFSET)>>4)|0xc;
+    /* Upload staging retains its established 4KB mapping at 0x28000000. */
+    tables[2560+64*2]=0;
+    tables[2560+64*2+1]=((physical+GSP_UPLOAD_PTE_OFFSET)>>4)|0xc;
     for(ULONG page=0;page<16;page++) {
         ULONG64 pagePhysical=dev->GspDmaPhysical.QuadPart+GSP_UPLOAD_OFFSET+
             (ULONG64)page*0x1000;
@@ -1053,6 +1115,8 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
     }
     dev->GspVramGpuVa=GSP_VRAM_GPU_VA;
     dev->GspVramMapBytes=GSP_VRAM_MAP_BYTES;
+    LogStr("NVX [VRAM]: GPU VA base=");LogHex(dev->GspVramGpuVa);
+    LogStr(" mapped capacity=");LogHex(dev->GspVramMapBytes);LogStr("\n");
     __sync_synchronize();
     setDirectory[0]=(ULONG)physical;setDirectory[1]=(ULONG)(physical>>32);
     setDirectory[2]=4; /* top-level 49-bit directory has four entries */

@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.270"
+NVX_TEST_VERSION="3.0.0.297"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -13,6 +13,12 @@ case "$NVX_RUN_3DMARK" in
     *) echo "NVX_RUN_3DMARK must be 0 or 1" >&2; exit 1 ;;
 esac
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
+if [ "${NVX_BUILD_WINED3D:-1}" = "1" ]; then
+    NVX_WINE_BUILD="${NVX_WINE_BUILD:-/tmp/nvx-wined3d-xp-$NVX_TEST_VERSION-$NVX_STAMP}"
+    export NVX_WINE_BUILD
+    echo "==> Building pinned WineD3D with the current XP patches"
+    "$NVX_ROOT/test/build_wined3d_xp.sh"
+fi
 NVX_TEST_FLAGS=()
 NVX_MESA_TEST_FLAGS=()
 if [ "${NVX_TRACE_ICD_CALLBACKS:-0}" = "1" ]; then
@@ -217,7 +223,7 @@ finish() {
     echo
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
-        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log 3dmark05.log; do
+        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
             echo "==> Guest OpenGL trace: $guest_log"
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || \
@@ -228,6 +234,10 @@ finish() {
            guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i download \
                /3dmark05.log "${NVX_RUN_LOG%.log}-3dmark05.log" 2>/dev/null; then
             echo "==> 3DMark05 output: ${NVX_RUN_LOG%.log}-3dmark05.log"
+        fi
+        if [ "$NVX_RUN_3DMARK" = "1" ]; then
+            guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i download \
+                /3dmark_caps.log "${NVX_RUN_LOG%.log}-d3d9-caps.log" 2>/dev/null || true
         fi
         # Only collect captures recorded by this run, rather than old files
         # left on the guest disk when hardware context creation fails.
@@ -359,6 +369,9 @@ else
         "$NVX_ROOT/test/run_vfio_vm.sh"
 fi
 
+finish
+trap - EXIT
+
 if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
    ! grep -q '\[OPENGL_RESULT\] RENDERED' "$NVX_RUN_LOG"; then
     echo "ERROR: hardware OpenGL was not proven; see $NVX_RUN_LOG" >&2
@@ -374,6 +387,14 @@ if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
 fi
 
 if [ "$NVX_RUN_3DMARK" = "1" ]; then
+    if grep -Fq "[3DMARK05_NOT_INSTALLED]" "$NVX_RUN_LOG"; then
+        echo "ERROR: 3DMark05 executable was not found in the guest" >&2
+        exit 1
+    fi
+    if grep -Fq "Failed to get a GL context" "${NVX_RUN_LOG%.log}-3dmark05.log"; then
+        echo "ERROR: WineD3D adapter OpenGL context creation failed" >&2
+        exit 1
+    fi
     if ! grep -Fq '[3DMARK05_EXIT] code=0' "$NVX_RUN_LOG"; then
         echo "ERROR: 3DMark05 did not exit successfully; see $NVX_RUN_LOG and its 3DMark artifact" >&2
         exit 1

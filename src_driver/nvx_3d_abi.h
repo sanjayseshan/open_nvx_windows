@@ -10,7 +10,9 @@
 #define NVX_3D_ABI_VERSION 22U
 #define NVX_3D_MAX_PUSH_DWORDS 4096U
 #define NVX_3D_MAX_BATCH_RELOCATIONS 256U
-#define NVX_3D_MAX_BATCH_BUFFERS 64U
+/* 3DMark05 pushbufs in the .271 hardware trace carry 94 BO entries. Leave
+ * room for XP bridge-discovered direct-address BOs and its staging BO. */
+#define NVX_3D_MAX_BATCH_BUFFERS 128U
 #define NVX_3D_MAX_BATCH_BYTES \
     (sizeof(NVX_3D_BATCH_HEADER) + \
      NVX_3D_MAX_BATCH_BUFFERS * sizeof(NVX_3D_BUFFER_REFERENCE) + \
@@ -19,6 +21,7 @@
 #define NVX_3D_NVC0_CLEAR_DWORDS 28U
 #define NVX_3D_PAGE_BYTES 4096U
 #define NVX_3D_VRAM_ALLOCATION_ALIGNMENT 0x20000U
+#define NVX_3D_VRAM_PTE_ALIGNMENT        0x10000U
 #define NVX_3D_MAX_BUFFER_BYTES (128U * 1024U * 1024U)
 #define NVX_3D_MAX_UPLOAD_BYTES 0x0000F000U
 #define NVX_3D_MAX_DOWNLOAD_BYTES 0x00400000U

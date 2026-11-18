@@ -348,7 +348,7 @@ int NvxValidateFrtsWpr2(uint64_t frtsOffset, uint32_t scratch,
            (uint64_t)(wprLo >> 4) == (frtsOffset >> 12);
 }
 
-int NvxComputeFrtsLayout(uint64_t fbSize, uint32_t workspaceReg,
+int NvxComputeFrtsLayout(uint32_t chipset, uint64_t fbSize, uint32_t workspaceReg,
                          uint32_t mmuLockPlm, uint32_t mmuLockLoReg,
                          uint32_t mmuLockHiReg, NVX_FRTS_LAYOUT *layout)
 {
@@ -363,7 +363,9 @@ int NvxComputeFrtsLayout(uint64_t fbSize, uint32_t workspaceReg,
         workspace=(reported<fbSize-0x100000ULL) ? fbSize-0x20000ULL : reported;
     }
     if (workspace>=fbSize) return 0;
-    if (mmuLockPlm&1U) {
+    /* OpenRM g_mem_mgr_nvoc.c selects memmgrReadMmuLock_GA100 only
+       for GA100. GA10x selects the stub returning valid=FALSE. */
+    if (chipset==0x170U && (mmuLockPlm&1U)) {
         lockLo=(uint64_t)(mmuLockLoReg&0xfffffff0U)<<8;
         lockHi=(uint64_t)(mmuLockHiReg&0xfffffff0U)<<8;
         if (lockHi>=lockLo) layout->MmuLockValid=1;

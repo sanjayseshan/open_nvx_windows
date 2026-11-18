@@ -1,0 +1,59 @@
+diff --git a/src/gallium/drivers/nouveau/nouveau_fence.c b/src/gallium/drivers/nouveau/nouveau_fence.c
+index e3f4da98677be..79e76d3cb885f 100644
+--- a/src/gallium/drivers/nouveau/nouveau_fence.c
++++ b/src/gallium/drivers/nouveau/nouveau_fence.c
+@@ -26,6 +26,10 @@
+ #include "nouveau_fence.h"
+ #include "util/os_time.h"
+ 
++#ifdef NVX_XP_WIN32_SHIMS
++extern void NvxWglRecordNouveauFenceError(const char *stage, int error);
++#endif
++
+ #if DETECT_OS_POSIX
+ #include <sched.h>
+ #endif
+@@ -37,11 +41,18 @@ bool
+ nouveau_fence_new(struct nouveau_context *nv, struct nouveau_fence **fence)
+ {
+    struct nouveau_fence *new_fence = CALLOC_STRUCT(nouveau_fence);
+-   if (!new_fence)
++   if (!new_fence) {
++#ifdef NVX_XP_WIN32_SHIMS
++      NvxWglRecordNouveauFenceError("host allocation failed", -1);
++#endif
+       return false;
++   }
+ 
+    int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &new_fence->bo);
+    if (ret) {
++#ifdef NVX_XP_WIN32_SHIMS
++      NvxWglRecordNouveauFenceError("GART BO allocation failed", ret);
++#endif
+       FREE(new_fence);
+       return false;
+    }
+@@ -285,10 +296,23 @@ _nouveau_fence_wait(struct nouveau_fence *fence, struct util_debug_callback *deb
+ bool
+ _nouveau_fence_next(struct nouveau_context *nv)
+ {
++   if (!nv || !nv->screen)
++      return false;
++
+    struct nouveau_fence_list *fence_list = &nv->screen->fence;
+ 
+    simple_mtx_assert_locked(&fence_list->lock);
+ 
++   /* Fence BO allocation can fail transiently under the XP winsys' bounded
++    * GART aperture.  The previous failed allocation leaves nv->fence NULL;
++    * retry here instead of dereferencing it on the next kick. */
++   if (!nv->fence) {
++#ifdef NVX_XP_WIN32_SHIMS
++      NvxWglRecordNouveauFenceError("current fence missing; retrying allocation", -1);
++#endif
++      return nouveau_fence_new(nv, &nv->fence);
++   }
++
+    if (nv->fence->state < NOUVEAU_FENCE_STATE_EMITTING) {
+       if (p_atomic_read(&nv->fence->ref) > 1)
+          _nouveau_fence_emit(nv->fence);

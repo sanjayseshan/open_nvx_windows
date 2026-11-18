@@ -18,7 +18,11 @@ static BOOLEAN NvxGspCopySmokeTest(PNVX_DEVICE_EXTENSION dev)
     volatile ULONG64 *fifo=(volatile ULONG64 *)scratch;
     ULONG token=0,n=0,runlistBase=0,runlistQuery[124]={0}; /* two arrays of 62 engines */
     ULONG64 va=dev->GspScratchGpuVa,pushVa=va+0x9000;
-    ULONG64 vramVa=dev->GspVramGpuVa+0x1000000ULL; /* 16MB, inside free ISO region */
+    /* Choose after firmware reservations and the two <=32 MiB scanouts.
+       Retain the legacy 16 MiB probe on the small preexisting layout. */
+    ULONG64 probeOffset=dev->GspFbFreeBase>0x1000000ULL?
+        (dev->GspFbFreeBase+0x200ffffULL)&~0xffffULL:0x1000000ULL;
+    ULONG64 vramVa=dev->GspVramGpuVa+probeOffset;
     const ULONG done=0x91c0ffee,guard=0xf17e55aa;
     dev->GspCopyVerified=FALSE;
     dev->GspChannelFaulted=FALSE;
@@ -72,11 +76,13 @@ static BOOLEAN NvxGspCopySmokeTest(PNVX_DEVICE_EXTENSION dev)
         LogStr("NVX [COPY]: fresh channel has nonzero GP pointers; submission skipped.\n");
         return FALSE;
     }
-    if(!dev->GspFbLayoutValid||dev->GspFbFreeBase>0x1000000ULL||
-       dev->GspFbFreeLimit<0x10000ffULL||vramVa<dev->GspVramGpuVa||
-       0x1000000ULL+256>dev->GspVramMapBytes) {
+    if(!dev->GspFbLayoutValid||dev->GspFbFreeBase>probeOffset||
+       dev->GspFbFreeLimit<probeOffset||
+       dev->GspFbFreeLimit-probeOffset<255||vramVa<dev->GspVramGpuVa||
+       probeOffset>dev->GspVramMapBytes||256>dev->GspVramMapBytes-probeOffset) {
         LogStr("NVX [COPY]: no firmware-confirmed free VRAM probe page; VRAM test skipped.\n");return FALSE;
     }
+    LogStr("NVX [COPY]: offscreen probe physical offset=");LogHex(probeOffset);LogStr("\n");
     for(ULONG i=0;i<64;i++) {
         src[i]=0x6d3a5000U^(i*0x10203U);dst[i]=~src[i];
         backup[i]=0;restored[i]=0;
@@ -333,19 +339,17 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
                 LogStr("NVX [COPY-Q]: MMU fault addrHi=");LogHex(reply->addrHi);
                 LogStr(" addrLo=");LogHex(reply->addrLo);
                 LogStr(" type=");LogHex(reply->faultType);
-                if(reply->addrHi==0&&
-                   reply->addrLo>=NVX_GART_GPU_VA_BASE&&
-                   reply->addrLo<NVX_GART_GPU_VA_BASE+
-                       (ULONG64)NVX_GART_SLICE_COUNT*NVX_GART_SLICE_BYTES&&
-                   dev->GspGartPteVirtual) {
-                    ULONG pteIndex=(ULONG)((reply->addrLo-
-                        NVX_GART_GPU_VA_BASE)>>12);
-                    LogStr(" gartPteIndex=");LogHex(pteIndex);
-                    LogStr(" gartPte=");
-                    LogHex(((PULONG64)dev->GspGartPteVirtual)[pteIndex]);
-                    LogStr(" gartPtePhysical=");
-                    LogHex(dev->GspGartPtePhysical.QuadPart+
-                           (ULONG64)pteIndex*sizeof(ULONG64));
+                {
+                    uint32_t pteIndex;
+                    if(reply->addrHi==0&&dev->GspGartPteVirtual&&
+                       NvxGartPageForGpuVa(reply->addrLo,&pteIndex)) {
+                        LogStr(" gartPteIndex=");LogHex(pteIndex);
+                        LogStr(" gartPte=");
+                        LogHex(((PULONG64)dev->GspGartPteVirtual)[pteIndex]);
+                        LogStr(" gartPtePhysical=");
+                        LogHex(dev->GspGartPtePhysical.QuadPart+
+                               (ULONG64)pteIndex*sizeof(ULONG64));
+                    }
                 }
                 LogStr("\n");
             } else {

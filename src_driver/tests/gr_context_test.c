@@ -74,6 +74,27 @@ int main(void)
     assert(!NvxGartReserve(&gart,
         (uint64_t)NVX_GART_SLICE_COUNT*NVX_GART_SLICE_BYTES+1,
         4096,&first,&count,&gpu_va));
+    assert(NvxGartReserve(&gart,NVX_GART_SEGMENT_BYTES,0x200000,
+                          &first,&count,&gpu_va));
+    assert(first==0&&count==NVX_GART_PRIMARY_PAGE_COUNT&&
+           gpu_va==NVX_GART_GPU_VA_BASE);
+    assert(NvxGartReserve(&gart,4096,4096,&first,&count,&gpu_va));
+    assert(first==NVX_GART_PRIMARY_PAGE_COUNT&&count==1&&
+           gpu_va==NVX_GART_EXTRA_GPU_VA_BASE);
+    assert(NvxGartGpuVaForPage(NVX_GART_PRIMARY_PAGE_COUNT-1U)==
+           NVX_GART_GPU_VA_BASE+NVX_GART_SEGMENT_BYTES-4096U);
+    assert(NvxGartGpuVaForPage(NVX_GART_PRIMARY_PAGE_COUNT)==
+           NVX_GART_EXTRA_GPU_VA_BASE);
+    assert(!NvxGartPageForGpuVa(NVX_GART_GPU_VA_BASE+
+                                NVX_GART_SEGMENT_BYTES,NULL));
+    assert(!NvxGartPageForGpuVa(NVX_GART_EXTRA_GPU_VA_BASE-4096U,NULL));
+    assert(NvxGartPageForGpuVa(NVX_GART_EXTRA_GPU_VA_BASE,&first)&&
+           first==NVX_GART_PRIMARY_PAGE_COUNT);
+    assert(!NvxGartRelease(&gart,NVX_GART_PRIMARY_PAGE_COUNT-1U,2));
+    assert(NvxGartRelease(&gart,0,NVX_GART_PRIMARY_PAGE_COUNT));
+    assert(NvxGartRelease(&gart,NVX_GART_PRIMARY_PAGE_COUNT,1));
+    assert(!NvxGartReserve(&gart,NVX_GART_SEGMENT_BYTES+4096U,4096,
+                           &first,&count,&gpu_va));
     assert(!NvxGartBuildPtes(gart_ptes,
         NVX_GART_PAGE_COUNT,0,1,
         0x123000,0x200001,0));

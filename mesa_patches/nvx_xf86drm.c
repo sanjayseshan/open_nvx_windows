@@ -776,6 +776,7 @@ nvx_drm_submit_pushbuf(int fd,
    uint32_t profile_prepare_us = 0, profile_submit_us = 0;
    uint32_t profile_translate_us = 0;
    int valid = 0, translated = 0, submit_busy_owned = 0;
+   uint32_t failure_stage = 0, failure_index = 0;
 #if defined(_WIN32) || defined(_WIN64)
    struct nvx_drm_vertex_dump vertex_dumps[NVX_DRM_VERTEX_DUMP_LIMIT];
    uint32_t vertex_dump_count = 0;
@@ -789,8 +790,16 @@ nvx_drm_submit_pushbuf(int fd,
        request->nr_buffers > NVX_3D_MAX_BATCH_BUFFERS ||
        request->nr_relocs > NVX_3D_MAX_BATCH_RELOCATIONS ||
        !request->buffers || !request->push ||
-       (request->nr_relocs && !request->relocs))
+       (request->nr_relocs && !request->relocs)) {
+#if defined(_WIN32) || defined(_WIN64)
+      NvxWglRecordNouveauPushbufItem(21U, 1U,
+         request ? request->nr_buffers : 0U,
+         request ? request->nr_push : 0U,
+         request ? request->nr_relocs : 0U,
+         NVX_3D_MAX_BATCH_BUFFERS, 0U, 0U);
+#endif
       return 0;
+   }
 
    profile_start = nvx_wgl_present_timer();
 
@@ -799,16 +808,21 @@ nvx_drm_submit_pushbuf(int fd,
    memset(translated_relocations, 0, sizeof(translated_relocations));
    memset(references, 0, sizeof(references));
    nvx_drm_lock_acquire();
+   failure_stage = 2U;
    device = nvx_drm_find_device_locked(fd);
    if (!device || !device->device.NouveauChannelHandle ||
        request->channel != device->device.NouveauChannelHandle)
       goto done;
-   if (device->nouveau_submit_busy)
+   if (device->nouveau_submit_busy) {
+      failure_stage = 3U;
       goto done;
+   }
    device->nouveau_submit_busy = 1;
    submit_busy_owned = 1;
 
+   failure_stage = 4U;
    for (i = 0; i < request->nr_buffers; i++) {
+      failure_index = i;
       struct nvx_drm_bo_slot *slot =
          nvx_drm_find_bo_locked(device, buffers[i].handle);
       uint32_t access = 0, j;
@@ -835,7 +849,9 @@ nvx_drm_submit_pushbuf(int fd,
    }
 
 
+   failure_stage = 5U;
    for (i = 0; i < request->nr_push; i++) {
+      failure_index = i;
       struct nvx_drm_bo_slot *slot;
       uint64_t bytes = pushes[i].length &
                         ~((uint64_t)NOUVEAU_GEM_PUSHBUF_NO_PREFETCH);
@@ -869,6 +885,7 @@ nvx_drm_submit_pushbuf(int fd,
 
    /* NVC0 also emits direct GPU addresses in its method streams, outside
     * request->buffers. Add references for those address operands only. */
+   failure_stage = 6U;
    if (!nvx_drm_add_nvc0_address_references(device,
           batch + sizeof(header) +
              (size_t)NVX_3D_MAX_BATCH_BUFFERS * sizeof(references[0]),
@@ -878,7 +895,9 @@ nvx_drm_submit_pushbuf(int fd,
    /* Flush after direct NVC0 addresses have been resolved. Nouveau vertex BOs
     * can be referenced only by VERTEX_ARRAY_START, so they are absent from
     * request->buffers and were missed by an earlier flush pass. */
+   failure_stage = 7U;
    for (i = 0; i < reference_count; i++) {
+      failure_index = i;
       struct nvx_drm_bo_slot *slot = NULL;
       uint32_t slot_index;
       for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS; slot_index++) {
@@ -986,7 +1005,9 @@ nvx_drm_submit_pushbuf(int fd,
     * owned NVX allocation. Preserve the GPU address in the copied batch and
     * reject OR/domain relocations until allocation domains are represented in
     * the NVX ABI. */
+   failure_stage = 8U;
    for (i = 0; i < request->nr_relocs; i++) {
+      failure_index = i;
       const struct drm_nouveau_gem_pushbuf_reloc *reloc =
          (const struct drm_nouveau_gem_pushbuf_reloc *)(uintptr_t)request->relocs + i;
       struct nvx_drm_bo_slot *target_slot;
@@ -1104,6 +1125,7 @@ nvx_drm_submit_pushbuf(int fd,
            dword_bytes);
    memcpy(batch, &header, sizeof(header));
    memcpy(batch + sizeof(header), references, reference_bytes);
+   failure_stage = 9U;
    translated = Nvx3dTranslateNvc0ObjectBindings(
       batch + sizeof(header) + reference_bytes, dword_count,
       winsys.NouveauObjectBindings, winsys.NouveauObjectBindingCount);
@@ -1115,6 +1137,7 @@ nvx_drm_submit_pushbuf(int fd,
          profile_translate_start);
       NvxWglRecordNouveauTranslateProfile(profile_translate_us);
       profile_submit_start = nvx_wgl_present_timer();
+      failure_stage = 10U;
       valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes, sizeof(batch),
                                    &fence_value);
       profile_submit_us = nvx_wgl_present_elapsed_us(profile_submit_start);
@@ -1176,8 +1199,11 @@ nvx_drm_submit_pushbuf(int fd,
                       slot->bo.map_count &&
                       (slot->bo.map_access & NVX_NOUVEAU_BO_READ)) {
                      int refreshed = NvxNouveauBoRefreshReadIfStale(&slot->bo);
-                     if (!refreshed)
+                     if (!refreshed) {
+                        failure_stage = 11U;
+                        failure_index = reference_index;
                         valid = 0;
+                     }
                      if (nvx_drm_coherent_trace_count < 4U) {
                         NvxWglRecordNouveauPushbufItem(20U,
                            nvx_drm_coherent_trace_count++,
@@ -1245,6 +1271,7 @@ nvx_drm_submit_pushbuf(int fd,
    }
 #endif
    if (valid) {
+      failure_stage = 0U;
       /* nouveau_pushbuf_flush() uses these kernel outputs to establish the
        * per-domain allocation budget. Leaving them as the caller's zeroed
        * input makes pushbuf_kref_fits() reject every subsequent BO with
@@ -1262,6 +1289,11 @@ nvx_drm_submit_pushbuf(int fd,
       NvxWglRecordNouveauProfile(total_us, profile_prepare_us,
                                  profile_submit_us, tail_us, dword_count);
    }
+   if (!valid)
+      NvxWglRecordNouveauPushbufItem(21U, failure_stage ? failure_stage : 12U,
+                                     failure_index, request->nr_buffers,
+                                     request->nr_push, dword_count,
+                                     reference_count, relocation_count);
    NvxWglRecordNouveauPushbufItem(6U, 0U,
                                   !translated ? 3U : (valid ? 1U : 2U),
                                   dword_count, reference_count,
@@ -1273,10 +1305,10 @@ done:
    if (submit_busy_owned && device)
       device->nouveau_submit_busy = 0;
    nvx_drm_lock_release();
-   NvxWglRecordNouveauPushbufItem(6U, 0U, 0U,
-                                  dword_count, reference_count,
-                                  request->nr_relocs, 0U,
-                                  flushed_shadow_count);
+   NvxWglRecordNouveauPushbufItem(21U, failure_stage,
+                                  failure_index, request->nr_buffers,
+                                  request->nr_push, dword_count,
+                                  reference_count, request->nr_relocs);
    return 0;
 }
 #endif
@@ -1326,11 +1358,8 @@ nvx_drm_getparam(int fd, void *data, unsigned long size)
       return nvx_drm_unsupported();
    switch (request->param) {
    case NOUVEAU_GETPARAM_FB_SIZE:
-      /* Report available VRAM heap size (~32 MiB) rather than the entire
-       * 128 MiB aperture so Mesa accurately paces VRAM consumption and
-       * prefers GART for large allocations like TLS. */
-      request->value = (device.caps.VramApertureBytes > 0x02000000ULL) ?
-                       0x02000000ULL : device.caps.VramApertureBytes;
+      /* The miniport now exposes firmware-approved VRAM capacity. */
+      request->value = device.caps.VramApertureBytes;
       break;
    case NOUVEAU_GETPARAM_AGP_SIZE:
       request->value = device.caps.GartBytes;
@@ -1734,9 +1763,8 @@ nvx_drm_pushbuf_nop(int fd, struct drm_nouveau_gem_pushbuf *request,
 
    if (request->nr_push || request->nr_buffers || request->nr_relocs ||
        request->buffers || request->relocs || request->push ||
-       request->suffix0 || request->suffix1)
+       request->suffix0 || request->suffix1) {
 #if defined(_WIN32) || defined(_WIN64)
-   {
       const struct drm_nouveau_gem_pushbuf_bo *buffers =
          (const struct drm_nouveau_gem_pushbuf_bo *)(uintptr_t)request->buffers;
       const struct drm_nouveau_gem_pushbuf_push *pushes =
@@ -1823,18 +1851,27 @@ nvx_drm_pushbuf_nop(int fd, struct drm_nouveau_gem_pushbuf *request,
                relocs[i].flags, relocs[i].data, relocs[i].vor);
          }
       }
+      if (!request->nr_push ||
+          request->nr_push > NOUVEAU_GEM_MAX_PUSH ||
+          !request->nr_buffers ||
+          request->nr_buffers > NVX_3D_MAX_BATCH_BUFFERS ||
+          request->nr_relocs > NVX_3D_MAX_BATCH_RELOCATIONS ||
+          !request->buffers || !request->push ||
+          (request->nr_relocs && !request->relocs))
+         return nvx_drm_unsupported_operation(
+            NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
       if (nvx_drm_submit_pushbuf(fd, request)) {
          NvxWglRecordNouveauPushbuf(request->channel, request->nr_push,
                                     request->nr_buffers, request->nr_relocs);
          return 0;
       }
-      return nvx_drm_unsupported_operation(
-         NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
-   }
+      errno = EIO;
+      return -1;
 #else
       return nvx_drm_unsupported_operation(
          NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
 #endif
+   }
 
    nvx_drm_lock_acquire();
    device = nvx_drm_find_device_locked(fd);
@@ -1957,7 +1994,7 @@ NvxXf86DrmRegisterDevice(const NVX_WINSYS_DEVICE *device)
 /* Process termination only: other threads may have died holding our table
  * or BO-pool locks. Close kernel sessions directly, without Mesa teardown. */
 void
-NvxXf86DrmCloseProcessClients(void *transport)
+NvxXf86DrmCloseProcessClients(void)
 {
    unsigned i;
    for (i = 0; i < NVX_DRM_DEVICE_SLOTS; i++) {
@@ -1970,16 +2007,20 @@ NvxXf86DrmCloseProcessClients(void *transport)
       request.Version = NVX_3D_ABI_VERSION;
       request.Operation = NVX_3D_CLIENT_CLOSE;
       request.ClientToken = device->ClientToken;
-      if (device->escape(transport, NVX_ESCAPE_3D_CLIENT_CLOSE,
+      /* Each winsys client owns its display DC. The WGL caller's HDC may
+       * already be released while PROCESS_DETACH runs, so close through the
+       * transport paired with this client token. */
+      if (device->escape(device->opaque, NVX_ESCAPE_3D_CLIENT_CLOSE,
                          sizeof(request), &request, 0, NULL))
          device->ClientToken = 0;
    }
 }
 
-void
+int
 NvxXf86DrmUnregisterDevice(int fd)
 {
    unsigned i;
+   int unregistered = 0;
    nvx_drm_lock_acquire();
    for (i = 0; i < NVX_DRM_DEVICE_SLOTS; i++) {
       if (nvx_drm_devices[i].fd == fd) {
@@ -2000,10 +2041,12 @@ NvxXf86DrmUnregisterDevice(int fd)
          if (!NvxWinsysCloseClient(&nvx_drm_devices[i].device))
             break;
          memset(&nvx_drm_devices[i], 0, sizeof(nvx_drm_devices[i]));
+         unregistered = 1;
          break;
       }
    }
    nvx_drm_lock_release();
+   return unregistered;
 }
 
 int
@@ -2126,6 +2169,7 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
    uint32_t allocated_bytes, handle;
    uint32_t usage = 0;
    uint32_t domain = NOUVEAU_GEM_DOMAIN_VRAM;
+   uint32_t allocation_stage;
    int allocated;
    unsigned i;
 
@@ -2145,10 +2189,10 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
        !request->info.size ||
        request->info.size > device->device.caps.MaxBufferBytes ||
        request->info.size > UINT32_MAX ||
-       request->align > ((request->info.domain & NOUVEAU_GEM_DOMAIN_VRAM) ?
-                         NVX_3D_VRAM_ALLOCATION_ALIGNMENT :
-                         ((request->info.domain & NOUVEAU_GEM_DOMAIN_GART) ?
-                          0x00200000U : 0x10000U)) ||
+       request->align > ((request->info.domain & NOUVEAU_GEM_DOMAIN_GART) ?
+                         0x00200000U :
+                         ((request->info.domain & NOUVEAU_GEM_DOMAIN_VRAM) ?
+                          NVX_3D_VRAM_ALLOCATION_ALIGNMENT : 0x10000U)) ||
        (request->align &&
         (request->align & (request->align - 1U))) ||
        (request->info.tile_mode & ~0x70U) ||
@@ -2203,29 +2247,41 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
    if (!handle)
       handle = device->next_handle++;
 
+   allocation_stage = (usage & NVX_3D_USAGE_GART_BUFFER) ? 3U : 1U;
    allocated = NvxNouveauBoCreate(&device->device, &description,
                                   device->client_token, &slot->bo);
    if (!allocated && !description.MemoryKind && !description.TileMode &&
+       !(request->info.tile_flags & ~NOUVEAU_GEM_TILE_NONCONTIG) &&
        (request->info.domain & NOUVEAU_GEM_DOMAIN_VRAM) &&
        device->device.caps.GartBytes >= requested_bytes) {
       /* NVC0's per-GPC TLS BO can exceed the small, firmware-confirmed free
        * BAR1 VRAM window while still fitting the mapped GART. Keep placement
        * truthful by retrying in system memory and reporting GART to Mesa. */
       description.Usage = NVX_3D_USAGE_GART_BUFFER;
+      allocation_stage = 2U;
       /* Placement may change, but Nouveau's hardware alignment may not. */
       allocated = NvxNouveauBoCreate(&device->device, &description,
                                      device->client_token, &slot->bo);
       if (allocated)
          domain = NOUVEAU_GEM_DOMAIN_GART;
    }
+   (void)allocation_stage;
    if (!allocated) {
 #if defined(_WIN32) || defined(_WIN64)
-      if (requested_bytes >= (1U << 20))
-         NvxWglRecordNouveauPushbufItem(8U, 0U, 0U, domain,
-            (uint32_t)requested_bytes, allocated_bytes, request->align, 0U);
+      NvxWglRecordNouveauPushbufItem(22U, allocation_stage,
+            (uint32_t)requested_bytes, allocated_bytes,
+            description.Alignment, request->info.domain,
+            request->info.tile_mode, request->info.tile_flags);
 #endif
       return 0;
    }
+#if defined(_WIN32) || defined(_WIN64)
+   NvxWglRecordNouveauPushbufItem(23U, allocation_stage,
+      (uint32_t)requested_bytes, allocated_bytes,
+      slot->bo.allocation.Usage, domain,
+      (uint32_t)slot->bo.allocation.GpuVa,
+      (uint32_t)(slot->bo.allocation.GpuVa >> 32));
+#endif
 
    /* Both allocators must honor the caller's requested VA alignment,
     * including when VRAM allocation falls back to linear GART backing. */

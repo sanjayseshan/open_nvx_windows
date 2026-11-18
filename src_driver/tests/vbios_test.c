@@ -80,14 +80,21 @@ int main(void)
     }
     {
         NVX_FRTS_LAYOUT layout;
-        assert(NvxComputeFrtsLayout(0x200000000ULL,0,0,0,0,&layout));
+        assert(NvxComputeFrtsLayout(0x170,0x200000000ULL,0,0,0,0,&layout));
         assert(layout.VgaWorkspaceOffset==0x1fff00000ULL);
         assert(layout.GspFwWprEnd==0x1fff00000ULL);
         assert(layout.FrtsOffset==0x1ffe00000ULL&&layout.FrtsSize4k==0x100);
-        assert(NvxComputeFrtsLayout(0x200000000ULL,0,1,0x1ff0000,0x1ff1000,&layout));
+        assert(NvxComputeFrtsLayout(0x170,0x200000000ULL,0,1,0x1ff0000,0x1ff1000,&layout));
         assert(layout.MmuLockValid&&layout.MmuLockLo==0x1ff000000ULL);
         assert(layout.GspFwWprEnd==0x1ff000000ULL&&layout.FrtsOffset==0x1fef00000ULL);
-        assert(!NvxComputeFrtsLayout(0x1000,0,0,0,0,&layout));
+        assert(!NvxComputeFrtsLayout(0x170,0x1000,0,0,0,0,&layout));
+        /* Captured GA104 boot values: GA100-only MMU lock interpretation
+           previously placed WPR below 256 MiB and left ~60 MiB free. */
+        assert(NvxComputeFrtsLayout(0x174,0x200000000ULL,0x10e09,
+                                   0x45cb8f,0x100000,0x1effff0,&layout));
+        assert(!layout.MmuLockValid);
+        assert(layout.GspFwWprEnd==0x1fffe0000ULL);
+        assert(layout.FrtsOffset==0x1ffee0000ULL);
     }
     /* Captured v49: successful firmware uses a hardware HI limit, not
        the exclusive 0x10000000 allocation end. */

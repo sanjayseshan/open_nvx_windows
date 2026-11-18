@@ -1,0 +1,99 @@
+diff --git a/dlls/d3d9/directx.c b/dlls/d3d9/directx.c
+index 58c4d44..0ff83d5 100644
+--- a/dlls/d3d9/directx.c
++++ b/dlls/d3d9/directx.c
+@@ -24,6 +24,32 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d9);
+ 
++/* 3DMark repeats unsupported-format probes. Bound the diagnostic so one
++ * capability check cannot generate unbounded guest disk and serial output. */
++static LONG d3d9_probe_log_count;
++
++static void log_3dmark_d3d9_check(const char *check, UINT adapter, D3DDEVTYPE device_type,
++        DWORD arg0, DWORD arg1, DWORD arg2, HRESULT hr)
++{
++    char process_name[MAX_PATH], line[512];
++    DWORD length, written;
++    HANDLE file;
++
++    if (SUCCEEDED(hr)) return;
++    length = GetModuleFileNameA(NULL, process_name, sizeof(process_name));
++    if (!length || (!strstr(process_name, "3DMark05") && !strstr(process_name, "3dmark05"))) return;
++    if (InterlockedIncrement(&d3d9_probe_log_count) > 256) return;
++
++    file = CreateFileA("C:\\3dmark_caps.log", FILE_APPEND_DATA,
++            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (file == INVALID_HANDLE_VALUE) return;
++
++    length = wsprintfA(line, "[D3D9-PROBE-FAIL] %s adapter=%u type=%u args=0x%08lx,0x%08lx,0x%08lx hr=0x%08lx\r\n",
++            check, adapter, device_type, arg0, arg1, arg2, (unsigned long)hr);
++    WriteFile(file, line, length, &written, NULL);
++    CloseHandle(file);
++}
++
+ static inline struct d3d9 *impl_from_IDirect3D9Ex(IDirect3D9Ex *iface)
+ {
+     return CONTAINING_RECORD(iface, struct d3d9, IDirect3D9Ex_iface);
+@@ -234,13 +258,20 @@ static HRESULT WINAPI d3d9_CheckDeviceType(IDirect3D9Ex *iface, UINT adapter, D3
+ 
+     /* Others than that not supported by d3d9, but reported by wined3d for ddraw. Filter them out. */
+     if (!windowed && display_format != D3DFMT_X8R8G8B8 && display_format != D3DFMT_R5G6B5)
++    {
++        log_3dmark_d3d9_check("CheckDeviceType", adapter, device_type,
++                display_format, backbuffer_format, windowed, WINED3DERR_NOTAVAILABLE);
+         return WINED3DERR_NOTAVAILABLE;
++    }
+ 
+     wined3d_mutex_lock();
+     hr = wined3d_check_device_type(d3d9->wined3d, adapter, device_type, wined3dformat_from_d3dformat(display_format),
+             wined3dformat_from_d3dformat(backbuffer_format), windowed);
+     wined3d_mutex_unlock();
+ 
++    log_3dmark_d3d9_check("CheckDeviceType", adapter, device_type,
++            display_format, backbuffer_format, windowed, hr);
++
+     return hr;
+ }
+ 
+@@ -271,6 +302,9 @@ static HRESULT WINAPI d3d9_CheckDeviceFormat(IDirect3D9Ex *iface, UINT adapter,
+             usage, wined3d_rtype, wined3dformat_from_d3dformat(format));
+     wined3d_mutex_unlock();
+ 
++    log_3dmark_d3d9_check("CheckDeviceFormat", adapter, device_type,
++            adapter_format, usage, ((DWORD)resource_type << 16) | format, hr);
++
+     return hr;
+ }
+ 
+@@ -288,6 +322,10 @@ static HRESULT WINAPI d3d9_CheckDeviceMultiSampleType(IDirect3D9Ex *iface, UINT
+             wined3dformat_from_d3dformat(format), windowed, multisample_type, levels);
+     wined3d_mutex_unlock();
+ 
++    log_3dmark_d3d9_check("CheckDeviceMultiSampleType", adapter, device_type,
++            format, ((DWORD)windowed << 16) | multisample_type,
++            SUCCEEDED(hr) && levels ? *levels : 0, hr);
++
+     return hr;
+ }
+ 
+@@ -306,6 +344,9 @@ static HRESULT WINAPI d3d9_CheckDepthStencilMatch(IDirect3D9Ex *iface, UINT adap
+             wined3dformat_from_d3dformat(ds_format));
+     wined3d_mutex_unlock();
+ 
++    log_3dmark_d3d9_check("CheckDepthStencilMatch", adapter, device_type,
++            adapter_format, rt_format, ds_format, hr);
++
+     return hr;
+ }
+ 
+@@ -323,6 +364,9 @@ static HRESULT WINAPI d3d9_CheckDeviceFormatConversion(IDirect3D9Ex *iface, UINT
+             wined3dformat_from_d3dformat(src_format), wined3dformat_from_d3dformat(dst_format));
+     wined3d_mutex_unlock();
+ 
++    log_3dmark_d3d9_check("CheckDeviceFormatConversion", adapter, device_type,
++            src_format, dst_format, 0, hr);
++
+     return hr;
+ }
+ 

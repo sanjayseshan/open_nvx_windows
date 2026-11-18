@@ -76,6 +76,13 @@ BOOLEAN NvxVbeSetMode(PVOID extension, ULONG index)
         LogStr("NVX [VBE]: current native mode already matches; preserving display channels.\n");
         return TRUE;
     }
+    /* Once native channels own scanout, hand the request back to the
+       caller's native modeset path. INT10 can reset both heads and fail,
+       leaving no channels available to restore the old mode. */
+    if(dev->NativeDisplayChannelsReady && !dev->NativeDisplayFaulted) {
+        LogStr("NVX [VBE]: native channels own scanout; using native modeset.\n");
+        return FALSE;
+    }
     if(dev->NativeDisplayAttempted || dev->NativeDisplayChannelsReady) {
         LogStr("NVX [VBE]: releasing native channels before BIOS display reset.\n");
         if(!NvxGspReleaseDisplayChannels(dev)) return FALSE;
