@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.318**, async Nouveau-style submission, pending hardware verification.
+Updated November 18, 2026. Current candidate: **3.0.0.319**, async Nouveau-style submission, pending hardware verification.
 
 ## Latest benchmark and performance change
 
@@ -18,7 +18,7 @@ returned. The Mesa bridge also immediately downloaded the small fence/query BO
 for each submission, which imposed another synchronous edge. The client had a
 four-BO pushbuffer ring, limiting safe queue depth to four batches.
 
-`.318` changes this path to upstream-style asynchronous queueing:
+`.318` implemented upstream-style asynchronous queueing:
 
 - The miniport returns after the OpenRM channel kick and publishes the fence's
   owner/sequence at queue time.
@@ -30,13 +30,14 @@ four-BO pushbuffer ring, limiting safe queue depth to four batches.
 - The per-submit fence BO readback is removed. NVC0's fence poll refreshes its
   XP shadow only after a zero-timeout miniport fence query reports completion.
 
-Both x64 and x86 miniport builds passed with `make -C src_driver`. Mesa's x64
-and x86 XP Nouveau WGL ICDs both built successfully with
-`./test/build_mesa_xp64.sh`. No hardware run has tested `.318` yet. The next
-step is one full VFIO run with 3DMark enabled; compare its score/FPS and watch
-for fence timeouts, BO lifetime errors, render corruption, or a session-close
-hang. Async submission is expected to reduce CPU stalls, but no performance
-gain is established until that run completes.
+The first `.318` full-test attempt stopped in host `make check`, before guest
+boot. The async fence helper used Windows-only trace symbols without a host
+build guard. `.319` adds that guard; both x64 and x86 driver builds passed, and
+Mesa's x64/x86 ICD builds passed before this guard-only change. The next step is
+a full VFIO run with 3DMark enabled; compare its score/FPS and watch for fence
+timeouts, BO lifetime errors, render corruption, or a session-close hang. Async
+submission is expected to reduce CPU stalls, but no performance gain is
+established until the guest run completes.
 
 Remaining submission work after the hardware check: measure actual queue depth
 and time spent in miniport validation/escape calls. `.318` still copies and

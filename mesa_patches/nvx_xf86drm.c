@@ -2395,6 +2395,7 @@ NvxXf86DrmRefreshBufferReadIfSignalled(int fd, uint32_t handle)
          result = 1;
       } else if (NvxWinsysWaitFence(&device->device, bo->last_fence, 0U)) {
          result = NvxNouveauBoRefreshReadIfStale(bo);
+#if defined(_WIN32) || defined(_WIN64)
          if (nvx_drm_coherent_trace_count < 4U) {
             NvxWglRecordNouveauPushbufItem(20U,
                nvx_drm_coherent_trace_count++,
@@ -2402,6 +2403,7 @@ NvxXf86DrmRefreshBufferReadIfSignalled(int fd, uint32_t handle)
                result ? Nvx3dBatchReadDword(bo->shadow, 0) : 0U,
                (uint32_t)bo->last_fence, 0U, 0U);
          }
+#endif
       } else {
          result = 0;
       }
