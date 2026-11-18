@@ -2,6 +2,88 @@
 
 Updated November 18, 2026. Current candidate: **3.0.0.314**.
 
+## Performance work list (after .314)
+
+The .314 run enumerated both display outputs and reported NV170. The short GL
+and D3D9 smoke tests were near 60 FPS, but 3DMark did not produce a result: the
+run was interrupted while the monitors were off. During its active interval,
+the host QEMU process used about one CPU core. The serial trace recorded 616
+client BO registrations and 2,240 BO frees, plus 687 D3D9 capability records
+and 264 failed format/multisample probes. These point to CPU/driver overhead
+and resource churn as plausible limits, but do not identify one measured root
+cause. No queue timeout, MMU fault, or firmware assertion was seen in the
+captured interval. The extracted 3DMark output is empty, so there is no valid
+3DMark FPS measurement.
+
+Prioritized speed-up plan:
+
+1. **Remove diagnostic I/O from timed runs.** Make the WineD3D D3D9 capability
+   patch write one summary per process/device or only when a capability check
+   fails, behind an explicit diagnostic switch. Keep the performance run's
+   log silent by default. The current patch opens/appends a file for every
+   `GetDeviceCaps` call; 687 records and 264 probe failures were captured in
+   .314. Do not interpret that run as a clean baseline.
+2. **Reduce hot-path driver logging.** Gate successful RM RPC, BO register/free,
+   NVC0 draw, and presentation messages behind a debug flag. On success, keep
+   counters and emit one summary at process exit or benchmark completion.
+   Preserve immediate logs for errors, timeouts, faults, invalid ownership, and
+   failed allocations. Avoid synchronous serial/file output in per-frame paths.
+3. **Add aggregate stage timing before optimizing.** Measure CPU time and call
+   counts for WineD3D GL calls, Nouveau state/BO work, miniport escape handling,
+   RM registration, NVC0 submission, fence wait, and present/copy. Report totals,
+   averages, and worst waits once at the end; avoid per-call trace output. Use
+   the same scene, resolution, monitor state, and warm-up for before/after.
+4. **Investigate BO churn and reuse.** Trace why .314 saw hundreds of client BO
+   registrations and thousands of frees during the 3DMark interval. Compare
+   Mesa Nouveau resource lifetime/pool behavior with the XP winsys. Reuse and
+   pool compatible BOs where lifetime and mapping rules permit; batch RM
+   registration only if ownership semantics remain correct. Verify the change
+   with BO counts and a completed benchmark.
+5. **Reduce submission and escape overhead.** Count submissions per frame and
+   dwords per submission. Keep Mesa's pushbuffer batching intact across draws,
+   combine work before the miniport escape, and avoid repeated validation or
+   address lookup for unchanged references. Preserve the existing ownership,
+   relocation, and fence checks; do not trade correctness for fewer calls.
+6. **Relax unnecessary synchronous waits.** Identify which submit/present paths
+   wait for each fence. Allow multiple safe submissions in flight and wait at
+   flush/present or when reusing a busy resource, using the existing fence ring
+   and BO lifetime tracking. Measure wait time and queue depth to ensure this
+   removes CPU stalls without reusing unfinished resources.
+7. **Profile presentation separately.** Time the GPU GART-to-scanout copy and
+   notifier wait independently from rendering. Avoid an extra copy when the
+   render target is already scanout-compatible; consider direct render-to-
+   scanout or page flipping only after verifying XP display/DDI ownership and
+   dual-head behavior.
+8. **Keep shader correctness as a separate gate.** D3D9 reports VS/PS 3.0, so
+   the Pixel Shader 2.0 capability gate is cleared. Earlier runs still showed
+   shader-program-header/RC faults; .314 ended before a completed complex
+   shader workload. Capture shader upload/header data and the exact failing
+   submission before changing shader methods. A fast run that faults or falls
+   back is not a performance improvement.
+9. **Use a clean hardware benchmark protocol.** Keep both monitors powered on,
+   confirm both connector IDs and protocols in the log, disable capability and
+   hot-path success logging, then let 3DMark finish. Record startup and steady-
+   state FPS separately, plus CPU use, BO counts, submit/wait timings, faults,
+   and the benchmark exit marker. Repeat once to distinguish a stable change
+   from startup variance.
+
+Suggested first implementation: items 1 and 2, followed by item 3. This gives
+a trustworthy baseline before changing batching, waits, or resource policy.
+
+### .314 run notes
+
+The `.314` build passed x64/x86 compilation and `make -C src_driver check`.
+Hardware detected both `0x800` protocol 8 and `0x200` protocol 9 and OpenGL
+reported NV170. Gears measured about 60.8 FPS on one pass and 53.3 FPS on a
+later pass; the D3D9 smoke test measured about 58–63 FPS. The automated 3DMark
+run had no exit marker and its extracted output was empty after the user turned
+off the monitors and the VM received ACPI powerdown. Its observed ~4 FPS is not
+a completed benchmark result. At the time, the host QEMU process used about
+103% CPU; the trace after 3DMark start contained 616 BO registrations, 2,240
+frees, 687 D3D9 caps records, and 264 failed format/multisample probes. No
+submit timeout, GR fault, MMU fault, or assertion was captured. The result is
+inconclusive for sustained FPS and complex shader correctness.
+
 ## .313: inconclusive because the DP monitor was off
 
 The .313 code compiled for x64/x86 and passed `make -C src_driver check`.
