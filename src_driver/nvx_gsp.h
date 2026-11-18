@@ -368,6 +368,7 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG64 RmPhysicalOffset;
     ULONG64 RmGpuVa;
     BOOLEAN RmMemoryRegistered;
+    PVOID SystemMdl;
     PVOID SystemVirtual;
     PHYSICAL_ADDRESS SystemPhysical;
 } NVX_3D_USER_BUFFER_ENTRY;
@@ -591,6 +592,8 @@ BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                 ULONG bytes,ULONG kind,BOOLEAN map);
 BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
                            ULONG pageCount,ULONG64 physical,ULONG bytes);
+BOOLEAN NvxGspMapGartPfnArray(PVOID HwDeviceExtension,ULONG firstPage,
+                              ULONG pageCount,PVOID pfnArray,ULONG bytes);
 BOOLEAN NvxGspUnmapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
                              ULONG pageCount);
 BOOLEAN NvxGspSubmitFill(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG color,ULONG bytes);

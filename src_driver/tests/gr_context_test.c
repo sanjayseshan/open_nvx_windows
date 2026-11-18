@@ -39,6 +39,14 @@ int main(void)
     assert(ptes[2]==((UINT64_C(0x125000)>>4)|0x2d)&&ptes[3]==0);
     assert(NvxGrBuildPtes(ptes,4,0x123000,0x1000,0));
     assert(ptes[0]==((UINT64_C(0x123000)>>4)|0x0d));
+    assert(NvxGartEncodePte(0x123000,0)==((UINT64_C(0x123000)>>4)|0x0d));
+    assert(NvxGartEncodePte(0x98765000,0)==
+           ((UINT64_C(0x98765000)>>4)|0x0d));
+    assert(NvxGartEncodePte(0x123000,1)==
+           ((UINT64_C(0x123000)>>4)|0x2d));
+    assert(!NvxGartEncodePte(0x123001,0));
+    assert(!NvxGartEncodePte(UINT64_C(0x100000000),0));
+    assert(!NvxGartEncodePte(0x123000,2));
     assert(!NvxGrBuildPtes(ptes,4,0x123000,0x1000,2));
     assert(!NvxGrBuildPtes(ptes,2,0x123000,0x3000,1));
     assert(!NvxGrBuildPtes(ptes,4,0x123001,0x1000,1));

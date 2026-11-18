@@ -977,6 +977,60 @@ BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
     }
 }
 
+BOOLEAN NvxGspMapGartPfnArray(PVOID HwDeviceExtension,ULONG firstPage,
+                             ULONG pageCount,PVOID pfnArray,ULONG bytes)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    PULONG64 entries;
+    uintptr_t *pfns=(uintptr_t *)pfnArray;
+    ULONG pages,i,capacity=NVX_GART_SLICE_COUNT*NVX_GART_PTES_PER_SLICE;
+    if(!dev||!dev->GspGartReady||!dev->GspGartPteVirtual||!pfns||!bytes||
+       (bytes&0xfffU)||!NvxGartPageRangeValid(firstPage,pageCount)||
+       bytes>(ULONG64)pageCount*NVX_GART_PAGE_BYTES)
+        return FALSE;
+    pages=bytes>>12;
+    if(pages>pageCount||firstPage>capacity-pageCount) return FALSE;
+    /* Validate the complete PFN list before touching live page tables. A bad
+     * PFN must not leave a partially installed mapping behind. */
+    for(i=0;i<pages;i++) {
+        if((ULONG64)pfns[i]>=UINT64_C(0x100000)) {
+            LogStr("NVX [GART]: PFN outside 32-bit DMA range index=");
+            LogHex(i);LogStr(" pfn=");LogHex((ULONG64)pfns[i]);LogStr("\n");
+            return FALSE;
+        }
+    }
+    if(!NvxGspLockGartPtes()) {
+        LogStr("NVX [GART]: page-table lock timeout mapping PFNs page=");
+        LogHex(firstPage);LogStr(" count=");LogHex(pageCount);
+        LogStr(" bytes=");LogHex(bytes);LogStr("\n");
+        return FALSE;
+    }
+    entries=(PULONG64)dev->GspGartPteVirtual;
+    VideoPortZeroMemory(entries+firstPage,pageCount*sizeof(ULONG64));
+    for(i=0;i<pages;i++) {
+        ULONG64 physical=(ULONG64)pfns[i]<<12;
+        ULONG64 pte=NvxGartEncodePte(physical,0);
+        if(!pte) {
+            LogStr("NVX [GART]: invalid MDL PFN page=");LogHex(firstPage+i);
+            LogStr(" pfn=");LogHex((ULONG64)pfns[i]);LogStr("\n");
+            NvxGspUnlockGartPtes();
+            return FALSE;
+        }
+        entries[firstPage+i]=pte;
+    }
+    __sync_synchronize();
+    {
+        BOOLEAN ok=NvxGspInvalidateVaSpace(dev);
+        if(!ok) {
+            LogStr("NVX [GART]: TLB invalidate failed mapping PFNs page=");
+            LogHex(firstPage);LogStr(" count=");LogHex(pageCount);
+            LogStr("\n");
+        }
+        NvxGspUnlockGartPtes();
+        return ok;
+    }
+}
+
 BOOLEAN NvxGspUnmapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
                              ULONG pageCount)
 {

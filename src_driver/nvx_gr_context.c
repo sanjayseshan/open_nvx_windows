@@ -1,6 +1,17 @@
 #include "nvx_gr_context.h"
 #include <limits.h>
 
+uint64_t NvxGartEncodePte(uint64_t physical, int privileged)
+{
+    if ((physical & (NVX_GART_PAGE_BYTES - 1U)) ||
+        physical >= UINT64_C(0x100000000) ||
+        (privileged != 0 && privileged != 1))
+        return 0;
+    /* Pascal VER2 PTE: valid, SYS_COH, volatile, optional privilege. */
+    return (physical >> 4) | UINT64_C(0x0d) |
+           (privileged ? UINT64_C(0x20) : 0);
+}
+
 int NvxGrBuildPtes(uint64_t *entries, uint32_t capacity, uint64_t physical, uint64_t bytes, int privileged)
 {
     uint64_t pages, i;
@@ -8,9 +19,10 @@ int NvxGrBuildPtes(uint64_t *entries, uint32_t capacity, uint64_t physical, uint
        physical>UINT64_MAX-bytes) return 0;
     pages=bytes>>12;
     if(pages>capacity||physical+bytes>UINT64_C(0x100000000)) return 0;
-    for(i=0;i<pages;i++)
-        /* Pascal VER2 PTE: valid, SYS_COH, volatile, optional privilege. */
-        entries[i]=((physical+(i<<12))>>4)|UINT64_C(0x0d)|(privileged?0x20U:0);
+    for(i=0;i<pages;i++) {
+        entries[i]=NvxGartEncodePte(physical+(i<<12),privileged);
+        if(!entries[i]) return 0;
+    }
     return 1;
 }
 

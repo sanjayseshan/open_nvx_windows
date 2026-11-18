@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.308**.
+Updated November 18, 2026. Current candidate: **3.0.0.309**.
 
 ## .307: correct OpenRM RPC message sizing (hardware verified)
 
@@ -41,45 +41,74 @@ open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
 src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
-## Current status and remaining work (.308 built; XP off)
+## Current status and remaining work (.309 built; hardware retest pending)
 
 .307 restored hardware NV170 rendering on both architectures and resolved the
 function-71 INVALID_FUNCTION/RPC quarantine that caused GDI Generic and
 Direct3DCreate9 NULL. The 8 GiB VRAM mapping remains available; large FB page
 lists are accepted. 3DMark still has no proven benchmark result.
 
-.307's remaining failure is NvxGartReserve rejecting 8 MiB system-memory
-GPU-VA reservations in the old 460 MiB aperture. This fails before allocating
-physical system RAM. The existing log cannot distinguish full occupancy,
-fragmentation, or ownership leaks because it did not record heap statistics.
-The captured WineD3D log reports resource-unload-while-mapped twice; this is
-still relevant and must be rechecked after allocation failures are resolved.
+.308 was hardware-tested with `NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1
+NVX_BUILD_WINED3D=0 ./test/test_full_driver.sh`. Full log:
+`test_logs/v3.0.0.308-20261118-104947.log`; WineD3D trace:
+`test_logs/v3.0.0.308-20261118-104947-3dmark05.log`.
+
+The GART VA expansion worked, but 3DMark still did not render or exit
+successfully. Its 8 MiB GART allocations now pass VA reservation and fail at
+`VideoPortAllocateCommonBuffer`: the OS returns NULL and physical address 0.
+There were 236 common-buffer failures total, including 206 at 8 MiB, followed
+by smaller failed allocations. The GPU channel was not faulted; no RC/MMU fault
+or RPC quarantine was reported. WineD3D records 12 `GL_OUT_OF_MEMORY` errors
+from `glTexSubImage2D`, two resource-unload-while-mapped errors, and repeated
+unsupported `-PCF` format fixmes. There is no `[3DMARK05_EXIT]` or
+`[ALL_BENCHMARKS_FINISHED]` marker. The suite correctly reported failure.
+QEMU did not exit after ACPI shutdown and closing the foreground application,
+so the monitor closed it after the allocation failure was established.
+
+This is a physical backing allocation problem, not GPU VA capacity. `.308`
+reserved GPU VA and then asked VideoPort for one physically contiguous common
+buffer for each whole BO. The trace proves those allocations failed, but does
+not distinguish XP contiguous-page pressure, total physical-page pressure, or
+a backing lifetime leak. Increasing the GART VA range cannot resolve it.
 
 .308 expands GART VA to 1,254 MiB: preserve the 230 MiB primary window at
 0x11A00000 and replace the secondary with a separate 1 GiB region at
 0x40000000..0x7FFFFFFF. Two independent PD0 pages are appended to the GART
 page-table DMA backing. The scratch/context aliases, upload at 0x28000000,
-and VRAM starting at 4 GiB stay disjoint. This is virtual capacity, with
-physical system pages allocated on demand; it does not consume reserved VRAM.
-Allocator bounds and GPU-VA reverse translation now handle unequal segments.
-Failure-only GART-PRESSURE logs report free bytes, largest range, requesting
-client bytes, other-client bytes, and pending backing. These are needed to
-identify lifetime leaks or fragmentation if failures persist.
+and VRAM starting at 4 GiB stay disjoint. Failure-only GART-PRESSURE logs
+report free VA bytes, largest range, requesting client bytes, other-client
+bytes, and pending backing when VA reservation fails. They do not apply when
+the later physical common-buffer allocation fails.
 
-Validation: make -C src_driver check passed; x64/x86 miniports built with
-EXPERIMENTAL_GSP=1. Tests fill the full secondary window, exhaust both windows,
-release/reuse allocations, and validate every new PD0/PTE-directory link.
-Hardware validation of .308 is pending. No new VM boot was launched after
-the user's shutdown request. Next: run .308 with 3DMark; check the pressure
-counters and whether failures move to physical common-buffer allocation.
-Do not claim 3DMark fixed until actual rendering/completion is confirmed.
+Before 3DMark, `.308` kept hardware rendering on NV170: gears completed around
+53.7–56.3 FPS, the 300-frame OpenGL cube around 60.6–60.8 FPS, and D3D9 around
+58.8–65.1 FPS. Native rasterizer/semaphore, VRAM/GART round trips, and 2D
+checks passed. Host tests and x64/x86 builds passed before the VFIO run. These
+results do not establish that the large 3DMark resource workload works.
+
+`.309` implements noncontiguous page backing for ordinary GART BOs using the
+XP WDM MDL page allocation and PFN array. It maps one physical PFN per GART PTE,
+retains the MDL through GPU use, and frees its pages only after a confirmed GART
+unmap/TLB invalidate. Small BOs and the internal RM channel backing still use
+VideoPort common buffers; the channel path requires contiguous backing for its
+OpenRM page-list registration. x86/x64 cache flush handling follows the WDM
+contract (KeFlushIoBuffers is a no-op on these coherent targets). Failure-only
+logs count live GART BO bytes by client. Host checks and x64/x86 miniport
+builds pass; only existing unused-function and x86 pointer-width warnings
+remain.
+
+Next: hardware-test `.309` and verify the MDL path handles 3DMark's larger
+resources, then inspect GL out-of-memory and mapped-resource errors. Do not
+claim 3DMark fixed until it renders and exits with the benchmark suite PASS
+marker.
 
 Relevant files: src_driver/nvx_gr_context.{c,h} (VA allocation/translation),
-src_driver/nvx_gsp.c (NvxGspMapScratch page directories), src_driver/nvxmp.c
-(Nvx3dAllocateGartBuffer statistics), src_driver/tests/gr_context_test.c,
-src_driver/tests/gsp_mock_test.c. Mesa placement/lifetime consumers:
-mesa_patches/nvx_xf86drm.c, mesa_patches/nvx_nouveau_bo.c,
-mesa/src/gallium/drivers/nouveau/nouveau_mm.c (reference only).
+src_driver/nvx_gsp.c (GART PTE mapping), src_driver/nvxmp.c
+(Nvx3dAllocateGartBuffer/Nvx3dFreeBuffer backing lifetime),
+src_driver/nvx_gsp.h (buffer entry), src_driver/miniport.h (VideoPort DMA
+surface), src_driver/tests/{gr_context_test.c,gsp_mock_test.c}. Mesa
+placement/lifetime references: mesa_patches/nvx_xf86drm.c,
+mesa_patches/nvx_nouveau_bo.c, mesa/src/gallium/drivers/nouveau/nouveau_mm.c.
 
 ## .301: reassemble OpenRM large bidirectional RPC replies
 

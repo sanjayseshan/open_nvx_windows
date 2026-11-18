@@ -2,15 +2,17 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.308
+ * Driver Version: 3.0.0.309
  */
 
 #include "miniport.h"
 #include "nvx_gsp.h"
+#include "nvx_mdl.h"
 #include "nvx_vbe.h"
 #include "nvx_vbios.h"
 
 #define NV_VENDOR_ID 0x10DE
+#define NVX_3D_INTERNAL_CHANNEL_ALLOCATION_TOKEN UINT64_C(0x47524348414e0000)
 
 /* Compare the video-port callback's process context with the user-mode NVX
  * client token during XP channel bring-up diagnostics. */
@@ -1537,6 +1539,46 @@ static BOOLEAN Nvx3dFillBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 gpuVa,
     return TRUE;
 }
 
+static VOID Nvx3dFreeGartBacking(PNVX_DEVICE_EXTENSION engine,ULONG bytes,
+    PVOID systemMdl,PVOID systemVirtual,PHYSICAL_ADDRESS systemPhysical)
+{
+    if(systemMdl)
+        NvxMdlFreeGartBacking(systemMdl,systemVirtual);
+    else if(systemVirtual)
+        VideoPortFreeCommonBuffer(engine,bytes,systemVirtual,systemPhysical,FALSE);
+}
+
+static ULONG NvxGartBackingFailureCount;
+
+static VOID Nvx3dLogGartBackingPressure(PNVX_DEVICE_EXTENSION engine,
+                                       ULONG64 clientToken)
+{
+    ULONG index,count=0;
+    ULONG64 liveBytes=0,clientBytes=0,otherBytes=0;
+    if(!engine||!Nvx3dLockBuffers()) return;
+    for(index=0;index<NVX_3D_USER_BUFFER_SLOTS;index++) {
+        NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[index];
+        if(!entry->Id||!(entry->Usage&NVX_3D_USAGE_GART_BUFFER)||
+           !entry->SystemVirtual)
+            continue;
+        count++;
+        liveBytes+=entry->Bytes;
+        if(entry->ClientToken==clientToken) clientBytes+=entry->Bytes;
+        else otherBytes+=entry->Bytes;
+    }
+    Nvx3dUnlockBuffers();
+    NvxGartBackingFailureCount++;
+    if(NvxGartBackingFailureCount==1U||
+       (NvxGartBackingFailureCount&31U)==0U) {
+        LogStr("NVX [GART-BACKING-PRESSURE]: failures=");
+        LogHex(NvxGartBackingFailureCount);LogStr(" live_bytes=");
+        LogHex(liveBytes);LogStr(" live_buffers=");LogHex(count);
+        LogStr(" client_bytes=");LogHex(clientBytes);
+        LogStr(" other_client_bytes=");LogHex(otherBytes);
+        LogStr("\n");
+    }
+}
+
 /* The caller holds the global buffer lock. Publish the allocation only after
  * the common buffer is mapped and the RM TLB invalidate is confirmed. */
 static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
@@ -1544,11 +1586,11 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
 {
     NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[slot];
     PHYSICAL_ADDRESS physical;
-    PVOID virtualAddress;
+    PVOID virtualAddress,mdl=NULL,pfnArray=NULL;
     uint32_t firstPage,pageCount;
     uint32_t vaAlignment;
     ULONG64 gpuVa,id;
-    BOOLEAN mapped;
+    BOOLEAN mapped,useMdl;
 
     if(failureStage) *failureStage=1;
 
@@ -1612,18 +1654,36 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     entry->Alignment=request->Alignment;
     entry->Busy=TRUE;
     physical.QuadPart=0;
+    /* VideoPort common buffers require a contiguous physical run. Keep them
+       for small BOs and the RM channel backing, whose setup registers a
+       contiguous physical page list. Large ordinary Nouveau BOs use XP's
+       page-backed MDL allocation and the GPU GART maps each PFN separately. */
+    useMdl=request->Bytes>0x10000U&&
+           request->AllocationToken!=NVX_3D_INTERNAL_CHANNEL_ALLOCATION_TOKEN;
     Nvx3dUnlockBuffers();
 
-    virtualAddress=VideoPortAllocateCommonBuffer(engine,engine->DmaAdapter,
-        request->Bytes,&physical,FALSE,NULL);
-    if(!virtualAddress||physical.QuadPart<0||
+    if(useMdl) {
+        if(!NvxMdlAllocateGartBacking(request->Bytes,&mdl,&virtualAddress,
+                                      &pfnArray))
+            virtualAddress=NULL;
+    } else {
+        virtualAddress=VideoPortAllocateCommonBuffer(engine,engine->DmaAdapter,
+            request->Bytes,&physical,FALSE,NULL);
+    }
+    if(!virtualAddress||(!useMdl&&(physical.QuadPart<0||
        ((ULONG64)physical.QuadPart&0xfffULL)||
-       (ULONG64)physical.QuadPart>0x100000000ULL-request->Bytes) {
+       (ULONG64)physical.QuadPart>0x100000000ULL-request->Bytes))) {
         if(failureStage) *failureStage=3;
-        LogStr("NVX [GART]: VideoPortAllocateCommonBuffer failed bytes=");
+        LogStr(useMdl?"NVX [GART]: MmAllocatePagesForMdl failed bytes=":
+                       "NVX [GART]: VideoPortAllocateCommonBuffer failed bytes=");
         LogHex(request->Bytes);LogStr(" virt=");LogHex((ULONG64)virtualAddress);
+        if(useMdl) {
+            LogStr(" pfn_list=");LogHex((ULONG64)pfnArray);
+        }
         LogStr(" phys=");LogHex((ULONG64)physical.QuadPart);LogStr("\n");
-        if(virtualAddress)
+        if(mdl)
+            NvxMdlFreeGartBacking(mdl,virtualAddress);
+        else if(virtualAddress)
             VideoPortFreeCommonBuffer(engine,request->Bytes,virtualAddress,
                                       physical,FALSE);
         if(Nvx3dLockBuffers()) {
@@ -1634,16 +1694,20 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
             }
             Nvx3dUnlockBuffers();
         }
+        Nvx3dLogGartBackingPressure(engine,request->ClientToken);
         request->BufferId=request->GpuVa=0;
         return FALSE;
     }
 
     VideoPortZeroMemory(virtualAddress,request->Bytes);
     /* Busy and ClientToken==0 keep this backing private until map completion. */
+    entry->SystemMdl=mdl;
     entry->SystemVirtual=virtualAddress;
     entry->SystemPhysical=physical;
-    mapped=NvxGspMapGartRange(engine,firstPage,pageCount,
-                              (ULONG64)physical.QuadPart,request->Bytes);
+    mapped=useMdl?
+        NvxGspMapGartPfnArray(engine,firstPage,pageCount,pfnArray,request->Bytes):
+        NvxGspMapGartRange(engine,firstPage,pageCount,
+                           (ULONG64)physical.QuadPart,request->Bytes);
     if(!mapped) {
         if(failureStage) *failureStage=4;
         BOOLEAN unmapped=NvxGspUnmapGartRange(engine,firstPage,pageCount);
@@ -1655,8 +1719,11 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
             if(Nvx3dLockBuffers()) {
                 entry=Nvx3dFindBuffer(engine,id);
                 if(entry&&entry->Busy&&entry->SystemVirtual==virtualAddress) {
-                    VideoPortFreeCommonBuffer(engine,request->Bytes,
-                                              virtualAddress,physical,FALSE);
+                    if(entry->SystemMdl)
+                        NvxMdlFreeGartBacking(entry->SystemMdl,virtualAddress);
+                    else
+                        VideoPortFreeCommonBuffer(engine,request->Bytes,
+                                                  virtualAddress,physical,FALSE);
                     /* Mapping was attempted, so keep these pages quarantined
                      * even after a confirmed clear. */
                     VideoPortZeroMemory(entry,sizeof(*entry));
@@ -2178,8 +2245,8 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
             entry=Nvx3dFindBuffer(engine,id);
             if(entry&&entry->Busy&&entry->GartUnmapPending&&
                entry->SystemVirtual==saved.SystemVirtual) {
-                VideoPortFreeCommonBuffer(engine,saved.Bytes,
-                    saved.SystemVirtual,saved.SystemPhysical,FALSE);
+                Nvx3dFreeGartBacking(engine,saved.Bytes,saved.SystemMdl,
+                    saved.SystemVirtual,saved.SystemPhysical);
                 (void)NvxGartRelease(&engine->GspGartHeap,saved.GartFirstPage,
                                      saved.GartPageCount);
                 VideoPortZeroMemory(entry,sizeof(*entry));
@@ -2218,8 +2285,8 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
         entry=Nvx3dFindBuffer(engine,id);
         if(entry&&entry->Busy&&entry->GpuVa==saved.GpuVa&&
            entry->SystemVirtual==saved.SystemVirtual) {
-            VideoPortFreeCommonBuffer(engine,saved.Bytes,
-                saved.SystemVirtual,saved.SystemPhysical,FALSE);
+            Nvx3dFreeGartBacking(engine,saved.Bytes,saved.SystemMdl,
+                saved.SystemVirtual,saved.SystemPhysical);
             (void)NvxGartRelease(&engine->GspGartHeap,saved.GartFirstPage,
                                  saved.GartPageCount);
             VideoPortZeroMemory(entry,sizeof(*entry));
@@ -2354,7 +2421,7 @@ static BOOLEAN Nvx3dOpenGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,
     }
     allocation.Size=sizeof(allocation);allocation.Version=NVX_3D_ABI_VERSION;
     allocation.ClientToken=lease->ClientToken;
-    allocation.AllocationToken=0x47524348414e0000ULL; /* private channel backing */
+    allocation.AllocationToken=NVX_3D_INTERNAL_CHANNEL_ALLOCATION_TOKEN;
     allocation.Usage=NVX_3D_USAGE_GART_BUFFER;
     allocation.Alignment=NVX_GART_SLICE_BYTES;
     allocation.Bytes=NVX_GR_CLIENT_BACKING_BYTES;
@@ -3045,6 +3112,7 @@ BOOLEAN NTAPI HwVidStartIO(
 
         dstBase=engine->GspVramGpuVa+
             (devExt->IsSecondaryDisplay?0x2000000ULL:0ULL);
+        NvxMdlFlushGartBacking(saved.SystemMdl,FALSE);
         if(dstBase<=~0ULL-destOffset&&
            saved.GpuVa<=~0ULL-sourceOffset)
             copied=NvxGspSubmitCopy2D(engine,dstBase+destOffset,
@@ -3401,8 +3469,10 @@ BOOLEAN NTAPI HwVidStartIO(
             VideoPortMoveMemory((PUCHAR)saved.SystemVirtual+upload.Offset,
                                 (PUCHAR)RequestPacket->InputBuffer+headerBytes,
                                 upload.Bytes);
-            /* Publish uncached/coherent GART writes before acknowledging the
-               upload that precedes GPU copy-engine consumption. */
+            NvxMdlFlushGartBacking(saved.SystemMdl,FALSE);
+            /* Publish CPU writes before acknowledging an upload that may be
+               consumed by the GPU. For common buffers this is a no-op; MDL
+               backing follows the WDM DMA cache-flush contract. */
             __sync_synchronize();
             status=NO_ERROR;
             statusBlock->Information=inputBytes;
@@ -3448,6 +3518,7 @@ BOOLEAN NTAPI HwVidStartIO(
         entry->Busy=TRUE;saved=*entry;
         Nvx3dUnlockBuffers();
         if((saved.Usage&NVX_3D_USAGE_GART_BUFFER)&&saved.SystemVirtual) {
+            NvxMdlFlushGartBacking(saved.SystemMdl,TRUE);
             VideoPortMoveMemory(RequestPacket->OutputBuffer,
                                 (PUCHAR)saved.SystemVirtual+download.Offset,
                                 download.Bytes);
@@ -3837,6 +3908,8 @@ validate_batch_done:
             if(!fenceValue||fenceValue>0xffffffffULL) {
                 status=ERROR_DEVICE_NOT_READY;goto release_batch_buffers;
             }
+            for(i=0;i<pinnedCount;i++)
+                NvxMdlFlushGartBacking(pinned[i]->SystemMdl,FALSE);
             submitted=NvxGspSubmitNvc0Batch(engine,header.ClientToken,dwords,header.DwordCount,
                 pushEntry->SystemVirtual,pushEntry->GpuVa,pushEntry->Bytes,
                 &fenceValue);
@@ -4455,7 +4528,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.308 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.309 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

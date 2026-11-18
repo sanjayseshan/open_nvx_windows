@@ -80,4 +80,5 @@ int NvxGartReserve(NVX_GART_HEAP *, uint64_t, uint32_t, uint32_t *, uint32_t *, 
 int NvxGartRelease(NVX_GART_HEAP *, uint32_t, uint32_t);
 int NvxGartBuildPtes(uint64_t *, uint32_t, uint32_t, uint32_t,
                      uint64_t, uint64_t, int);
+uint64_t NvxGartEncodePte(uint64_t, int);
 #endif
