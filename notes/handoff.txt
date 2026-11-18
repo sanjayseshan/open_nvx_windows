@@ -1,6 +1,34 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.312**.
+Updated November 18, 2026. Current candidate: **3.0.0.313**.
+
+## .312: confirmed the 3DMark black-screen mode loop
+
+The .312 diagnostic build compiled for x64/x86 and passed `make -C src_driver
+check`. The real-hardware run kept NV170; cube completed at about 60 FPS, gears
+at 53.7 FPS, and standard GL/D3D9/3D/2D checks passed. 3DMark did not finish.
+Its requested 1024x768 mode caused more than 3,000 repeated native modesets.
+Each completed the EVO notifier and RM reported the expected active display
+IDs (`0x800` and `0x200`), but `NvxGspVerifyDisplays` then returned false
+because a DP AUX status query for active display `0x800` was rejected with
+status `0xffff`. The code treated that optional query failure as proof that
+the active head was disconnected, causing the mode request to fail and repeat.
+This matches the black screen and 0 FPS report. No NVC0 batch timeout, shader
+header exception, MMU fault, or memory-allocation failure occurred before the
+run was stopped. The failure-only stream capture therefore did not trigger.
+
+Log: `test_logs/v3.0.0.312-20261118-122111.log`; extracted benchmark output:
+`test_logs/v3.0.0.312-20261118-122111-3dmark05.log`.
+
+## .313: do not let unavailable AUX status undo an active scanout
+
+`NvxGspVerifyDisplays` now queries DPCD lane status only for outputs reported
+as DisplayPort (`protocol == 8`). A rejected AUX query on an already active
+DP route is logged as unavailable and no longer clears the active-head result.
+An acknowledged, correctly sized DPCD lane-status response that shows unlocked
+lanes still fails verification. HDMI outputs are not interpreted as DP lane
+status. The successful EVO update notifier and RM head routing remain required.
+Hardware test pending.
 
 ## .312: capture the exact stream on the recurring 3DMark GPU fault
 

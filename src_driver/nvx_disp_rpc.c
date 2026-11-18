@@ -318,6 +318,7 @@ static BOOLEAN NvxGspVerifyDisplays(PNVX_DEVICE_EXTENSION dev)
     for(ULONG head=0;head<2;head++) {
         ULONG active[4]={0,head,0,0};
         ULONG id=0;
+        ULONG monitor,protocol=0xffffffffUL;
         if(!NvxGspControl(dev,dev->GspDisplayHandle,NV0073_CTRL_CMD_SYSTEM_GET_ACTIVE,active,sizeof(active))) return FALSE;
         id=((const ULONG *)dev->RpcRxRecord)[29];
         LogStr("NVX [DISPLAY-VERIFY]: head=");LogHex(head);
@@ -325,17 +326,38 @@ static BOOLEAN NvxGspVerifyDisplays(PNVX_DEVICE_EXTENSION dev)
         if(head==0 && id==dev->MonitorIds[0]) primaryActive=TRUE;
         if(head==1 && id && (id==dev->SecondaryDpDisplayId || (dev->MonitorCount>1 && id==dev->MonitorIds[1]))) secondaryActive=TRUE;
         if(id) {
-            NVX_DP_AUX_CTRL_PARAMS aux={0};
-            aux.displayId=id;aux.cmd=9;aux.addr=0x202;aux.size=2;
-            if(NvxGspControl(dev,dev->GspDisplayHandle,NVX_CTRL_CMD_DP_AUXCH_CTRL,&aux,sizeof(aux))) {
-                const NVX_DP_AUX_CTRL_PARAMS *r=(const void *)((const ULONG *)dev->RpcRxRecord+26);
-                BOOLEAN locked=r->replyType==0 && r->size==3 &&
-                    (r->data[0]&0x77)==0x77 && (r->data[1]&0x77)==0x77 && (r->data[2]&1);
-                LogStr("NVX [DISPLAY-VERIFY]: display=");LogHex(id);
-                LogStr(" auxLock=");LogHex(locked);
-                LogStr(" status=");LogHex(r->data[0]|(r->data[1]<<8)|(r->data[2]<<16));LogStr("\n");
-                if(!locked) { if(head==1) secondaryActive=FALSE;else primaryActive=FALSE; }
-            } else { if(head==1) secondaryActive=FALSE;else primaryActive=FALSE; }
+            for(monitor=0;monitor<dev->MonitorCount;monitor++)
+                if(dev->MonitorIds[monitor]==id) {
+                    protocol=dev->MonitorProtocol[monitor];break;
+                }
+            /* DPCD lane status exists only on DisplayPort. Some active DP
+               outputs reject this optional query, and HDMI connectors can
+               return unrelated AUX data. Neither case overrides RM's active
+               head route or a successful EVO update notifier. */
+            if(protocol==8U) {
+                NVX_DP_AUX_CTRL_PARAMS aux={0};
+                aux.displayId=id;aux.cmd=9;aux.addr=0x202;aux.size=2;
+                if(NvxGspControl(dev,dev->GspDisplayHandle,NVX_CTRL_CMD_DP_AUXCH_CTRL,&aux,sizeof(aux))) {
+                    const NVX_DP_AUX_CTRL_PARAMS *r=(const void *)((const ULONG *)dev->RpcRxRecord+26);
+                    BOOLEAN valid=r->replyType==0 && r->size==3;
+                    BOOLEAN locked=valid && (r->data[0]&0x77)==0x77 &&
+                        (r->data[1]&0x77)==0x77 && (r->data[2]&1);
+                    LogStr("NVX [DISPLAY-VERIFY]: DP display=");LogHex(id);
+                    LogStr(" auxStatusValid=");LogHex(valid);
+                    LogStr(" auxLock=");LogHex(locked);
+                    if(valid) {
+                        LogStr(" status=");
+                        LogHex(r->data[0]|(r->data[1]<<8)|(r->data[2]<<16));
+                    }
+                    LogStr("\n");
+                    if(valid&&!locked) {
+                        if(head==1) secondaryActive=FALSE;else primaryActive=FALSE;
+                    }
+                } else {
+                    LogStr("NVX [DISPLAY-VERIFY]: DP AUX status unavailable for active display=");
+                    LogHex(id);LogStr("; retaining RM active-route result\n");
+                }
+            }
         }
     }
     LogStr("NVX [DISPLAY-VERIFY]: bothHeadsActive=");LogHex(primaryActive&&secondaryActive);LogStr("\n");
