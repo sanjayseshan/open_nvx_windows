@@ -257,6 +257,20 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             assert(tables[2048+31]==((dev.GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET+31*4096)>>4|0xd));
             assert(tables[2048+32]==0);
             assert(tables[1025]==((physical+0x5000)>>4|0xc));
+            assert(dev.GspGartPteLength==NVX_GART_TABLE_BYTES);
+            for(ULONG directory=0;directory<NVX_GART_PD0_COUNT;directory++) {
+                ULONG64 pa=dev.GspGartPtePhysical.QuadPart+
+                           NVX_GART_PD0_OFFSET+directory*4096U;
+                assert(tables[1024+(NVX_GART_EXTRA_GPU_VA_BASE>>29)+directory]==((pa>>4)|0xc));
+                PULONG64 pd0=(PULONG64)((PUCHAR)dev.GspGartPteVirtual+
+                    NVX_GART_PD0_OFFSET+directory*4096U);
+                for(ULONG leaf=0;leaf<256U;leaf++) {
+                    ULONG slice=NVX_GART_PRIMARY_SLICE_COUNT+directory*256U+leaf;
+                    assert(pd0[leaf*2]==0);
+                    assert(pd0[leaf*2+1]==((((ULONG64)dev.GspGartPtePhysical.QuadPart+
+                                           slice*4096U)>>4)|0xc));
+                }
+            }
             PULONG64 vram=(PULONG64)dev.GspVramPteVirtual;
             ULONG64 vramPhysical=dev.GspVramPtePhysical.QuadPart;
             assert(vram && dev.GspVramPteLength==GSP_VRAM_TABLE_BYTES);

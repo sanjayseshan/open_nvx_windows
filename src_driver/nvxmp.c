@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.307
+ * Driver Version: 3.0.0.308
  */
 
 #include "miniport.h"
@@ -1573,6 +1573,28 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
         LogHex(request->Bytes);LogStr(" alignment=");LogHex(vaAlignment);
         LogStr(" client=");LogHex(request->ClientToken);
         LogStr(" total_bytes=");LogHex(NVX_GART_TOTAL_BYTES);LogStr("\n");
+        /* Called with the heap lock held: distinguish capacity, fragmentation,
+           and backing retained by other clients without per-allocation spam. */
+        {
+            ULONG freePages=0,largest=0,run=0,owned=0,other=0,pending=0;
+            for(ULONG page=0;page<NVX_GART_PAGE_COUNT;page++) {
+                if(page==NVX_GART_PRIMARY_PAGE_COUNT) run=0;
+                if(engine->GspGartHeap.used[page/32U]&(1U<<(page%32U))) run=0;
+                else { freePages++;run++;if(run>largest) largest=run; }
+            }
+            for(ULONG index=0;index<NVX_3D_USER_BUFFER_SLOTS;index++) {
+                NVX_3D_USER_BUFFER_ENTRY *bo=&engine->Nvx3dBuffers[index];
+                if(!bo->Id||!(bo->Usage&NVX_3D_USAGE_GART_BUFFER)) continue;
+                if(bo->ClientToken==request->ClientToken) owned+=bo->GartPageCount;
+                else other+=bo->GartPageCount;
+                if(bo->Busy||bo->GartUnmapPending) pending+=bo->GartPageCount;
+            }
+            LogStr("NVX [GART-PRESSURE]: free_bytes=");LogHex((ULONG64)freePages<<12);
+            LogStr(" largest_range=");LogHex((ULONG64)largest<<12);
+            LogStr(" client_bytes=");LogHex((ULONG64)owned<<12);
+            LogStr(" other_client_bytes=");LogHex((ULONG64)other<<12);
+            LogStr(" pending_bytes=");LogHex((ULONG64)pending<<12);LogStr("\n");
+        }
         Nvx3dUnlockBuffers();
         return FALSE;
     }
@@ -4433,7 +4455,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.307 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.308 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

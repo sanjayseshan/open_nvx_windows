@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.307**.
+Updated November 18, 2026. Current candidate: **3.0.0.308**.
 
 ## .307: correct OpenRM RPC message sizing (hardware verified)
 
@@ -41,57 +41,45 @@ open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
 src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
-## Current status and remaining work
+## Current status and remaining work (.308 built; XP off)
 
-Fixed and hardware-tested: GA104 boot policy now exposes ~7.78 GiB of
-firmware-approved free VRAM; an 8 GiB GPU VA mapping supports it. The old
-~60 MiB heap restriction came from applying GA100-only MMU-lock semantics
-to GA104. Application allocations extended beyond the old 128 MiB aperture.
+.307 restored hardware NV170 rendering on both architectures and resolved the
+function-71 INVALID_FUNCTION/RPC quarantine that caused GDI Generic and
+Direct3DCreate9 NULL. The 8 GiB VRAM mapping remains available; large FB page
+lists are accepted. 3DMark still has no proven benchmark result.
 
-.298 display validation PASSED: 12 public-API switches between 1024x768
-and 2560x1440, DMA ring wrap executed on hardware, both display heads stayed
-active/locked, and the user confirmed the primary looks clean. The user
-had already confirmed the secondary looked good in .297. Native channels
-are preserved across modesets and their command rings can now wrap.
+.307's remaining failure is NvxGartReserve rejecting 8 MiB system-memory
+GPU-VA reservations in the old 460 MiB aperture. This fails before allocating
+physical system RAM. The existing log cannot distinguish full occupancy,
+fragmentation, or ownership leaks because it did not record heap statistics.
+The captured WineD3D log reports resource-unload-while-mapped twice; this is
+still relevant and must be rechecked after allocation failures are resolved.
 
-.298 graphics results: x64 gears 62.83 FPS, x86 gears 53.0 FPS; x64/x86 cube
-60.3/60.8 FPS with NV170 and NVX_3D_RESULT PASS; D3D9 HAL 64.4/59.2 FPS.
-Guest ALL_BENCHMARKS_FINISHED Status: PASS. VM shut down normally.
-Log: test_logs/v3.0.0.298-20261117-213727.log.
-Host GSP/VBE/FRTS tests and XP package builds passed. Supplemental GSP test
-also verifies physical FB page-list registration above 4 GiB.
+.308 expands GART VA to 1,254 MiB: preserve the 230 MiB primary window at
+0x11A00000 and replace the secondary with a separate 1 GiB region at
+0x40000000..0x7FFFFFFF. Two independent PD0 pages are appended to the GART
+page-table DMA backing. The scratch/context aliases, upload at 0x28000000,
+and VRAM starting at 4 GiB stay disjoint. This is virtual capacity, with
+physical system pages allocated on demand; it does not consume reserved VRAM.
+Allocator bounds and GPU-VA reverse translation now handle unequal segments.
+Failure-only GART-PRESSURE logs report free bytes, largest range, requesting
+client bytes, other-client bytes, and pending backing. These are needed to
+identify lifetime leaks or fragmentation if failures persist.
 
-3DMark is NOT resolved or scored. .297 benchmark showed:
-1. Failed 8 MiB GART range reservations in the 460 MiB system-memory GPU VA
-   pool. Investigate live allocation ownership/cache lifetimes and fragmentation.
-2. ~64.5 MiB linear VRAM BO requests cannot register their page lists through
-   the earlier 16-element contiguous RPC encoder. .300 confirmed OpenRM-style
-   function-71 request continuations on hardware; .301 adds the missing large
-   bidirectional reply reassembly. The mock reconstructs and verifies a 4 MiB
-   PFN list. Hardware validation is pending; this does not yet prove the previous ~64.5 MiB
-   allocation or 3DMark works. This should reduce fallback to GART after a
-   VRAM-registration failure.
-3. 3DMark's guest log contains GL_FRAMEBUFFER_UNSUPPORTED and
-   GL_INVALID_FRAMEBUFFER_OPERATION plus resource-unload-while-mapped errors.
-   Do not assume memory pressure explains every rendering error; recheck after
-   allocation/transport failures are fixed.
+Validation: make -C src_driver check passed; x64/x86 miniports built with
+EXPERIMENTAL_GSP=1. Tests fill the full secondary window, exhaust both windows,
+release/reuse allocations, and validate every new PD0/PTE-directory link.
+Hardware validation of .308 is pending. No new VM boot was launched after
+the user's shutdown request. Next: run .308 with 3DMark; check the pressure
+counters and whether failures move to physical common-buffer allocation.
+Do not claim 3DMark fixed until actual rendering/completion is confirmed.
 
-.298 intentionally skipped 3DMark to isolate the clean display/mode smoke
-run. The old collector appended leftover 3DMark logs despite that flag, so
-errors in appended guest traces must not be attributed to a new .298 3DMark
-run. The collector now skips those logs when NVX_RUN_3DMARK=0 and adds log
-section labels for future runs. Editing the live runner during collection
-caused its final host verdict to exit with a parser error; the saved-log
-verdict checks were rerun separately and passed. Hardware/guest suite passed;
-no additional boot was used to conceal or rerun that result.
-
-Next: hardware-test .303 large bidirectional RPC receive and page-list
-registration; audit GART lifetimes/fragmentation; then retry 3DMark with live
-allocation statistics.
-Do not expand firmware-reserved physical ranges. Relevant upstream transport:
-open-gpu-kernel-modules/src/nvidia/kernel/vgpu/nv/rpc.c (_issuePteDescRpc,
-_issueRpcAndWaitLarge); local src_driver/nvx_rpc.{c,h}, nvx_gsp.c,
-nvxmp.c, nvx_gr_context.{c,h}, and mesa_patches/nvx_xf86drm.c.
+Relevant files: src_driver/nvx_gr_context.{c,h} (VA allocation/translation),
+src_driver/nvx_gsp.c (NvxGspMapScratch page directories), src_driver/nvxmp.c
+(Nvx3dAllocateGartBuffer statistics), src_driver/tests/gr_context_test.c,
+src_driver/tests/gsp_mock_test.c. Mesa placement/lifetime consumers:
+mesa_patches/nvx_xf86drm.c, mesa_patches/nvx_nouveau_bo.c,
+mesa/src/gallium/drivers/nouveau/nouveau_mm.c (reference only).
 
 ## .301: reassemble OpenRM large bidirectional RPC replies
 

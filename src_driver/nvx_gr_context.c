@@ -33,7 +33,7 @@ int NvxGartReserve(NVX_GART_HEAP *heap, uint64_t bytes, uint32_t alignment,
     if (count) *count = 0;
     if (gpu_va) *gpu_va = 0;
     if (!heap || !bytes || !first || !count || !gpu_va ||
-        bytes > NVX_GART_SEGMENT_BYTES ||
+        bytes > NVX_GART_EXTRA_BYTES ||
         bytes > UINT64_MAX - (NVX_GART_PAGE_BYTES - 1U) ||
         (alignment && (alignment < NVX_GART_PAGE_BYTES ||
                        (alignment & (alignment - 1U)) ||

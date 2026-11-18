@@ -1137,7 +1137,7 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
        dev->GspDmaLength<GSP_UPLOAD_OFFSET+GSP_UPLOAD_SIZE||
        (physical&4095)) return FALSE;
     if(!dev->GspGartPteVirtual) {
-        dev->GspGartPteLength=NVX_GART_SLICE_COUNT*4096U;
+        dev->GspGartPteLength=NVX_GART_TABLE_BYTES;
         dev->GspGartPteVirtual=VideoPortAllocateCommonBuffer(dev,
             dev->DmaAdapter,dev->GspGartPteLength,
             &dev->GspGartPtePhysical,FALSE,NULL);
@@ -1171,9 +1171,13 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
     tables[1024]=((physical+0x3000)>>4)|0xc;
     /* PD0 has paired large/small entries; VA>>21 == 128, small is +8. */
     tables[1536+128*2+1]=((physical+0x4000)>>4)|0xc;
-    /* Map the primary GART window below VRAM in PD0. The secondary window
-       uses the VRAM directory at tables[2560..3071], after the 128 MiB VRAM
-       map and the upload SPT at PDE 64. This avoids replacing either mapping. */
+    /* Independent PD0 pages for the 1 GiB GART window. Keep upload,
+       scratch, context aliases, and the 4 GiB VRAM base disjoint. */
+    for(ULONG directory=0;directory<NVX_GART_PD0_COUNT;directory++) {
+        ULONG pd1=(ULONG)(NVX_GART_EXTRA_GPU_VA_BASE>>29)+directory;
+        tables[1024+pd1]=(((ULONG64)dev->GspGartPtePhysical.QuadPart+
+                          NVX_GART_PD0_OFFSET+directory*4096U)>>4)|0xc;
+    }
     for(ULONG slice=0;slice<NVX_GART_SLICE_COUNT;slice++) {
         ULONG pdIndex;
         PULONG64 pde;
@@ -1185,10 +1189,10 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
             pde=tables+1536+pdIndex*2+1;
         } else {
             ULONG extraSlice=slice-NVX_GART_PRIMARY_SLICE_COUNT;
-            pdIndex=(ULONG)(NVX_GART_EXTRA_GPU_VA_BASE>>21)-
-                    (ULONG)(0x20000000ULL>>21)+extraSlice;
-            if(pdIndex>255U) return FALSE;
-            pde=tables+2560+pdIndex*2+1;
+            PULONG64 pd0=(PULONG64)((PUCHAR)dev->GspGartPteVirtual+
+                NVX_GART_PD0_OFFSET+(extraSlice/256U)*4096U);
+            pdIndex=extraSlice%256U;
+            pde=pd0+pdIndex*2+1;
         }
         *pde=(ptePhysical>>4)|0xc;
     }

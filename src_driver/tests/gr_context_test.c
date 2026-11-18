@@ -93,7 +93,22 @@ int main(void)
     assert(!NvxGartRelease(&gart,NVX_GART_PRIMARY_PAGE_COUNT-1U,2));
     assert(NvxGartRelease(&gart,0,NVX_GART_PRIMARY_PAGE_COUNT));
     assert(NvxGartRelease(&gart,NVX_GART_PRIMARY_PAGE_COUNT,1));
-    assert(!NvxGartReserve(&gart,NVX_GART_SEGMENT_BYTES+4096U,4096,
+    /* A single reservation can cross the old 460 MiB total limit in the
+       independent secondary window, but cannot bridge the VA gap. */
+    assert(NvxGartReserve(&gart,NVX_GART_EXTRA_BYTES,0x200000,
+                          &first,&count,&gpu_va));
+    assert(first==NVX_GART_PRIMARY_PAGE_COUNT&&gpu_va==NVX_GART_EXTRA_GPU_VA_BASE);
+    assert(NvxGartPageForGpuVa(gpu_va+NVX_GART_EXTRA_BYTES-4096U,&first));
+    assert(first==NVX_GART_PAGE_COUNT-1U);
+    assert(!NvxGartPageForGpuVa(gpu_va+NVX_GART_EXTRA_BYTES,NULL));
+    assert(NvxGartReserve(&gart,NVX_GART_SEGMENT_BYTES,0x200000,
+                          &first,&count,&gpu_va));
+    assert(first==0);
+    assert(!NvxGartReserve(&gart,0x800000,0x10000,&first,&count,&gpu_va));
+    assert(NvxGartRelease(&gart,NVX_GART_PRIMARY_PAGE_COUNT,
+                          NVX_GART_PAGE_COUNT-NVX_GART_PRIMARY_PAGE_COUNT));
+    assert(NvxGartRelease(&gart,0,NVX_GART_PRIMARY_PAGE_COUNT));
+    assert(!NvxGartReserve(&gart,NVX_GART_EXTRA_BYTES+4096U,4096,
                            &first,&count,&gpu_va));
     assert(!NvxGartBuildPtes(gart_ptes,
         NVX_GART_PAGE_COUNT,0,1,
