@@ -1,18 +1,18 @@
 # NVIDIA Modern GPU Display Drivers for Windows 2000/XP (x86 & x64) & Windows 98SE/ME
 
-This project develops display drivers for modern NVIDIA (RTX) GPUs running on legacy versions of Windows. The driver stack is built against the official NVIDIA Open GPU Kernel Modules (`open-gpu-kernel-modules`, driver version 535.113.01) and boots authentic NVIDIA GSP-RM firmware.
+This project develops display drivers for modern NVIDIA GPUs on legacy Windows. The XP miniport uses code and policy adapted from NVIDIA’s Open GPU Kernel Modules (`open-gpu-kernel-modules`) and boots NVIDIA GSP-RM firmware. Hardware validation is primarily on an RTX 3070 (GA104); related GPU families are not yet validated.
 
 ### Operating System Support
-* **Windows XP Professional x64 Edition (NT 5.2):** Tested on physical bare metal and VFIO VM passthrough.
-* **Windows XP Professional x86 (NT 5.1):** Tested on VFIO VM passthrough.
-* **Windows 98 Second Edition (SE, 4.10):** Tested on VFIO VM passthrough with multi-monitor desktop virtualization.
-* **Windows ME (4.90) / Windows 2000 (NT 5.0) / Windows Vista (NT 6.0) / Windows 7 (NT 6.1):** Untested, but expected compatible via XDDM (Windows 2000 Display Driver Model) or Win98SE fallback.
+* **Windows XP Professional x64 Edition (NT 5.2):** Main development and hardware-validation target; tested with an RTX 3070, including VFIO passthrough.
+* **Windows XP Professional x86 (NT 5.1):** Separate 32-bit build; tested in a VFIO guest. Feature coverage differs from x64.
+* **Windows 98 Second Edition (SE, 4.10):** Experimental VxD/DIB path tested in a VFIO guest.
+* **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated. Compatibility should not be assumed.
 
 ### Hardware Validation & Target GPUs
 * **Host Platform:** AMD AM5 (Ryzen 9000 series, IOMMU / VFIO passthrough)
 * **Tested GPU:** NVIDIA GeForce RTX 3070 (Ampere GA104)
 * **Tested Displays:** Dual-monitor setup (1x 2560×1440 @ 32bpp True Color + 1x 1920×1080 @ 32bpp True Color)
-* **Supported Architectures (NVIDIA 535.113.01):**
+* **Potential GPU families for this firmware generation (only GA104 tested):**
   * GTX 16 series (Turing TU10x, untested)
   * RTX 20 series (Turing TU10x, untested)
   * RTX 30 series (Ampere GA10x, tested GA104)
@@ -20,141 +20,207 @@ This project develops display drivers for modern NVIDIA (RTX) GPUs running on le
 
 ---
 
-## Architectural Comparison
+## Architecture
 
-| Feature | Windows XP (x86) | Windows XP (x64) | Windows 98 SE |
-| :--- | :--- | :--- | :--- |
-| **Driver Architecture** | Windows 2000/XP Display Driver Model (XDDM 32-bit) | Windows XP Display Driver Model (XDDM 64-bit) | Hybrid Ring 0 VxD + 16-bit GDI Display Driver |
-| **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
-| **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0) & `nvx2.drv` (Head 1) (16-bit NE) |
-| **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | Partial Acceleration (DIB Engine RAM shadow buffer + burst VRAM flush) |
-| **3D Acceleration Engine** | Work in progress / Software fallback | Partial 3D via Mesa WGL bridge & native C797 miniport submit; Gallium NVC0 port in progress | Software rasterization |
-| **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
-| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Dual display drivers (`nvx.drv` + `nvx2.drv`) & desktop extension via `attach_sec.exe` |
-| **Tested Resolutions** | 1920×1080 + 2560×1440 @ 32bpp True Color | 1920×1080 + 2560×1440 @ 32bpp True Color | 1920×1080 + 2560×1440 @ 32bpp True Color |
+The diagrams show the intended data flow and the current implementation boundaries. XP x64 is the primary target. The Mesa/Nouveau OpenGL route is present but remains under active validation; driver boot and 2D operation do not imply arbitrary OpenGL or Direct3D workloads are complete.
 
----
+### Windows XP x64
 
-## Windows XP x64 Architecture
+```mermaid
+flowchart TB
+  subgraph User[User mode]
+    APP[OpenGL application]
+    D3D[Direct3D 9 application]
+    OGL[XP OpenGL loader / WGL]
+    ICD[Mesa WGL ICD<br/>nvxogl64.dll]
+    WD[Optional WineD3D build<br/>D3D9 to OpenGL]
+    GDI[GDI / XDDM display calls]
+    APP --> OGL --> ICD
+    D3D -. optional test path .-> WD --> OGL
+    GDI --> DDI
+  end
+  subgraph Kernel[Windows XP x64 kernel]
+    DDI[nvxdisp.dll<br/>XDDM display DDI]
+    MP[nvxmp.sys<br/>XDDM video miniport]
+    DDI -->|DDI / escape requests| MP
+    ICD -->|NVX winsys ABI / escapes| MP
+  end
+  subgraph GPU[RTX GPU]
+    RM[GSP-RM firmware<br/>RPC-managed resources]
+    CE[Copy Engine / display scanout]
+    GR[3D engine<br/>channel and submission path]
+    RM --> CE
+    RM --> GR
+  end
+  MP -->|DMA, RM RPC, channel submission| RM
+```
 
-The Windows XP x64 driver consists of a 64-bit XDDM video miniport (`nvxmp.sys`) and a 64-bit GDI display driver (`nvxdisp.dll`):
-- **GSP-RM Firmware Bootstrap:** On system start, the miniport initializes the GA104 Falcon security coprocessor (SEC2), loads and authenticates the NVIDIA GSP-RM firmware payload (`gsp_ga104.bin`) from embedded storage, and sets up bidirectional message queues over DMA.
-- **Dual Display Scanout:** The miniport configures two hardware display heads simultaneously via GSP display RPC calls.
-- **Copy Engine & 2D Fills:** A GSP-managed GPU Copy Engine (Ampere CE) performs solid color fills, surface blits, and framebuffer updates. Complex unaccelerated rasterization falls back cleanly to CPU GDI routines.
-- **OpenGL & 3D Acceleration:** Implements fixed-width user/kernel 3D ABI (`nvx_3d_abi.h`) supporting owned GPU VRAM allocation, validated C797 method execution, inline memory writes (I2M), fast hardware clears, and hardware triangle rasterization. Uses an XP-compatible Mesa WGL ICD (`nvxogl64.dll`) with ongoing work to port Mesa's Nouveau NVC0 Gallium backend.
+The miniport owns device setup, memory mappings, RM/GSP communication, display modes, and the user/kernel submission ABI. `nvxdisp.dll` provides the XP XDDM display interface. The OpenGL ICD and Nouveau winsys use that ABI; the hardware 3D path is still being validated with broader workloads. Optional WineD3D binaries provide a compatibility/test layer for D3D applications; they are not part of the Windows display driver.
 
----
+### Windows XP x86 and WOW64
 
-## Windows XP x86 Architecture
+```mermaid
+flowchart LR
+  A32[32-bit application] --> W32[WOW64 OpenGL / GDI view]
+  W32 --> ICD32[nvxogl32.dll<br/>when x86 ICD is installed]
+  W32 --> DDI32[nvxdisp.dll<br/>32-bit XDDM DDI]
+  ICD32 --> MP32[nvxmp.sys<br/>32-bit miniport]
+  DDI32 --> MP32
+  A64[64-bit application] --> W64[Native x64 OpenGL / GDI view]
+  W64 --> ICD64[nvxogl64.dll]
+  W64 --> DDI64[nvxdisp.dll<br/>64-bit XDDM DDI]
+  ICD64 --> MP64[nvxmp.sys<br/>64-bit miniport]
+  DDI64 --> MP64
+  MP32 -. separate build and ABI width .-> HW[RTX GPU / GSP-RM]
+  MP64 --> HW
+```
 
-The Windows XP x86 driver provides identical feature parity with the 64-bit driver using a 32-bit XDDM miniport and GDI display driver:
-- **32-bit Video Miniport (`nvxmp32.sys`):** Compiled with 32-bit MinGW (`i686-w64-mingw32-gcc`), using the same core GA104 GSP-RM engine, OpenRM HAL shims, RPC queues, and Ampere Copy Engine as the 64-bit driver. Deployed as `nvxmp.sys`.
-- **32-bit GDI Display Driver (`nvxdisp32.dll`):** 32-bit display driver providing standard GDI hooks (`DrvEnableDriver`, `DrvEnableSurface`, `DrvBitBlt`, `DrvTextOut`, `DrvCopyBits`). Export definitions are validated against legacy Windows XP 32-bit `win32k.sys` entry points. Deployed as `nvxdisp.dll`.
-- **2D Copy Engine Acceleration:** Shared codebase with 64-bit, enabling hardware-accelerated solid fills, rect copies, and dual-head scanout surfaces.
+On XP x64, x86 and x64 DLLs belong in separate system directories and OpenGL registry views. The x86 build is a separate target; do not infer x86 OpenGL support from the x64 package. Build outputs use `nvxmp32.sys` and `nvxdisp32.dll` names before staging as `nvxmp.sys` and `nvxdisp.dll` for an x86 guest.
 
----
+### Windows 98 SE (experimental)
 
-## Windows 98 SE Architecture
+```mermaid
+flowchart TB
+  APP[Win32 applications / GDI] --> DIB[DIB Engine display drivers<br/>nvx.drv and nvx2.drv]
+  DIB --> VXD[nvx.vxd<br/>VMM ring-0 device]
+  VXD --> SHIM[VideoPort compatibility shim]
+  SHIM --> CORE[Shared GPU initialization<br/>and display services]
+  CORE --> RM[GSP-RM firmware]
+  RM --> GPU[RTX GPU]
+  UTIL[attach_sec.exe] -. secondary-head setup .-> APP
+```
 
-Windows 98 SE uses a specialized dual-driver layout designed to run on top of modern GPU architectures:
-- **VideoPort Shim Layer (`src_win98/shim/videoprt_shim.c`):** An emulation layer implementing 22 Windows NT `VideoPort*` APIs on top of Windows 98 VMM (Virtual Machine Manager) ring 0 services. This allows the core 32-bit GA104 miniport engine (`src_driver/`) to run natively inside `nvx.vxd`.
-- **DIB Engine Integration:** Both `nvx.drv` and `nvx2.drv` report `C1_DIBENGINE` (`0x0010`) and initialize standard `DIBENGINE` (`0x5250 'RP'`) PDEVICE descriptors, which is mandatory for Windows 98 to permit desktop extension across multiple monitors.
-- **Shadow Buffer & Burst-Flush:** Head 0 maintains a linear shadow buffer in system RAM. Drawing calls are handled by `DIBENG.DLL` into RAM, and driver hooks in `BeginAccess` / `EndAccess` compute dirty bounding boxes and flush updated pixels to physical VRAM in high-speed burst copies.
-- **Multi-Monitor Utility (`attach_sec.exe`):** A Win32 utility leveraging `ChangeDisplaySettingsExA` (`CDS_UPDATEREGISTRY`) to dynamically attach the secondary adapter (`\\.\Display2`) at `(1920, 0)` on demand.
-
-For detailed design notes, see [src_win98/README.md](src_win98/README.md).
+This path uses the DIB engine and a RAM shadow/flush strategy for desktop drawing; it is not the XP OpenGL ICD path. See [src_win98/README.md](src_win98/README.md) for design and setup details.
 
 ---
 
 ## Build Instructions
 
-### Prerequisites
-On a Debian or Ubuntu x86-64 host, install the cross-compilers and build dependencies:
-```sh
-sudo apt-get install build-essential gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 binutils-mingw-w64 genisoimage
-```
-For the Windows 98 16-bit display driver, install [Open Watcom C/C++](http://openwatcom.org/) and JWasm.
+### Debian 12 host prerequisites
 
-### Building Windows XP x64 Driver
+These commands assume a Debian 12 (Bookworm) amd64 host and a checkout with its source submodules initialized. Install the base tools and both MinGW targets for XP x64/x86 driver builds:
+
 ```sh
-# Build 64-bit miniport with embedded GSP firmware
+sudo apt update
+sudo apt install build-essential git python3 \
+  gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+  gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+  binutils-mingw-w64 genisoimage
+git submodule update --init --recursive
+```
+
+The XP miniport embeds `dist_full/gsp_ga104.bin`; this firmware file must already be present. The minimal driver build does not build Mesa or WineD3D.
+
+For the Mesa WGL ICD, install the additional cross-build tools:
+
+```sh
+sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
+  gcc-mingw-w64-i686-posix g++-mingw-w64-i686-posix \
+  ninja-build python3-venv python3-pip python3-ply pkg-config bison flex \
+  libelf-dev libzstd-dev libexpat1-dev zlib1g-dev
+python3 -m venv /tmp/nvx-meson-venv
+/tmp/nvx-meson-venv/bin/pip install 'meson>=1.3' mako pyyaml
+```
+
+VFIO/QEMU integration tests and offline guest-image updates additionally need host tools such as `qemu-system-x86`, `qemu-utils`, `libguestfs-tools`, `guestmount`, `libhivex-bin` (for `hivexregedit`), and `genisoimage`. They are not required for cross-compilation. VFIO also requires host IOMMU/VFIO configuration and access to the target GPU; see [test/README.md](test/README.md).
+
+The Windows 98 16-bit display driver additionally needs Open Watcom C/C++ and JWasm; see [src_win98/README.md](src_win98/README.md).
+
+### Build Windows XP x64 driver binaries
+
+From the repository root:
+
+```sh
+# Build the x64 miniport with the GSP/RM path enabled.
 make -C src_driver full
 
-# Build 64-bit GDI display driver
-make -C src_disp nvxdisp.dll
+# Build both display-driver architectures; use target nvxdisp.dll for x64 only.
+make -C src_disp all
+```
 
-# Run host unit and regression checks
+Outputs are `src_driver/nvxmp.sys`, `src_disp/nvxdisp.dll`, and `src_disp/nvxdisp32.dll`. Host-side checks are separate from compilation:
+
+```sh
 make -C src_driver check
 make -C src_disp check
 ```
-The output files are `src_driver/nvxmp.sys` and `src_disp/nvxdisp.dll` (packaged in `dist_full/`).
 
-### Building Windows XP x86 Driver
+To stage the x64 miniport and display DLL in the install bundle after building:
+
 ```sh
-# Build 32-bit miniport with embedded GSP firmware
+install -D -m 0644 src_driver/nvxmp.sys dist_full/nvxmp.sys
+install -D -m 0644 src_disp/nvxdisp.dll dist_full/nvxdisp.dll
+```
+
+Keep the matching `dist_full/nvx.inf`, `dist_full/gsp_ga104.bin`, and `dist_full/install.bat` alongside them. The miniport embeds the firmware at build time; the firmware file is also included in the prepared install bundle.
+
+The default miniport target is not the full hardware configuration; use `full` for the GSP build. To build the XP-compatible Mesa WGL ICD, the script applies temporary patches to the Mesa submodule, builds in `/tmp`, restores the submodule source, and copies finished DLLs to `dist_full/`:
+
+```sh
+NVX_MESA_ARCH=x64 MESON=/tmp/nvx-meson-venv/bin/meson ./test/build_mesa_xp64.sh
+NVX_MESA_ARCH=x86 MESON=/tmp/nvx-meson-venv/bin/meson ./test/build_mesa_xp64.sh
+```
+
+The x64 build produces `dist_full/nvxogl64.dll` and `dist_full/nvxmesa.dll`; x86 produces `dist_full/nvxogl32.dll`. The ICD build includes Nouveau and Softpipe. A DLL's presence alone does not establish that an application selected Nouveau or completed its workload on the GPU.
+
+### Build Windows XP x86 driver binaries
+
+```sh
 make -C src_driver full32
-
-# Build 32-bit GDI display driver
 make -C src_disp nvxdisp32.dll
-```
-The output files are `src_driver/nvxmp32.sys` and `src_disp/nvxdisp32.dll` (packaged into `dist32/` as `nvxmp.sys` and `nvxdisp.dll`).
 
-### Building Windows 98 SE Driver
+# Stage with the filenames expected inside a 32-bit XP guest.
+install -D src_driver/nvxmp32.sys dist32/nvxmp.sys
+install -D src_disp/nvxdisp32.dll dist32/nvxdisp.dll
+```
+
+Include `dist32/nvx.inf` in the package. The x86 Mesa ICD can be built with `NVX_MESA_ARCH=x86 ./test/build_mesa_xp64.sh`; for XP x64, it is installed in `SysWOW64` for 32-bit applications. For a native x86 guest, use the 32-bit driver and matching ICD only.
+
+### Build Windows 98 SE components
+
 ```sh
-# Set Open Watcom environment
 source src_win98/owenv.sh
-
-# Build 16-bit display drivers (nvx.drv & nvx2.drv)
-cd src_win98/winvbe_drv && ./build.sh && cd ../..
-
-# Build 32-bit Ring 0 VxD (nvx.vxd)
-cd src_win98 && ./build_vxd.sh && cd ..
-
-# Build secondary monitor attach utility
-i686-w64-mingw32-gcc -O2 -s -o dist_win98/attach_sec.exe src_win98/attach_sec.c -luser32
+(cd src_win98/winvbe_drv && ./build.sh)
+(cd src_win98 && ./build_vxd.sh)
+i686-w64-mingw32-gcc -O2 -s -o dist_win98/attach_sec.exe \
+  src_win98/attach_sec.c -luser32
 ```
-The output files are generated in `dist_win98/`.
 
----
+The output files are placed in `dist_win98/`.
 
 ## Installation & Usage
 
-### Installing on Windows XP x64
-1. Copy the driver files from `dist_full/` or download the prebuilt release.
-2. In Windows XP x64, open **Device Manager** -> **Display Adapters** -> **Standard VGA Graphics Adapter**.
-3. Choose **Update Driver** -> **Install from a list or specific location** -> **Have Disk...** and select `nvx.inf`.
-4. Select your NVIDIA GeForce RTX model and reboot when prompted.
-5. In **Display Properties** -> **Settings**, configure resolutions and enable the secondary monitor.
+### Windows XP x64
 
-To update an existing installation directly from Linux:
+`dist_full/` is the full integration bundle. Depending on what has been built, it can contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, x64/x86 OpenGL ICDs, `nvx.inf`, test programs, and optional WineD3D DLLs. These files are architecture-specific: the native x64 display driver and ICD go in `System32`; the x86 ICD for WOW64 applications goes in `SysWOW64`.
+
+For the repository's prepared XP x64 guest image, shut the VM down and run the rootless offline updater:
+
+```sh
+./test/update_disk_driver_user.sh full
+```
+
+This updates `winxp_x64.qcow2`, installs Mesa ICDs present in `dist_full/`, updates their OpenGL registry entries, and stages test binaries. It requires working libguestfs/guestmount support. For a mounted physical XP partition, the mounted-volume updater rebuilds and copies the x64 miniport and display DLL:
+
 ```sh
 XP_MOUNT=/mnt/xp ./test/update_xp_driver.sh
 ```
 
-### Installing on Windows XP x86
-1. Copy the driver files from `dist32/` (`nvxmp.sys`, `nvxdisp.dll`, `nvx.inf`).
-2. In Windows XP 32-bit, open **Device Manager** -> **Display Adapters** -> **Standard VGA Graphics Adapter**.
-3. Choose **Update Driver** -> **Install from a list or specific location** -> **Have Disk...** and select `nvx.inf` from `dist32/`.
-4. Select your NVIDIA GeForce RTX model and reboot when prompted.
-5. In **Display Properties** -> **Settings**, arrange dual monitors and adjust resolution.
+For manual installation in XP, copy the complete x64 integration package to a directory and run `install.bat` as Administrator. The batch file requires `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvx.inf`, `nvxmesa.dll`, `nvxogl64.dll`, and `nvxogl32.dll`; build both Mesa architectures before using it. It copies the miniport, firmware, display DLL, Mesa ICDs, and any optional D3D/WineD3D files in that folder, then registers the OpenGL ICD. Review the output and reboot. If installing only the display driver, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; install the OpenGL ICD separately by copying the matching DLL and adding the `OpenGLDrivers\nvxdisp` registry entry. Back up the guest before replacing system D3D DLLs.
 
-To deploy drivers and test binaries directly to an offline `winxp_x32.qcow2` VM disk:
+After reboot, verify the renderer using the included test tools and logs. `GDI Generic` means the application fell back to software OpenGL. Successful installation does not prove that all OpenGL or Direct3D workloads are supported; 3D performance/correctness remains under active validation.
+
+### Windows XP x86
+
+Build or stage `dist32/nvxmp.sys` and `dist32/nvxdisp.dll` as described above and include `dist32/nvx.inf`. In XP x86, open Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...**, select the INF, and reboot. An x64 ICD cannot be loaded by an x86 process; install the matching `nvxogl32.dll` if using OpenGL. To deploy the driver and test binaries to the repository's offline `winxp_x32.qcow2` image, shut down the VM and run:
+
 ```sh
 ./test/install_xp32_driver_and_tests.sh
 ```
 
-### Installing on Windows 98 SE
-1. Copy the driver files from `dist_win98/` (`nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, `attach_sec.exe`).
-2. In Windows 98 SE, open **Device Manager** -> **Display Adapters** -> **Standard PCI Graphics Adapter (VGA)**.
-3. Choose **Update Driver** -> **Specify location** and point to `nvx.inf`.
-4. Select the NVIDIA GeForce RTX card and finish the wizard. Restart Windows 98.
-5. Primary display boots to 1920×1080 @ 32bpp.
-6. Run `ATTACH_SEC.EXE` (or use Display Properties) to activate the secondary monitor at 2560×1440 @ 32bpp.
+### Windows 98 SE
 
-To update an existing Windows 98 disk image offline:
-```sh
-./test/update_win98_driver.sh
-```
+Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist_win98/`. Follow [src_win98/README.md](src_win98/README.md) for setup. The secondary-head utility is `attach_sec.exe`. This experimental DIB/VxD path is independent of the XP Mesa ICD.
 
 ---
 
@@ -162,7 +228,7 @@ To update an existing Windows 98 disk image offline:
 
 ```
 ├── README.md           # Project overview and build instructions
-├── dist_full/           # Windows XP x64 release package (nvxmp.sys, nvxdisp.dll, nvxogl64.dll, nvx.inf, gsp_ga104.bin)
+├── dist_full/           # XP x64 integration bundle: driver, firmware, ICDs, tests, optional WineD3D DLLs
 ├── dist32/              # Windows XP x86 release package (nvxmp.sys, nvxdisp.dll, nvx.inf)
 ├── dist_win98/          # Windows 98 SE release package (nvx.drv, nvx2.drv, nvx.vxd, nvx.inf, attach_sec.exe)
 ├── src_driver/          # Unified GA104 miniport engine, GSP/RPC/MMU/Display code, and OpenRM HAL shim
@@ -172,7 +238,7 @@ To update an existing Windows 98 disk image offline:
 │   ├── shim/            # Ring 0 NT VideoPort to VMM translation layer
 │   ├── attach_sec.c     # Win32 secondary monitor attachment utility
 │   └── build_vxd.sh     # VxD compilation and packaging script
-├── mesa_patches/        # Windows XP shims and softpipe WGL bridge (Mesa submodule stays clean)
+├── mesa_patches/        # XP compatibility shims and Nouveau/Softpipe winsys integration (Mesa submodule stays clean)
 ├── test/                # Automated test infrastructure, regression runners, and QEMU/VFIO scripts
 ├── open-gpu-kernel-modules/ # NVIDIA OpenRM upstream repository (submodule)
 ├── notes/               # Project status, phase evaluation, hardware notes, and firmware provenance
