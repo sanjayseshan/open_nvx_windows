@@ -1,6 +1,45 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.303**.
+Updated November 18, 2026. Current candidate: **3.0.0.307**.
+
+## .307: correct OpenRM RPC message sizing (hardware verified)
+
+.306 failed: gears initially reported NV170, then its first presentation
+allocated a 4 MiB BO with an 8,248-byte PFN request. The sender split that
+request into one-page messages plus two function-71 continuations. Firmware
+returned function 4 success followed by function 71 / NV_ERR_INVALID_FUNCTION
+(0x2A). The next allocation quarantined the RPC queue; subsequent renderer
+checks used GDI Generic and Direct3DCreate9 returned NULL. This was not a
+working accelerated gears or 3DMark result. Log:
+test_logs/v3.0.0.306-20261118-100742.log. User reports gears looks generic;
+both screens otherwise normal.
+
+Confirmed divergence: OpenRM sets maxRpcSize to 65,488 bytes (64 KiB minus
+48-byte queue header), not 4,048 bytes. A single message can occupy 16 ring
+pages; its payload can hold 65,456 bytes. Continuations are valid only after
+a full message. .307 fills that size, writes each record across wrapped ring
+slots, publishes once, and advances TX sequence once per message. The swapped
+read-pointer ownership is preserved (MSGQ_FLAGS_SWAP_RX). Do not switch those
+pointers to conventional ring ownership. Receive sizing now uses the same
+message limit. Mock checks cover 4 MiB and 64.5 MiB FB registrations.
+
+Host suite (`make -C src_driver check`) passed. Current hardware log:
+test_logs/v3.0.0.307-20261118-103429.log. Both x64 and x86 gears completed
+with NV170 at 56.7 / 51.7 FPS. Cube completed at 60.7 / 60.9 FPS and D3D9
+HAL at 63.3 / 58.3 FPS. Direct3DCreate9 and HAL device creation succeeded.
+No continuation INVALID_FUNCTION or RPC quarantine has appeared so far.
+3DMark reached resource loading after Enter, then eight 8 MiB GART VA
+reservations failed. No RC/MMU fault or RPC quarantine was logged. User
+requested shutdown; ACPI plus closing the active application ended QEMU.
+The host suite correctly reports no successful 3DMark exit; no score proven.
+Collected WineD3D log: test_logs/v3.0.0.307-20261118-103429-3dmark05.log.
+
+Relevant files: src_driver/nvx_gsp.c (NvxGspSendRpcElement,
+NvxGspSendRpcLargeLocked, NvxGspCallLocked), src_driver/nvx_rpc.c,
+src_driver/tests/gsp_mock_test.c; upstream
+open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
+src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
+src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
 ## Current status and remaining work
 
@@ -89,9 +128,56 @@ test_logs/v3.0.0.302-20261118-094344.log.
 
 .303 drains supported async events during large replies and advances
 `RpcRxSequence` once for every status-queue record, including the initial
-reply, events, and continuation records. This matches OpenRM's
-`GspMsgQueueReceiveStatus` sequence accounting and `_kgspRpcDrainEvents`
-behavior. Full host tests and hardware validation are pending.
+reply, events, and continuation records. Hardware log
+`test_logs/v3.0.0.303-20261118-094709.log` shows four async events drained,
+but no function-71 response continuation arrived; the large reply timed out.
+
+.304 ran with `NVX_RUN_3DMARK=1` and automatic VFIO retry. GSP setup again
+timed out during large-reply assembly (`received=0xFB0`, expected `0x1428`),
+and native display-channel initialization failed. The user observed a striped
+primary and no useful secondary output. 3DMark's process returned code 0, but
+its captured WineD3D log says it failed to create an OpenGL context and fell
+back to `GDI Generic`; this is not a valid 3DMark rendering result. The guest
+suite ended FAIL because both gears processes returned code 128, despite the
+64-bit WGL trace previously reaching NV170 and ~53 FPS. Log:
+`test_logs/v3.0.0.304-20261118-095534.log` and
+`test_logs/v3.0.0.304-20261118-095534-3dmark05.log`.
+
+Next: fix OpenRM transport framing/queue sequencing so the firmware returns
+large RPC continuations, then recheck native display initialization and the
+primary-only striped output before attempting another 3DMark run. Do not count
+the .304 process exit code as a 3DMark pass.
+
+.305 fixes two confirmed OpenRM RPC ABI divergences. OpenRM's message queue
+increments `txSeqNum` after every sent queue message, including each function-71
+continuation; the XP path reused one TX sequence for the whole large RPC. It
+now advances after every successfully published frame. Also, the transport
+queue sequence at element offset 36 is distinct from the RPC subheader's
+`sequence` at offset 72. OpenRM `rpcWriteCommonHeader` zero-initializes the
+subheader sequence and the `u` union for this non-SR-IOV GPU; our encoder had
+copied the queue sequence into that unrelated field. The RPC shim now leaves
+it zero, and tests cover both behaviors. Source reference:
+`open-gpu-kernel-modules/src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c`
+and `src/nvidia/src/kernel/rmapi/rpc_common.c`. Host `make -C src_driver check`
+passed after these changes. Hardware log `test_logs/v3.0.0.305-20261118-100223.log`
+confirms two 5,160-byte large bidirectional replies reassembled successfully;
+the native display channels initialized and both heads were active/locked.
+The user confirmed the screens looked normal. The GR rasterizer clear and
+semaphore still passed. However, the guest suite reported `GDI Generic`,
+`channel_faulted=1`, OpenGL SOFTWARE, and Direct3DCreate9 returned NULL. A new
+0x101B event increased the shared GSP assertion counter and our custom code
+quarantined graphics. 3DMark exited 0 without a usable GL context, so it did
+not render a benchmark.
+
+.306 follows OpenRM's handler for `NV_VGPU_MSG_EVENT_GSP_SEND_USER_SHARED_DATA`
+(function 0x101B): it updates the diagnostic `gspAssertCount` instead of
+treating the counter update itself as a GR channel fault. The previous local
+handler stopped graphics on any counter increase, unlike upstream; that
+quarantine caused the test ICD to be rejected even though the GR clear and
+semaphore had completed. GR submit validation now uses explicit RC/MMU errors
+and the fence/readback results, while retaining the assertion count and
+NO-CAT journal diagnostic. Host suite passes. Hardware validation pending.
+Next run checks hardware ICD enumeration, Direct3DCreate9, and 3DMark output.
 
 ## .299/.300: use OpenRM continuation records and swapped queue pointers
 

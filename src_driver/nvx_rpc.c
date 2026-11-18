@@ -36,7 +36,10 @@ int NvxEncodeRpcRecord(uint8_t *record,size_t capacity,uint32_t function,
     put32(record+36,sequence);put32(record+40,count);
     put32(record+48,0x03000000);put32(record+52,0x43505256);
     put32(record+56,(uint32_t)(32+payloadSize));put32(record+60,function);
-    put32(record+64,0xffffffffU);put32(record+68,0xffffffffU);put32(record+72,sequence);
+    /* OpenRM's queue sequence lives in the element header at +36. The
+       rpc_message_header_v03_00.sequence field at +72 is a separate field;
+       rpcWriteCommonHeader leaves it zero for this non-SR-IOV device. */
+    put32(record+64,0xffffffffU);put32(record+68,0xffffffffU);put32(record+72,0);
     for(i=0;i<payloadSize;i++) record[80+i]=((const uint8_t *)payload)[i];
     put32(record+32,checksum(record,recordBytes));
     *elements=count;
@@ -61,10 +64,10 @@ int NvxRpcAppendContinuation(uint8_t *record,size_t capacity,size_t *received,
     if(!record||!received||!continuation||capacity<80||totalBytes>capacity-80||
        *received>totalBytes||
        !NvxDecodeRpcRecord(continuation,continuationCapacity,&function,
-                           &frameResult,&frameSequence,&elements)||elements!=1||
+                           &frameResult,&frameSequence,&elements)||
        function!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) return 0;
     frameLength=get32(continuation+56);
-    if(frameLength<32||frameLength>4048) return 0;
+    if(frameLength<32||frameLength>elements*NVX_RPC_SLOT_SIZE-48) return 0;
     chunk=frameLength-32;
     if(chunk>totalBytes-*received) return 0;
     for(size_t i=0;i<chunk;i++) record[80+*received+i]=continuation[80+i];

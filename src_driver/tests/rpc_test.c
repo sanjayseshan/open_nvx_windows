@@ -7,6 +7,7 @@ int main(void)
     uint8_t slot[4096],payload[8]={8,0,0,0,0,0,0,0};uint32_t f,r,s;
     assert(NvxEncodeRpc(slot,sizeof(slot),73,0,payload,8));
     assert(slot[40]==1&&slot[56]==40&&slot[60]==73&&slot[80]==8);
+    assert(slot[36]==0&&slot[72]==0); /* queue seq != RPC subheader sequence */
     assert(NvxDecodeRpc(slot,sizeof(slot),&f,&r,&s));
     assert(f==73&&r==0xffffffffU&&s==0);
     slot[101]^=1;assert(!NvxDecodeRpc(slot,sizeof(slot),&f,&r,&s));
@@ -67,6 +68,7 @@ int main(void)
             assert(NvxDecodeRpcRecord(continuation,sizeof(continuation),
                                       &f,&r,&s,&decoded));
             assert(f==NVX_RPC_FUNCTION_CONTINUATION_RECORD&&s==21&&decoded==1);
+            assert(continuation[72]==0);
             assert(!memcmp(continuation+80,payload+offset,chunk));
             offset+=chunk;
         }

@@ -339,59 +339,60 @@ static VOID NvxGspLogPbdmaFault(PNVX_DEVICE_EXTENSION dev)
 }
 
 /* One synchronous post-init RPC. Unexpected events remain unconsumed. */
+/* OpenRM permits 16 ring elements per RPC message. Publish the complete
+   record atomically, including when its elements wrap around the ring. */
+#define NVX_RPC_FRAME_PAYLOAD (NVX_RPC_MAX_ELEMENTS * NVX_RPC_SLOT_SIZE - NVX_RPC_HEADER_SIZE)
 static BOOLEAN NvxGspSendRpcElement(PNVX_DEVICE_EXTENSION dev,
-                                    const UCHAR *element)
+                                    const UCHAR *element,ULONG count)
 {
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
-    ULONG write,next;
+    if(!count||count>NVX_RPC_MAX_ELEMENTS) return FALSE;
     for(ULONG wait=0;wait<20000;wait++) {
-        ULONG read=stat->ReadPtr;
-        if(cmd->WritePtr>=63||read>=63||stat->ReadPtr>=63) return FALSE;
-        write=cmd->WritePtr;
-        next=(write+1)%63;
-        if(next!=read) {
-            VideoPortMoveMemory((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
-                                (PVOID)element,4096);
-            __sync_synchronize();cmd->WritePtr=next;__sync_synchronize();
+        ULONG read=stat->ReadPtr,write=cmd->WritePtr;
+        /* MSGQ_FLAGS_SWAP_RX places GSP's command consumer in stat. */
+        if(write>=63||read>=63) return FALSE;
+        if((read+63-write-1)%63>=count) {
+            for(ULONG i=0;i<count;i++)
+                VideoPortMoveMemory((PUCHAR)dev->CmdQueueVirtual+4096+((write+i)%63)*4096,
+                                    (PVOID)(element+i*4096),4096);
+            __sync_synchronize();cmd->WritePtr=(write+count)%63;__sync_synchronize();
             nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
             return TRUE;
         }
         VideoPortStallExecution(100);
     }
-    LogStr("NVX [RM]: command queue stayed full during large RPC.\n");
+    LogStr("NVX [RM]: command queue stayed full during RPC.\n");
     return FALSE;
 }
 
-/* OpenRM's _issueRpcLarge sends the first RPC element, then one
-   CONTINUATION_RECORD per remaining 4016 bytes. Keep the queue streaming so
-   page lists larger than its 62 usable entries do not need a giant batch. */
+/* Match OpenRM _issueRpcLarge: fill each 64 KiB message before using
+   CONTINUATION_RECORD. Sequence numbers count messages, not ring pages. */
 static BOOLEAN NvxGspSendRpcLargeLocked(PNVX_DEVICE_EXTENSION dev,
                                         ULONG expected,const void *payload,
                                         ULONG bytes)
 {
     const UCHAR *source=(const UCHAR *)payload;
-    ULONG firstBytes=bytes>4016?4016:bytes;
-    ULONG offset=firstBytes,fragments=0;
-    uint32_t elements=0;
-    if(!NvxEncodeRpcRecord(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),expected,
-          dev->RpcTxSequence,source,firstBytes,&elements)||elements!=1)
-        return FALSE;
-    if(!NvxGspSendRpcElement(dev,dev->RpcTxRecord)) return FALSE;
-    while(offset<bytes) {
+    ULONG offset=0,fragments=0;
+    do {
         ULONG chunk=bytes-offset;
-        if(chunk>4016) chunk=4016;
-        if(!NvxEncodeRpcContinuation(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),
-              dev->RpcTxSequence,source+offset,chunk)||
-           !NvxGspSendRpcElement(dev,dev->RpcTxRecord)) {
-            dev->GspRpcFaulted=TRUE;
-            LogStr("NVX [RM]: large RPC continuation failed; queue quarantined.\n");
+        uint32_t elements=0;
+        if(chunk>NVX_RPC_FRAME_PAYLOAD) chunk=NVX_RPC_FRAME_PAYLOAD;
+        if(!NvxEncodeRpcRecord(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),
+              offset?NVX_RPC_FUNCTION_CONTINUATION_RECORD:expected,
+              dev->RpcTxSequence,source?source+offset:NULL,chunk,&elements)||
+           !NvxGspSendRpcElement(dev,dev->RpcTxRecord,elements)) {
+            if(offset) dev->GspRpcFaulted=TRUE;
             return FALSE;
         }
-        offset+=chunk;fragments++;
+        dev->RpcTxSequence++;
+        offset+=chunk;
+        if(offset<bytes) fragments++;
+    } while(offset<bytes);
+    if(fragments) {
+        LogStr("NVX [RM]: streamed large RPC function=");LogHex(expected);
+        LogStr(" continuation_records=");LogHex(fragments);LogStr(" bytes=");
+        LogHex(bytes);LogStr("\n");
     }
-    LogStr("NVX [RM]: streamed large RPC function=");LogHex(expected);
-    LogStr(" continuation_records=");LogHex(fragments);LogStr(" bytes=");
-    LogHex(bytes);LogStr("\n");
     return TRUE;
 }
 
@@ -412,10 +413,13 @@ static BOOLEAN NvxGspHandleRpcEvent(PNVX_DEVICE_EXTENSION dev,ULONG function,
         if(words[20]==0x38) dev->NativeDisplayFaulted=TRUE;
     } else if(function==0x101b) {
         if(words[14]<36) return FALSE;
-        if(dev->GspGraphicsCommandVerified&&words[20]>dev->GspAssertCount) {
-            dev->GspGraphicsDeviceFaulted=TRUE;
-            dev->GspGraphicsChannelFaulted=TRUE;
-            LogStr("NVX [GR]: runtime firmware assertion; device graphics quarantined.\n");
+        /* OpenRM treats this as GSP_SEND_USER_SHARED_DATA: copy the
+           gspAssertCount value into shared data. It is diagnostic state,
+           not itself a channel/engine fault; RC and MMU events carry those. */
+        if(words[20]>dev->GspAssertCount) {
+            LogStr("NVX [RM]: GSP shared-data assert count advanced from=");
+            LogHex(dev->GspAssertCount);LogStr(" to=");LogHex(words[20]);
+            LogStr("; keeping queues active pending explicit RC/MMU fault.\n");
         }
         dev->GspAssertCount=words[20];
         LogStr("NVX [RM]: firmware assertion count=");LogHex(words[20]);LogStr("\n");
@@ -467,7 +471,7 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
                                        uint32_t requestBytes,uint32_t *elements)
 {
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
-    uint32_t first=*elements,recordCount=(requestBytes+4015U)/4016U;
+    uint32_t first=*elements,recordCount=(requestBytes+NVX_RPC_FRAME_PAYLOAD-1)/NVX_RPC_FRAME_PAYLOAD;
     uint32_t firstLength=((uint32_t *)dev->RpcRxRecord)[14];
     uint32_t totalBytes=requestBytes;
     size_t received;
@@ -497,9 +501,8 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
                 return FALSE;
             }
             if(!gathered) {VideoPortStallExecution(100);continue;}
-            if(fragElements!=1||
-               !NvxDecodeRpcRecord(dev->RpcTxRecord,4096,&fragFunction,
-                                   &fragResult,&fragSequence,&decoded)||decoded!=1) {
+            if(!NvxDecodeRpcRecord(dev->RpcTxRecord,fragElements*4096,&fragFunction,
+                                   &fragResult,&fragSequence,&decoded)||decoded!=fragElements) {
                 LogStr("NVX [RM]: continuation RPC header invalid len=");
                 LogHex(*(ULONG *)(dev->RpcTxRecord+56));LogStr(" count=");
                 LogHex(*(ULONG *)(dev->RpcTxRecord+40));LogStr(" function=");
@@ -523,7 +526,7 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
             }
             if(!NvxRpcAppendContinuation(dev->RpcRxRecord,
                     sizeof(dev->RpcRxRecord),&received,dev->RpcTxRecord,
-                    4096,totalBytes)) {
+                    fragElements*4096,totalBytes)) {
                 LogStr("NVX [RM]: continuation payload rejected len=");
                 LogHex(*(ULONG *)(dev->RpcTxRecord+56));LogStr(" received=");
                 LogHex(received);LogStr(" total=");LogHex(totalBytes);LogStr("\n");
@@ -560,23 +563,9 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                                const void *payload,ULONG bytes)
 {
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
-    ULONG write=cmd->WritePtr,next;
-    if(!dev->GspInitialized||dev->GspRpcFaulted||write>=63||
-       cmd->ReadPtr>=63||stat->ReadPtr>=63)
-        return FALSE;
-    if(bytes<=4016) {
-        next=(write+1)%63;
-        if(next==stat->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
-            4096,expected,dev->RpcTxSequence,payload,bytes)) return FALSE;
-    } else {
-        if(!NvxGspSendRpcLargeLocked(dev,expected,payload,bytes)) return FALSE;
-        next=cmd->WritePtr;
-    }
-    if(bytes<=4016) {
-        __sync_synchronize();cmd->WritePtr=next;__sync_synchronize();
-    }
-    dev->RpcTxSequence++;
-    if(bytes<=4016) nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
+    if(!dev->GspInitialized||dev->GspRpcFaulted||cmd->WritePtr>=63||
+       cmd->ReadPtr>=63||stat->ReadPtr>=63) return FALSE;
+    if(!NvxGspSendRpcLargeLocked(dev,expected,payload,bytes)) return FALSE;
     LogStr("NVX [RM]: RPC submitted function=");LogHex(expected);LogStr("\n");
     BOOLEAN initialReplyConsumed=FALSE;
     for(ULONG wait=0;wait<20000;wait++) {
@@ -597,71 +586,8 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
         }
         LogStr("NVX [RM]: reply function=");LogHex(function);
         LogStr(" result=");LogHex(result);LogStr("\n");
-        if(!result && (function==0x101b||function==0x100c||function==0x1004||function==0x1005||function==0x1006||function==0x100f)) {
-            const ULONG *words=(const ULONG *)dev->RpcRxRecord;
-            if(function==0x1006) {
-                char message[257];
-                if(words[14]<300) return FALSE;
-                VideoPortMoveMemory(message,(PVOID)(words+23),256);message[256]=0;
-                LogStr("NVX [RM ERROR]: type=");LogHex(words[20]);
-                LogStr(" runlist=");LogHex(words[21]);LogStr(" channel=");LogHex(words[22]);
-                LogStr(" message=");LogStr(message);LogStr("\n");
-                if(words[20]==0x38) dev->NativeDisplayFaulted=TRUE;
-            } else if(function==0x101b) {
-                if(words[14]<36) return FALSE;
-                /* Initial firmware setup has a separately recorded baseline.
-                   A new assertion after GR was verified is device-wide
-                   evidence; independent client queues must also stop. */
-                if(dev->GspGraphicsCommandVerified&&words[20]>dev->GspAssertCount) {
-                    dev->GspGraphicsDeviceFaulted=TRUE;
-                    dev->GspGraphicsChannelFaulted=TRUE;
-                    LogStr("NVX [GR]: runtime firmware assertion; device graphics quarantined.\n");
-                }
-                dev->GspAssertCount=words[20];
-                LogStr("NVX [RM]: firmware assertion count=");LogHex(words[20]);LogStr("\n");
-            } else if(function==0x1004) {
-                if(words[14]<52) return FALSE;
-                LogStr("NVX [RM]: channel RC fault engine=");LogHex(words[20]);
-                LogStr(" chid=");LogHex(words[21]);LogStr(" type=");LogHex(words[22]);
-                LogStr(" scope=");LogHex(words[23]);LogStr("\n");
-                if(words[22]==ROBUST_CHANNEL_PBDMA_ERROR) NvxGspLogPbdmaFault(dev);
-                if(words[22]==ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT) {
-                    LogStr("NVX [GR-FAULT]: FIFO MMU RC received; shadow queue snapshot follows.\n");
-#if NVX_ENABLE_GR_CHANNEL_PROBE
-                    NvxGspDumpFaultShadow(dev);
-#endif
-                }
-                if(words[21]==1) dev->GspChannelFaulted=TRUE;
-                if(words[21]==2) dev->GspGraphicsChannelFaulted=TRUE;
-                for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
-                    NVX_GR_CLIENT_CHANNEL *c=&dev->Nvx3dClientSessions[i].Graphics;
-                    if(c->ClientToken&&c->HardwareIdAllocated&&c->HardwareChannelId==words[21]) {
-                        c->Faulted=TRUE;c->Ready=FALSE;
-                    }
-                }
-            } else if(function==0x1005) {
-                /* NVIDIA uses this notification to schedule the UVM MMU
-                   fault handler. XP has no such handler: record the fault,
-                   stop both accelerated queues, and drain the notification
-                   so RM teardown and fault queries can still complete. */
-                if(words[14]<32) return FALSE;
-#if NVX_ENABLE_GR_CHANNEL_PROBE
-                NvxGspDumpFaultShadow(dev);
-#endif
-                dev->GspMmuFaultQueued=TRUE;
-                dev->GspChannelFaulted=TRUE;
-                dev->GspGraphicsChannelFaulted=TRUE;
-                dev->GspGrContextAliasVerified=FALSE;
-                LogStr("NVX [RM]: MMU fault queued; UVM fault handling unavailable, accelerated queues disabled.\n");
-            } else if(function==0x100f) {
-                /* PERF_BRIDGELESS_INFO_UPDATE: informational, no reply or
-                   power-management action required (also ignored by Nouveau).
-                   Consume it before waiting for the real RM response. */
-                LogStr("NVX [RM]: consumed asynchronous performance notification.\n");
-            } else {
-                if(words[14]<40||words[21]>words[14]-40) return FALSE;
-                LogStr("NVX [RM]: LibOS notification bytes=");LogHex(words[21]);LogStr("\n");
-            }
+        if(!result && NvxGspHandleRpcEvent(dev,function,result,
+                                          (const ULONG *)dev->RpcRxRecord)) {
             __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
             dev->RpcRxSequence++;
             continue;
@@ -677,7 +603,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             ULONG outputBytes=((const ULONG *)payload)[4];
             ULONG expectedReplyBytes=24+outputBytes;
             ULONG replyPayloadBytes=words[14]>=32?words[14]-32:0;
-            ULONG requestRecords=(bytes+4015U)/4016U;
+            ULONG requestRecords=(bytes+NVX_RPC_FRAME_PAYLOAD-1)/NVX_RPC_FRAME_PAYLOAD;
             if(requestRecords>1&&replyPayloadBytes<expectedReplyBytes) {
                 LogStr("NVX [RM]: receiving large bidirectional reply bytes=");
                 LogHex(expectedReplyBytes);LogStr(" continuation_records=");
@@ -2641,7 +2567,8 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
             LogStr("NVX [GR]: firmware assertions observed during submission: before=");
             LogHex(assertCountBefore);LogStr(" after=");LogHex(dev->GspAssertCount);LogStr("\n");
             NvxGspDumpNocatJournal(dev);
-        } else if(grStatusAvailable&&!dev->GspGraphicsChannelFaulted&&!dev->GspMmuFaultQueued&&
+        }
+        if(grStatusAvailable&&!dev->GspGraphicsChannelFaulted&&!dev->GspMmuFaultQueued&&
                   userd[0x88/4]==1&&grFence[0]==0x47524632&&
                   grFence[1]==0x13579bdf&&grFence[2]==0x2468ace0) {
             ULONG i,matchCount=0,readbackMatchCount=0;
@@ -2731,8 +2658,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
             LogStr("NVX [GR]: post-submit context-buffer lookup still failed.\n");
         }
     }
-    if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued||
-       dev->GspAssertCount!=assertCountBefore)
+    if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued)
         dev->GspGraphicsCommandVerified=FALSE;
     if(!dev->GspGraphicsCommandVerified) {
         if(userd[0x88/4]==1)
