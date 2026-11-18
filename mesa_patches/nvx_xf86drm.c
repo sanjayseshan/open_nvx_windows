@@ -58,6 +58,7 @@ void NvxWglRecordNouveauDrawState(const uint32_t *methods,
 
 #define NVX_DRM_DEVICE_SLOTS 8U
 #define NVX_DRM_BUFFER_SLOTS 2048U
+#define NVX_DRM_ADDRESS_CACHE_SLOTS 32U
 #define NVX_DRM_OBJECT_SLOTS 8U
 #define NVX_DRM_MAX_SCLASS 16U
 #define NVX_DRM_FD_BASE 0x4e580100
@@ -83,6 +84,13 @@ struct nvx_drm_bo_slot {
    NVX_NOUVEAU_BO bo;
 };
 
+struct nvx_drm_address_cache_entry {
+   uint64_t gpu_va;
+   uint64_t bytes;
+   uint64_t buffer_id;
+   uint32_t slot_index;
+};
+
 struct nvx_drm_device_slot {
    int fd;
    NVX_WINSYS_DEVICE device;
@@ -92,6 +100,12 @@ struct nvx_drm_device_slot {
     * Windows libdrm adapter snapshots that object around the IOCTL, so keep
     * one submit in flight and copy the ring fields back before releasing it. */
    int nouveau_submit_busy;
+   /* Direct NVC0 address methods carry GPU VAs instead of GEM handles.
+    * Cache recent address-to-BO resolutions so the XP shim does not rescan
+    * all 2,048 GEM slots for every shader/texture/vertex address. */
+   uint32_t address_cache_next;
+   struct nvx_drm_address_cache_entry
+      address_cache[NVX_DRM_ADDRESS_CACHE_SLOTS];
 #if defined(_WIN32) || defined(_WIN64)
    uint64_t shader_address[6];
    uint64_t shader_triangle_vertex_address;
@@ -150,6 +164,9 @@ static int nvx_drm_nvif_object_del(int fd, void *data, unsigned long size);
 static struct nvx_drm_device_slot *nvx_drm_find_device_locked(int fd);
 static struct nvx_drm_bo_slot *nvx_drm_find_bo_locked(
    struct nvx_drm_device_slot *device, uint32_t handle);
+static struct nvx_drm_bo_slot *nvx_drm_find_bo_address_locked(
+   struct nvx_drm_device_slot *device, uint64_t address,
+   uint32_t *slot_index);
 
 #if defined(_WIN32) || defined(_WIN64)
 #define NVX_DRM_VERTEX_DUMP_MAX_BYTES 1024U
@@ -384,21 +401,18 @@ nvx_drm_capture_shader_addresses_locked(
    for (uint32_t stage = 0; stage < 6U && captured < NVX_DRM_SHADER_DUMP_LIMIT;
         stage++) {
       uint64_t address = device->shader_address[stage];
-      uint32_t slot_index;
+      struct nvx_drm_bo_slot *slot;
       if (!address)
          continue;
-      for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS; slot_index++) {
-         struct nvx_drm_bo_slot *slot = &device->buffers[slot_index];
+      slot = nvx_drm_find_bo_address_locked(device, address, NULL);
+      if (slot) {
          uint64_t base = slot->bo.allocation.GpuVa;
          uint64_t allocation_bytes = slot->bo.allocation.Bytes;
          uint64_t offset;
          struct nvx_drm_shader_dump *dump;
-         if (!slot->handle || !slot->bo.allocation.BufferId || !base ||
-             address < base || address - base >= allocation_bytes)
-            continue;
          offset = address - base;
          if (offset > UINT32_MAX || allocation_bytes > UINT32_MAX)
-            break;
+            continue;
          dump = &dumps[captured];
          memset(dump, 0, sizeof(*dump));
          dump->buffer_id = slot->bo.allocation.BufferId;
@@ -411,7 +425,6 @@ nvx_drm_capture_shader_addresses_locked(
          if (dump->bytes > allocation_bytes - offset)
             dump->bytes = (uint32_t)(allocation_bytes - offset) & ~3U;
          captured++;
-         break;
       }
    }
    if (captured && draw_kind == 1U)
@@ -573,20 +586,13 @@ nvx_drm_add_direct_address_reference(
    struct nvx_drm_device_slot *device, uint64_t address, uint32_t access,
    NVX_3D_BUFFER_REFERENCE *references, uint32_t *reference_count)
 {
-   uint32_t i, j;
+   uint32_t j;
+   const struct nvx_drm_bo_slot *slot;
 
    if (!address || !access || !references || !reference_count)
       return 1;
-   for (i = 0; i < NVX_DRM_BUFFER_SLOTS; i++) {
-      const struct nvx_drm_bo_slot *slot = &device->buffers[i];
-      uint64_t start, bytes;
-      if (!slot->handle || !slot->bo.allocation.BufferId ||
-          slot->bo.allocation.ClientToken != device->client_token)
-         continue;
-      start = slot->bo.allocation.GpuVa;
-      bytes = slot->bo.allocation.Bytes;
-      if (!start || !bytes || address < start || address - start >= bytes)
-         continue;
+   slot = nvx_drm_find_bo_address_locked(device, address, NULL);
+   if (slot) {
       for (j = 0; j < *reference_count; j++) {
          if (references[j].BufferId == slot->bo.allocation.BufferId) {
             references[j].Access |= access;
@@ -662,26 +668,20 @@ nvx_drm_add_nvc0_address_references(
                 subchannel == 0U) {
                uint32_t fetch, stride, vertex_count, slot_index;
                uint64_t bytes;
+               struct nvx_drm_bo_slot *slot;
                fetch = Nvx3dBatchReadDword(dword_data, cursor + i);
                stride = fetch & 0x0fffU;
                vertex_count = device->gr_state[0x0d78U / 4U];
                if ((fetch & 0x1000U) && stride && vertex_count &&
                    vertex_count <= UINT32_MAX / stride) {
                   bytes = (uint64_t)stride * vertex_count;
-                  for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS;
-                       slot_index++) {
-                     struct nvx_drm_bo_slot *slot =
-                        &device->buffers[slot_index];
-                     uint64_t base = slot->bo.allocation.GpuVa;
-                     uint64_t offset;
-                     if (!slot->handle || !slot->bo.allocation.BufferId ||
-                         !base || address < base ||
-                         address - base >= slot->bo.allocation.Bytes)
-                        continue;
-                     offset = address - base;
-                     if (bytes > (uint64_t)slot->bo.allocation.Bytes - offset)
-                        break;
-                     if (slot->bo.map_count && slot->bo.shadow) {
+                  slot = nvx_drm_find_bo_address_locked(device, address,
+                                                        &slot_index);
+                  if (slot) {
+                     uint64_t offset =
+                        address - slot->bo.allocation.GpuVa;
+                     if (bytes <= (uint64_t)slot->bo.allocation.Bytes - offset &&
+                         slot->bo.map_count && slot->bo.shadow) {
                         uint32_t upload_ok = (uint32_t)
                            NvxNouveauBoFlushRange(&slot->bo, offset, bytes);
                         if (!upload_ok)
@@ -736,7 +736,6 @@ nvx_drm_add_nvc0_address_references(
                         }
 #endif
                      }
-                     break;
                   }
                }
             }
@@ -1306,6 +1305,61 @@ nvx_drm_find_bo_locked(struct nvx_drm_device_slot *device, uint32_t handle)
    for (i = 0; i < NVX_DRM_BUFFER_SLOTS; i++)
       if (device->buffers[i].handle == handle)
          return &device->buffers[i];
+   return NULL;
+}
+
+static struct nvx_drm_bo_slot *
+nvx_drm_find_bo_address_locked(struct nvx_drm_device_slot *device,
+                               uint64_t address, uint32_t *slot_index)
+{
+   uint32_t i;
+
+   if (slot_index)
+      *slot_index = UINT32_MAX;
+   if (!device || !address)
+      return NULL;
+
+   /* Validate cache entries against the live slot on every hit. This makes
+    * slot reuse and BO destruction harmless without an invalidation walk. */
+   for (i = 0; i < NVX_DRM_ADDRESS_CACHE_SLOTS; i++) {
+      struct nvx_drm_address_cache_entry *cache =
+         &device->address_cache[i];
+      struct nvx_drm_bo_slot *slot;
+      if (!cache->buffer_id || cache->slot_index >= NVX_DRM_BUFFER_SLOTS ||
+          address < cache->gpu_va || address - cache->gpu_va >= cache->bytes)
+         continue;
+      slot = &device->buffers[cache->slot_index];
+      if (slot->handle &&
+          slot->bo.allocation.BufferId == cache->buffer_id &&
+          slot->bo.allocation.ClientToken == device->client_token &&
+          slot->bo.allocation.GpuVa == cache->gpu_va &&
+          slot->bo.allocation.Bytes == cache->bytes) {
+         if (slot_index)
+            *slot_index = cache->slot_index;
+         return slot;
+      }
+      cache->buffer_id = 0;
+   }
+
+   for (i = 0; i < NVX_DRM_BUFFER_SLOTS; i++) {
+      struct nvx_drm_bo_slot *slot = &device->buffers[i];
+      struct nvx_drm_address_cache_entry *cache;
+      uint64_t base = slot->bo.allocation.GpuVa;
+      uint64_t bytes = slot->bo.allocation.Bytes;
+      if (!slot->handle || !slot->bo.allocation.BufferId ||
+          slot->bo.allocation.ClientToken != device->client_token ||
+          !base || !bytes || address < base || address - base >= bytes)
+         continue;
+      cache = &device->address_cache[
+         device->address_cache_next++ % NVX_DRM_ADDRESS_CACHE_SLOTS];
+      cache->gpu_va = base;
+      cache->bytes = bytes;
+      cache->buffer_id = slot->bo.allocation.BufferId;
+      cache->slot_index = i;
+      if (slot_index)
+         *slot_index = i;
+      return slot;
+   }
    return NULL;
 }
 
