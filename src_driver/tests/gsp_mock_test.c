@@ -19,6 +19,9 @@ static BOOLEAN dpLinkTrained;
 static BOOLEAN injectPerfBeforeFree,injectMmuBeforeFree;
 static ULONG perfNotifications;
 static ULONG64 expectedFbOffset=0x2800000ULL;
+static UCHAR largeRpcPayload[262144];
+static ULONG largeRpcExpectedBytes,largeRpcReceivedBytes,largeRpcSequence;
+static ULONG largeRpcFunction;
 static BOOLEAN emulateModeset;
 static BOOLEAN injectRpcTimeout;
 static UCHAR timeoutCmdQueue[64*4096],timeoutStatQueue[64*4096];
@@ -31,7 +34,7 @@ VOID LogStr(const char *s) {
     if(!strcmp(s,"NVX [RM]: consumed asynchronous performance notification.\n"))
         perfNotifications++;
     if(!strcmp(s,"NVX [SEQ]: validated capacity="))
-        assert(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr>=5);
+        assert(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr>=5);
 }
 VOID LogHex(unsigned long long x) { (void)x; }
 VOID VideoPortDebugPrint(VIDEO_DEBUG_LEVEL level, const CHAR *fmt, ...) { (void)level;(void)fmt; }
@@ -72,7 +75,7 @@ ULONG VideoPortReadRegisterUlong(PULONG p) {
         memcpy(&value,gpuMemory+address,4);return value;
     }
     if(regoff(p)==0x110040 && dev.CmdQueueVirtual &&
-       ((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr>=5)
+       ((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr>=5)
         return 0x80000000;
     return regs[regoff(p)/4];
 }
@@ -97,12 +100,40 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
         NVX_MSGQ_HEADER *q=dev.StatQueueVirtual,*cmd=dev.CmdQueueVirtual;
         ULONG write=q->WritePtr;
         PULONG packet=(PULONG)((PUCHAR)q+4096+write*4096);
-        PULONG request=(PULONG)((PUCHAR)cmd+4096+(cmd->WritePtr-1)*4096);
+        PULONG request=(PULONG)((PUCHAR)cmd+4096+((cmd->WritePtr+62)%63)*4096);
         ULONG alloc[528]={0},replyBytes;
         uint32_t f,r,s;
-        assert(cmd->WritePtr>=3&&cmd->WritePtr<=60);
-        if(!NvxDecodeRpc((PUCHAR)request,4096,&f,&r,&s) ||
-           !((f==103||f==76||f==4||f==14||f==10||f==65)&&s==cmd->WritePtr-1)) {
+        assert(cmd->WritePtr<63);
+        if(!NvxDecodeRpc((PUCHAR)request,4096,&f,&r,&s)) {
+            fprintf(stderr,"unexpected mock RPC f=%u s=%u write=%u off=%x\n",f,s,cmd->WritePtr,off);
+            abort();
+        }
+        if(f==NVX_RPC_FUNCTION_CONTINUATION_RECORD) {
+            ULONG chunk=request[14]-32;
+            assert(largeRpcExpectedBytes&&s==largeRpcSequence&&chunk<=4016);
+            assert(largeRpcReceivedBytes<=largeRpcExpectedBytes&&
+                   chunk<=largeRpcExpectedBytes-largeRpcReceivedBytes);
+            memcpy(largeRpcPayload+largeRpcReceivedBytes,request+20,chunk);
+            largeRpcReceivedBytes+=chunk;
+            cmd->ReadPtr=cmd->WritePtr;
+            if(largeRpcReceivedBytes<largeRpcExpectedBytes) return;
+            assert(largeRpcReceivedBytes==largeRpcExpectedBytes&&largeRpcFunction==4);
+            {
+                ULONG *words=(ULONG *)largeRpcPayload;
+                ULONG pageCount=words[10];
+                assert(words[3]==0x82&&words[4]==0x40000010U);
+                assert(words[8]==pageCount*4096U&&words[12]==(pageCount<<16));
+                for(ULONG i=0;i<pageCount;i++)
+                    assert((((ULONG64)words[15+i*2]<<32)|words[14+i*2])==
+                           ((expectedFbOffset>>12)+i));
+            }
+            assert(NvxEncodeRpc((PUCHAR)packet,4096,largeRpcFunction,s,alloc,32));
+            packet[16]=0;packet[8]^=0xffffffffU;
+            q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
+            largeRpcExpectedBytes=largeRpcReceivedBytes=largeRpcFunction=0;
+            return;
+        }
+        if(!(f==103||f==76||f==4||f==14||f==10||f==65)) {
             fprintf(stderr,"unexpected mock RPC f=%u s=%u write=%u off=%x\n",f,s,cmd->WritePtr,off);
             abort();
         }
@@ -123,7 +154,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             cfg[896+28]=cfg[896+29]=1;
             assert(NvxEncodeRpc((PUCHAR)packet,4096,f,write-1,cfg,scenario==9?840:sizeof(cfg)));
             packet[16]=0;packet[8]^=0xffffffffU;
-            q->WritePtr=write+1;q->ReadPtr=cmd->WritePtr;
+            q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
             return;
         }
         if(f==4) {
@@ -139,6 +170,15 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
                 assert(request[23]==0x82); /* NV01_MEMORY_LIST_FBMEM */
                 assert(request[21]==dev.GspDeviceHandle);
                 assert(request[24]==0x40000010U); /* NO_MAP | page list */
+                if(request[30]>495) {
+                    largeRpcExpectedBytes=56+request[30]*8;
+                    largeRpcReceivedBytes=4016;
+                    largeRpcSequence=s;largeRpcFunction=f;
+                    assert(largeRpcExpectedBytes<=sizeof(largeRpcPayload));
+                    memcpy(largeRpcPayload,request+20,4016);
+                    cmd->ReadPtr=cmd->WritePtr;
+                    return;
+                }
                 assert(request[28]==0x10000&&request[30]==16);
                 assert(request[32]==(16U<<16));
                 for(ULONG i=0;i<16;i++)
@@ -396,7 +436,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             } else if(request[21]==dev.GspDeviceHandle &&
                       (request[22]&0xf0000000U)==0x70000000U) {
                 /* Normal framebuffer BOs now use OpenRM's local-user class. */
-                assert(request[22]==0x70001234);
+                assert(request[22]==0x70001234||request[22]==0x70001235);
             } else {
                 assert(request[21]==dev.NativeDisplayHandle);
                 assert(request[22]>=0xc6700100 && request[22]<=0xc6700102);
@@ -409,7 +449,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
         }
         assert(NvxEncodeRpc((PUCHAR)packet,4096,f,write-1,alloc,replyBytes));
         packet[16]=0;packet[8]^=0xffffffffU;
-        q->WritePtr=write+1;q->ReadPtr=cmd->WritePtr;
+        q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
     }
     if(off==0x680000 || off==0x690000 || off==0x692000) {
         if(scenario==12) assert(dpLinkTrained); /* Train before any channel DMA. */
@@ -662,13 +702,13 @@ int main(void)
         if (dev.GspInitialized) {
             ULONG expectedRead=(ULONG)((scenario==4?30:28)+15+dev.MonitorCount+
                                        (scenario==12?5:0)+(scenario==4?1:0));
-            if(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr!=expectedRead)
-                fprintf(stderr,"scenario=%d cmd ReadPtr=%lu expected=%lu monitors=%lu\n",
+            if(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr!=expectedRead)
+                fprintf(stderr,"scenario=%d stat ReadPtr=%lu expected=%lu monitors=%lu\n",
                         scenario,
-                        (unsigned long)((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr,
+                        (unsigned long)((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr,
                         (unsigned long)expectedRead,
                         (unsigned long)dev.MonitorCount);
-            assert(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr==
+            assert(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr==
                    expectedRead);
             if(scenario==4) {
                 assert(!dev.GspCopyVerified);
@@ -871,8 +911,8 @@ int main(void)
         memset(&dev,0,sizeof(dev));
         dev.Bar0MmioVirtual=regs;dev.Bar0Length=sizeof(regs);
         dev.CmdQueueVirtual=cmd;dev.StatQueueVirtual=stat;
-        cmd->WritePtr=3;cmd->ReadPtr=4;cmd->MsgSize=4096;cmd->MsgCount=63;cmd->EntryOff=4096;
-        stat->WritePtr=4;stat->ReadPtr=3;stat->MsgSize=4096;stat->MsgCount=63;stat->EntryOff=4096;
+        cmd->WritePtr=3;cmd->ReadPtr=3;cmd->MsgSize=4096;cmd->MsgCount=63;cmd->EntryOff=4096;
+        stat->WritePtr=4;stat->ReadPtr=4;stat->MsgSize=4096;stat->MsgCount=63;stat->EntryOff=4096;
         dev.RpcTxSequence=dev.RpcRxSequence=3;
         dev.GspInitialized=TRUE;dev.GspClientHandle=0xc1d00001;
         dev.GspDeviceHandle=0x80000001;
@@ -892,6 +932,14 @@ int main(void)
                                      0x10000,0x10000,&rmGpuVa));
         assert(rmGpuVa==GSP_VRAM_GPU_VA+expectedFbOffset);
         assert(NvxGspFreeVramBo(&dev,0x70001234,rmGpuVa));
+        /* Exercise upstream-style continuation records beyond the old
+           16-element RPC encoder limit and reconstruct the complete PFN list. */
+        expectedFbOffset=0x10800000ULL;
+        assert(NvxGspAllocateVramBo(&dev,0x70001235,expectedFbOffset,
+                                     0x400000,0x10000,&rmGpuVa));
+        assert(rmGpuVa==GSP_VRAM_GPU_VA+expectedFbOffset);
+        assert(!largeRpcExpectedBytes&&!largeRpcReceivedBytes);
+        assert(NvxGspFreeVramBo(&dev,0x70001235,rmGpuVa));
         expectedFbOffset=0x2800000ULL;
     }
     test_reusable_queue();

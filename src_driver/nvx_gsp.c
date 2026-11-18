@@ -339,36 +339,86 @@ static VOID NvxGspLogPbdmaFault(PNVX_DEVICE_EXTENSION dev)
 }
 
 /* One synchronous post-init RPC. Unexpected events remain unconsumed. */
+static BOOLEAN NvxGspSendRpcElement(PNVX_DEVICE_EXTENSION dev,
+                                    const UCHAR *element)
+{
+    volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
+    ULONG write,next;
+    for(ULONG wait=0;wait<20000;wait++) {
+        ULONG read=cmd->ReadPtr;
+        if(cmd->WritePtr>=63||read>=63||stat->ReadPtr>=63) return FALSE;
+        write=cmd->WritePtr;
+        next=(write+1)%63;
+        if(next!=read) {
+            VideoPortMoveMemory((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
+                                (PVOID)element,4096);
+            __sync_synchronize();cmd->WritePtr=next;__sync_synchronize();
+            nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
+            return TRUE;
+        }
+        VideoPortStallExecution(100);
+    }
+    LogStr("NVX [RM]: command queue stayed full during large RPC.\n");
+    return FALSE;
+}
+
+/* OpenRM's _issueRpcLarge sends the first RPC element, then one
+   CONTINUATION_RECORD per remaining 4016 bytes. Keep the queue streaming so
+   page lists larger than its 62 usable entries do not need a giant batch. */
+static BOOLEAN NvxGspSendRpcLargeLocked(PNVX_DEVICE_EXTENSION dev,
+                                        ULONG expected,const void *payload,
+                                        ULONG bytes)
+{
+    const UCHAR *source=(const UCHAR *)payload;
+    ULONG firstBytes=bytes>4016?4016:bytes;
+    ULONG offset=firstBytes,fragments=0;
+    uint32_t elements=0;
+    if(!NvxEncodeRpcRecord(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),expected,
+          dev->RpcTxSequence,source,firstBytes,&elements)||elements!=1)
+        return FALSE;
+    if(!NvxGspSendRpcElement(dev,dev->RpcTxRecord)) return FALSE;
+    while(offset<bytes) {
+        ULONG chunk=bytes-offset;
+        if(chunk>4016) chunk=4016;
+        if(!NvxEncodeRpcContinuation(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),
+              dev->RpcTxSequence,source+offset,chunk)||
+           !NvxGspSendRpcElement(dev,dev->RpcTxRecord)) {
+            dev->GspRpcFaulted=TRUE;
+            LogStr("NVX [RM]: large RPC continuation failed; queue quarantined.\n");
+            return FALSE;
+        }
+        offset+=chunk;fragments++;
+    }
+    LogStr("NVX [RM]: streamed large RPC function=");LogHex(expected);
+    LogStr(" continuation_records=");LogHex(fragments);LogStr(" bytes=");
+    LogHex(bytes);LogStr("\n");
+    return TRUE;
+}
+
 static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                                const void *payload,ULONG bytes)
 {
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
-    ULONG write=cmd->WritePtr,next,available;
-    uint32_t elements=1;
-    if(!dev->GspInitialized||dev->GspRpcFaulted||write>=63||stat->ReadPtr>=63)
+    ULONG write=cmd->WritePtr,next;
+    if(!dev->GspInitialized||dev->GspRpcFaulted||write>=63||
+       cmd->ReadPtr>=63||stat->ReadPtr>=63)
         return FALSE;
     if(bytes<=4016) {
         next=(write+1)%63;
-        if(next==stat->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
+        if(next==cmd->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
             4096,expected,dev->RpcTxSequence,payload,bytes)) return FALSE;
     } else {
-        ULONG index;
-        available=(stat->ReadPtr+63-write-1)%63;
-        if(!NvxEncodeRpcRecord(dev->RpcTxRecord,sizeof(dev->RpcTxRecord),expected,
-            dev->RpcTxSequence,payload,bytes,&elements)) return FALSE;
-        if(elements>available||elements>sizeof(dev->RpcTxRecord)/4096) return FALSE;
-        for(index=0;index<elements;index++) {
-            VideoPortMoveMemory((PUCHAR)dev->CmdQueueVirtual+4096+((write+index)%63)*4096,
-                                dev->RpcTxRecord+index*4096,4096);
-        }
-        next=(write+elements)%63;
+        if(!NvxGspSendRpcLargeLocked(dev,expected,payload,bytes)) return FALSE;
+        next=cmd->WritePtr;
     }
-    __sync_synchronize();cmd->WritePtr=next;__sync_synchronize();
+    if(bytes<=4016) {
+        __sync_synchronize();cmd->WritePtr=next;__sync_synchronize();
+    }
     dev->RpcTxSequence++;
-    nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE, dev);
+    if(bytes<=4016) nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
     LogStr("NVX [RM]: RPC submitted function=");LogHex(expected);LogStr("\n");
     for(ULONG wait=0;wait<20000;wait++) {
-        ULONG read=cmd->ReadPtr,head=stat->WritePtr;
+        ULONG read=stat->ReadPtr,head=stat->WritePtr;
         uint32_t elements=0,decoded=0,function=0,result=0,sequence=0;
         int gathered;
         if(head>=63||read>=63) return FALSE;
@@ -450,7 +500,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 if(words[14]<40||words[21]>words[14]-40) return FALSE;
                 LogStr("NVX [RM]: LibOS notification bytes=");LogHex(words[21]);LogStr("\n");
             }
-            __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
+            __sync_synchronize();stat->ReadPtr=(read+elements)%63;__sync_synchronize();
             dev->RpcRxSequence++;
             continue;
         }
@@ -460,7 +510,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             LogHex(expected);LogStr(" actual=");LogHex(function);LogStr("\n");
             return FALSE;
         }
-        __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
+        __sync_synchronize();stat->ReadPtr=(read+elements)%63;__sync_synchronize();
         dev->RpcRxSequence++;
         return result==0;
     }

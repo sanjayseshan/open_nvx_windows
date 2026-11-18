@@ -1,6 +1,7 @@
 #include "nvx_rpc.h"
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 int main(void)
 {
     uint8_t slot[4096],payload[8]={8,0,0,0,0,0,0,0};uint32_t f,r,s;
@@ -50,6 +51,27 @@ int main(void)
         assert(decoded==6&&f==76&&s==13);
         assert(!NvxEncodeRpcRecord(record24k,5*4096,76,13,
                                    payload24k,sizeof(payload24k),&elements));
+    }
+    {
+        static uint8_t payload[10017],first[4096],continuation[4096];
+        uint32_t elements,decoded;size_t offset=4016;
+        for(unsigned i=0;i<sizeof(payload);i++) payload[i]=(uint8_t)(i*13U+7U);
+        assert(NvxEncodeRpcRecord(first,sizeof(first),4,21,payload,4016,&elements));
+        assert(elements==1&&NvxDecodeRpcRecord(first,sizeof(first),&f,&r,&s,&decoded));
+        assert(f==4&&s==21&&decoded==1&&!memcmp(first+80,payload,4016));
+        while(offset<sizeof(payload)) {
+            size_t chunk=sizeof(payload)-offset;
+            if(chunk>4016) chunk=4016;
+            assert(NvxEncodeRpcContinuation(continuation,sizeof(continuation),21,
+                                            payload+offset,chunk));
+            assert(NvxDecodeRpcRecord(continuation,sizeof(continuation),
+                                      &f,&r,&s,&decoded));
+            assert(f==NVX_RPC_FUNCTION_CONTINUATION_RECORD&&s==21&&decoded==1);
+            assert(!memcmp(continuation+80,payload+offset,chunk));
+            offset+=chunk;
+        }
+        assert(!NvxEncodeRpcContinuation(continuation,sizeof(continuation),21,
+                                        payload,4017));
     }
     {
         static uint32_t ring[4*1024],snapshot[2*1024];uint32_t count;

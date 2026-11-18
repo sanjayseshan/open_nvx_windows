@@ -42,6 +42,16 @@ int NvxEncodeRpcRecord(uint8_t *record,size_t capacity,uint32_t function,
     *elements=count;
     return 1;
 }
+int NvxEncodeRpcContinuation(uint8_t *slot,size_t capacity,uint32_t sequence,
+                             const void *payload,size_t payloadSize)
+{
+    uint32_t elements=0;
+    if(payloadSize>NVX_RPC_SLOT_SIZE-NVX_RPC_HEADER_SIZE||
+       !NvxEncodeRpcRecord(slot,capacity,NVX_RPC_FUNCTION_CONTINUATION_RECORD,
+                           sequence,payload,payloadSize,&elements)||elements!=1)
+        return 0;
+    return 1;
+}
 int NvxDecodeRpc(const uint8_t *slot,size_t capacity,uint32_t *function,
                  uint32_t *result,uint32_t *sequence)
 {

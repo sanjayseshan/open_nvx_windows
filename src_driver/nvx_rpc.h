@@ -5,6 +5,7 @@
 #define NVX_RPC_SLOT_SIZE 4096U
 #define NVX_RPC_HEADER_SIZE 80U
 #define NVX_RPC_MAX_ELEMENTS 16U
+#define NVX_RPC_FUNCTION_CONTINUATION_RECORD 71U
 /* Decode one contiguous transport record (up to 64KB). */
 int NvxDecodeRpcRecord(const uint8_t *,size_t,uint32_t *,uint32_t *,uint32_t *,uint32_t *);
 /* 1=complete snapshot, 0=in flight/empty, -1=invalid; never advances read. */
@@ -31,5 +32,7 @@ typedef struct {
 int NvxEncodeRpc(uint8_t *,size_t,uint32_t,uint32_t,const void *,size_t);
 /* Encode a message spanning 1..16 contiguous 4KB queue elements. */
 int NvxEncodeRpcRecord(uint8_t *,size_t,uint32_t,uint32_t,const void *,size_t,uint32_t *);
+/* Encode one OpenRM continuation queue element (up to 4016 data bytes). */
+int NvxEncodeRpcContinuation(uint8_t *,size_t,uint32_t,const void *,size_t);
 int NvxDecodeRpc(const uint8_t *,size_t,uint32_t *,uint32_t *,uint32_t *);
 #endif
