@@ -395,6 +395,54 @@ static BOOLEAN NvxGspSendRpcLargeLocked(PNVX_DEVICE_EXTENSION dev,
     return TRUE;
 }
 
+/* OpenRM's _issueRpcLarge bidirectional path receives one ordinary reply,
+   then one function-71 record for every remaining request chunk. Reassemble
+   those payload bytes in-place before exposing the reply to control callers. */
+static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
+                                       uint32_t requestBytes,uint32_t *elements)
+{
+    volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
+    uint32_t first=*elements,recordCount=(requestBytes+4015U)/4016U;
+    uint32_t firstLength=((uint32_t *)dev->RpcRxRecord)[14];
+    uint32_t totalBytes=requestBytes;
+    size_t received;
+    if(firstLength<32||firstLength>first*4096-48) return FALSE;
+    received=firstLength-32;
+    if(received>totalBytes) received=totalBytes;
+    if(!recordCount) recordCount=1;
+    for(ULONG index=1;index<recordCount&&received<totalBytes;index++) {
+        BOOLEAN got=FALSE;
+        for(ULONG wait=0;wait<20000;wait++) {
+            uint32_t read=cmd->ReadPtr,head=stat->WritePtr,fragElements=0;
+            uint32_t fragFunction=0,fragResult=0,fragSequence=0,decoded=0;
+            int gathered;
+            if(read>=63||head>=63) return FALSE;
+            __sync_synchronize();
+            gathered=NvxGatherRpc((PUCHAR)dev->StatQueueVirtual+4096,63*4096,
+                63,read,head,dev->RpcTxRecord,sizeof(dev->RpcTxRecord),&fragElements);
+            if(gathered<0) return FALSE;
+            if(!gathered) {VideoPortStallExecution(100);continue;}
+            if(fragElements!=1||
+               !NvxDecodeRpcRecord(dev->RpcTxRecord,4096,&fragFunction,
+                                   &fragResult,&fragSequence,&decoded)||decoded!=1) return FALSE;
+            if(fragFunction!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) return FALSE;
+            if(!NvxRpcAppendContinuation(dev->RpcRxRecord,
+                    sizeof(dev->RpcRxRecord),&received,dev->RpcTxRecord,
+                    4096,totalBytes)) return FALSE;
+            __sync_synchronize();cmd->ReadPtr=(read+fragElements)%63;
+            __sync_synchronize();got=TRUE;break;
+        }
+        if(!got) return FALSE;
+    }
+    if(received!=totalBytes) return FALSE;
+    /* Recreate the contiguous record as the OpenRM shim's callers expect. */
+    if(!NvxRpcFinalizeLargeReply(dev->RpcRxRecord,sizeof(dev->RpcRxRecord),
+                                  totalBytes,recordCount)) return FALSE;
+    LogStr("NVX [RM]: reassembled large bidirectional reply bytes=");
+    LogHex(totalBytes);LogStr(" queue_records=");LogHex(recordCount);LogStr("\n");
+    return TRUE;
+}
+
 static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                                const void *payload,ULONG bytes)
 {
@@ -417,6 +465,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
     dev->RpcTxSequence++;
     if(bytes<=4016) nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
     LogStr("NVX [RM]: RPC submitted function=");LogHex(expected);LogStr("\n");
+    BOOLEAN initialReplyConsumed=FALSE;
     for(ULONG wait=0;wait<20000;wait++) {
         ULONG read=cmd->ReadPtr,head=stat->WritePtr;
         uint32_t elements=0,decoded=0,function=0,result=0,sequence=0;
@@ -510,7 +559,29 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             LogHex(expected);LogStr(" actual=");LogHex(function);LogStr("\n");
             return FALSE;
         }
-        __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
+        if(expected==76&&bytes>=24) {
+            const ULONG *words=(const ULONG *)dev->RpcRxRecord;
+            ULONG outputBytes=((const ULONG *)payload)[4];
+            ULONG expectedReplyBytes=24+outputBytes;
+            ULONG replyPayloadBytes=words[14]>=32?words[14]-32:0;
+            ULONG requestRecords=(bytes+4015U)/4016U;
+            if(requestRecords>1&&replyPayloadBytes<expectedReplyBytes) {
+                LogStr("NVX [RM]: receiving large bidirectional reply bytes=");
+                LogHex(expectedReplyBytes);LogStr(" continuation_records=");
+                LogHex(requestRecords-1);LogStr("\n");
+                __sync_synchronize();cmd->ReadPtr=(read+elements)%63;
+                __sync_synchronize();
+                initialReplyConsumed=TRUE;
+                if(!NvxGspGatherReplyLocked(dev,expectedReplyBytes,&elements)) {
+                    dev->GspRpcFaulted=TRUE;
+                    LogStr("NVX [RM]: large bidirectional reply invalid/incomplete; queue quarantined.\n");
+                    return FALSE;
+                }
+            }
+        }
+        if(!initialReplyConsumed) {
+            __sync_synchronize();cmd->ReadPtr=(cmd->ReadPtr+elements)%63;__sync_synchronize();
+        }
         dev->RpcRxSequence++;
         return result==0;
     }

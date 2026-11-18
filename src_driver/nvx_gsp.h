@@ -552,7 +552,7 @@ typedef struct _NVX_DEVICE_EXTENSION {
     NV2080_CTRL_GR_GET_CTX_BUFFER_INFO_PARAMS GrContextInfoParams;
     UCHAR RpcTxRecord[262144];
     UCHAR RpcControlPayload[262144];
-    UCHAR RpcRxRecord[65536];
+    UCHAR RpcRxRecord[270336];
 } NVX_DEVICE_EXTENSION, *PNVX_DEVICE_EXTENSION;
 
 /* GSP Firmware Blobs */

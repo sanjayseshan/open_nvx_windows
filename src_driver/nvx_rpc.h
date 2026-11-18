@@ -34,5 +34,10 @@ int NvxEncodeRpc(uint8_t *,size_t,uint32_t,uint32_t,const void *,size_t);
 int NvxEncodeRpcRecord(uint8_t *,size_t,uint32_t,uint32_t,const void *,size_t,uint32_t *);
 /* Encode one OpenRM continuation queue element (up to 4016 data bytes). */
 int NvxEncodeRpcContinuation(uint8_t *,size_t,uint32_t,const void *,size_t);
+/* Append one OpenRM continuation frame to an already gathered bidirectional reply. */
+int NvxRpcAppendContinuation(uint8_t *,size_t,size_t *,const uint8_t *,size_t,
+                             uint32_t);
+/* Normalize the assembled reply's logical record length after all chunks arrive. */
+int NvxRpcFinalizeLargeReply(uint8_t *,size_t,size_t,uint32_t);
 int NvxDecodeRpc(const uint8_t *,size_t,uint32_t *,uint32_t *,uint32_t *);
 #endif

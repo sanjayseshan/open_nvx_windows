@@ -74,6 +74,32 @@ int main(void)
                                         payload,4017));
     }
     {
+        static uint8_t output[24024],reply[6*4096],continuation[4096];
+        uint32_t elements,decoded;size_t received=4016,offset=4016;
+        for(unsigned i=0;i<sizeof(output);i++) output[i]=(uint8_t)(i*29U+3U);
+        assert(NvxEncodeRpcRecord(reply,sizeof(reply),76,22,output,4016,&elements));
+        assert(elements==1);
+        memcpy(reply+80,output,4016);
+        while(offset<sizeof(output)) {
+            size_t chunk=sizeof(output)-offset;
+            if(chunk>4016) chunk=4016;
+            assert(NvxEncodeRpcContinuation(continuation,sizeof(continuation),22,
+                                            output+offset,chunk));
+            assert(NvxRpcAppendContinuation(reply,sizeof(reply),&received,
+                                            continuation,sizeof(continuation),
+                                            sizeof(output)));
+            offset+=chunk;
+        }
+        assert(received==sizeof(output));
+        assert(NvxRpcFinalizeLargeReply(reply,sizeof(reply),sizeof(output),6));
+        assert(NvxDecodeRpcRecord(reply,sizeof(reply),&f,&r,&s,&decoded));
+        assert(f==76&&s==22&&decoded==6&&reply[56]==0xf8&&reply[57]==0x5d);
+        assert(!memcmp(reply+80,output,sizeof(output)));
+        assert(!NvxRpcAppendContinuation(reply,sizeof(reply),&received,
+                                        continuation,sizeof(continuation),
+                                        sizeof(output)));
+    }
+    {
         static uint32_t ring[4*1024],snapshot[2*1024];uint32_t count;
         ring[3*1024+10]=2;ring[3*1024+1023]=0x1234;ring[0]=0x5678;
         assert(NvxGatherRpc((uint8_t *)ring,sizeof(ring),4,3,0,(uint8_t *)snapshot,sizeof(snapshot),&count)==0);

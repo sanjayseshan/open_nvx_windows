@@ -52,6 +52,44 @@ int NvxEncodeRpcContinuation(uint8_t *slot,size_t capacity,uint32_t sequence,
         return 0;
     return 1;
 }
+int NvxRpcAppendContinuation(uint8_t *record,size_t capacity,size_t *received,
+                             const uint8_t *continuation,size_t continuationCapacity,
+                             uint32_t totalBytes)
+{
+    uint32_t function,frameResult,frameSequence,elements,frameLength;
+    size_t chunk;
+    if(!record||!received||!continuation||capacity<80||totalBytes>capacity-80||
+       *received>totalBytes||
+       !NvxDecodeRpcRecord(continuation,continuationCapacity,&function,
+                           &frameResult,&frameSequence,&elements)||elements!=1||
+       function!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) return 0;
+    frameLength=get32(continuation+56);
+    if(frameLength<32||frameLength>4048) return 0;
+    chunk=frameLength-32;
+    if(chunk>totalBytes-*received) return 0;
+    for(size_t i=0;i<chunk;i++) record[80+*received+i]=continuation[80+i];
+    *received+=chunk;
+    (void)frameResult;(void)frameSequence;
+    return 1;
+}
+int NvxRpcFinalizeLargeReply(uint8_t *record,size_t capacity,size_t totalBytes,
+                             uint32_t elements)
+{
+    size_t recordBytes;
+    uint32_t logicalElements;
+    if(!record||capacity<NVX_RPC_HEADER_SIZE||!elements||
+       totalBytes>capacity-NVX_RPC_HEADER_SIZE) return 0;
+    logicalElements=(uint32_t)((totalBytes+NVX_RPC_HEADER_SIZE+
+                               NVX_RPC_SLOT_SIZE-1)/NVX_RPC_SLOT_SIZE);
+    if(!logicalElements||logicalElements>elements||
+       capacity<(size_t)logicalElements*NVX_RPC_SLOT_SIZE) return 0;
+    recordBytes=(size_t)logicalElements*NVX_RPC_SLOT_SIZE;
+    put32(record+40,logicalElements);
+    put32(record+56,(uint32_t)(32+totalBytes));
+    put32(record+32,0);
+    put32(record+32,checksum(record,recordBytes));
+    return 1;
+}
 int NvxDecodeRpc(const uint8_t *slot,size_t capacity,uint32_t *function,
                  uint32_t *result,uint32_t *sequence)
 {

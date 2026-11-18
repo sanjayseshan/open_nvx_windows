@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Current candidate: **3.0.0.300**.
+Updated November 18, 2026. Current candidate: **3.0.0.301**.
 
 ## Current status and remaining work
 
@@ -26,10 +26,10 @@ also verifies physical FB page-list registration above 4 GiB.
 1. Failed 8 MiB GART range reservations in the 460 MiB system-memory GPU VA
    pool. Investigate live allocation ownership/cache lifetimes and fragmentation.
 2. ~64.5 MiB linear VRAM BO requests cannot register their page lists through
-   the earlier 16-element contiguous RPC encoder. .299 now sends OpenRM-style
-   function-71 continuation records and streams them while the command queue
-   drains. The mock reconstructs and verifies a 4 MiB PFN list. Hardware
-   validation is pending; this does not yet prove the previous ~64.5 MiB
+   the earlier 16-element contiguous RPC encoder. .300 confirmed OpenRM-style
+   function-71 request continuations on hardware; .301 adds the missing large
+   bidirectional reply reassembly. The mock reconstructs and verifies a 4 MiB
+   PFN list. Hardware validation is pending; this does not yet prove the previous ~64.5 MiB
    allocation or 3DMark works. This should reduce fallback to GART after a
    VRAM-registration failure.
 3. 3DMark's guest log contains GL_FRAMEBUFFER_UNSUPPORTED and
@@ -46,14 +46,37 @@ caused its final host verdict to exit with a parser error; the saved-log
 verdict checks were rerun separately and passed. Hardware/guest suite passed;
 no additional boot was used to conceal or rerun that result.
 
-Next: hardware-test .299 large page-list registration; audit GART
-lifetimes/fragmentation; then retry 3DMark with live allocation statistics.
+Next: hardware-test .301 large bidirectional RPC receive and page-list
+registration; audit GART lifetimes/fragmentation; then retry 3DMark with live
+allocation statistics.
 Do not expand firmware-reserved physical ranges. Relevant upstream transport:
 open-gpu-kernel-modules/src/nvidia/kernel/vgpu/nv/rpc.c (_issuePteDescRpc,
 _issueRpcAndWaitLarge); local src_driver/nvx_rpc.{c,h}, nvx_gsp.c,
 nvxmp.c, nvx_gr_context.{c,h}, and mesa_patches/nvx_xf86drm.c.
 
-## .299: use OpenRM continuation records and independent queue pointers
+## .301: reassemble OpenRM large bidirectional RPC replies
+
+The .300 hardware trace reached GSP `INIT_DONE` and successfully streamed a
+large function-76 request through five function-71 continuation records.
+The next 24 KiB GR fault-shadow registration then failed: firmware returned a
+normal first reply record followed by continuation records, but the XP caller
+treated the first record as complete (`returned bytes=0x5DE0`, first length
+`0xFD0`). This prevented GR fault-shadow registration and was followed by DP
+power-up RPC timeouts and graphics-channel quarantine. .300 is therefore not
+a 3DMark pass; its run ended with test failure. Log:
+test_logs/v3.0.0.300-20261117-231610.log.
+
+.301 mirrors OpenRM `_issueRpcLarge` bidirectional receive behavior: consume
+the first ordinary response, append subsequent function-71 records into the
+reply staging buffer, restore the contiguous logical length/checksum, and
+advance queue ownership exactly once. Continuation encode/append/finalize
+validation lives in the `nvx_rpc` shim. The receive buffer now accommodates
+the maximum control buffer plus the RPC header. A 24 KiB continuation
+round-trip is covered by the RPC unit test; full host suite passed. Hardware
+validation pending. Files: src_driver/nvx_gsp.{c,h}, nvx_rpc.{c,h},
+src_driver/tests/rpc_test.c.
+
+## .299/.300: use OpenRM continuation records and swapped queue pointers
 
 Large OpenRM page-list registrations use one ordinary RPC element followed
 by function-71 continuation elements. The prior XP code instead treated the
@@ -66,7 +89,8 @@ tracks RM consumption of commands. Each continuation advances only the
 command consumer pointer; the large RPC still produces one status response.
 Host tests verify frame checksums, full multi-frame page-list reconstruction,
 swapped queue pointers, and successful allocation/free.
-Hardware validation is pending. Files: src_driver/nvx_gsp.c,
+Hardware validation was attempted in .300 and the request send path worked;
+the reply path was incomplete as described above. Files: src_driver/nvx_gsp.c,
 src_driver/nvx_gsp_boot.c, src_driver/nvx_rpc.{c,h},
 src_driver/tests/{rpc_test.c,gsp_mock_test.c}.
 
@@ -75,7 +99,8 @@ record, before `INIT_DONE`; it did not reach the continuation path. The trace
 came from temporarily treating the two `MSGQ_FLAGS_SWAP_RX` read-pointer
 locations as independent. .300 restores the established swapped ownership;
 the full host/mock suite then passed. The failed attempt log is
-test_logs/v3.0.0.299-20261117-230922.log. .300 hardware validation is pending.
+test_logs/v3.0.0.299-20261117-230922.log. .300's request path was reached;
+the incomplete reply receive is documented above.
 
 ## .298: wrap native display DMA rings; isolate primary visual check
 
