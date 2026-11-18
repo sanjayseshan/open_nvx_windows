@@ -1,6 +1,80 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Current candidate: **3.0.0.297**.
+Updated November 17, 2026. Current candidate: **3.0.0.298**.
+
+## Current status and remaining work
+
+Fixed and hardware-tested: GA104 boot policy now exposes ~7.78 GiB of
+firmware-approved free VRAM; an 8 GiB GPU VA mapping supports it. The old
+~60 MiB heap restriction came from applying GA100-only MMU-lock semantics
+to GA104. Application allocations extended beyond the old 128 MiB aperture.
+
+.298 display validation PASSED: 12 public-API switches between 1024x768
+and 2560x1440, DMA ring wrap executed on hardware, both display heads stayed
+active/locked, and the user confirmed the primary looks clean. The user
+had already confirmed the secondary looked good in .297. Native channels
+are preserved across modesets and their command rings can now wrap.
+
+.298 graphics results: x64 gears 62.83 FPS, x86 gears 53.0 FPS; x64/x86 cube
+60.3/60.8 FPS with NV170 and NVX_3D_RESULT PASS; D3D9 HAL 64.4/59.2 FPS.
+Guest ALL_BENCHMARKS_FINISHED Status: PASS. VM shut down normally.
+Log: test_logs/v3.0.0.298-20261117-213727.log.
+Host GSP/VBE/FRTS tests and XP package builds passed. Supplemental GSP test
+also verifies physical FB page-list registration above 4 GiB.
+
+3DMark is NOT resolved or scored. .297 benchmark showed:
+1. Failed 8 MiB GART range reservations in the 460 MiB system-memory GPU VA
+   pool. Investigate live allocation ownership/cache lifetimes and fragmentation.
+2. ~64.5 MiB linear VRAM BO requests cannot register their page lists because
+   the current outgoing RPC encoder allows at most 16 transport elements.
+   OpenRM `_issuePteDescRpc` uses `_issueRpcAndWaitLarge` with continuation
+   records. Implement that upstream transport behavior rather than enlarging
+   a single record. This should also avoid pushing GPU-only allocations into
+   GART after a VRAM-registration failure.
+3. 3DMark's guest log contains GL_FRAMEBUFFER_UNSUPPORTED and
+   GL_INVALID_FRAMEBUFFER_OPERATION plus resource-unload-while-mapped errors.
+   Do not assume memory pressure explains every rendering error; recheck after
+   allocation/transport failures are fixed.
+
+.298 intentionally skipped 3DMark to isolate the clean display/mode smoke
+run. The old collector appended leftover 3DMark logs despite that flag, so
+errors in appended guest traces must not be attributed to a new .298 3DMark
+run. The collector now skips those logs when NVX_RUN_3DMARK=0 and adds log
+section labels for future runs. Editing the live runner during collection
+caused its final host verdict to exit with a parser error; the saved-log
+verdict checks were rerun separately and passed. Hardware/guest suite passed;
+no additional boot was used to conceal or rerun that result.
+
+Next: implement upstream RPC continuation for large FB registrations, audit
+GART lifetimes/fragmentation, then retry 3DMark with live allocation statistics.
+Do not expand firmware-reserved physical ranges. Relevant upstream transport:
+open-gpu-kernel-modules/src/nvidia/kernel/vgpu/nv/rpc.c (_issuePteDescRpc,
+_issueRpcAndWaitLarge); local src_driver/nvx_rpc.{c,h}, nvx_gsp.c,
+nvxmp.c, nvx_gr_context.{c,h}, and mesa_patches/nvx_xf86drm.c.
+
+## .298: wrap native display DMA rings; isolate primary visual check
+
+.297 restored native modes successfully several times, then hit the core
+pushbuffer's fixed 600-word threshold: repeated mode commits only appended
+commands and never recycled the ring. Therefore the standby/modeset work
+was still incomplete despite earlier successful restoration. User confirmed
+secondary looked good but primary still looked off, possibly from 3DMark.
+
+.298 follows Nouveau nv50_dmac_wait/wind: when room is insufficient, wait
+for GET to reach the old PUT, emit NV507C DMA JUMP(0), flush and publish PUT=0,
+then wait for GET=0 before constructing the next commit. No channel teardown.
+Core and both window channels use this path. Host emulation forces all three
+rings near their end and checks all three execute the jump and commit.
+
+Added optional NVX_DISPLAY_MODE_CYCLES=1 hardware regression using XP's
+ChangeDisplaySettingsEx API to alternate 1024x768 and the original primary
+mode 12 times and restore it before the usual unmodified gears/cube/D3D9
+apps. This run disables 3DMark to isolate display behavior and avoid its
+known GART allocation failures. Host GSP tests pass; hardware validation passed as recorded above.
+Source: Linux Nouveau dispnv50/disp.c nv50_dmac_wait/nv50_dmac_wind,
+and include/nvhw/class/cl507c.h. Files: src_driver/nvx_disp_rpc.c,
+src_driver/tests/gsp_mock_test.c, test/test_display_modes.c,
+test/test_full_driver.sh, test/update_disk_driver_user.sh.
 
 ## .297: move display instance into the new free region and reserve it
 

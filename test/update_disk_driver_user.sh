@@ -159,6 +159,11 @@ if [ -f "$NVX_PACKAGE/test_gpu_accel.exe" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_PACKAGE/test_gpu_accel.exe" "$NVX_MOUNT/test_accel/test_gpu_accel.exe"
 fi
+if [ -f "$NVX_ROOT/test/test_display_modes.exe" ]; then
+    cp -v "$NVX_ROOT/test/test_display_modes.exe" "$NVX_MOUNT/test_accel/test_display_modes.exe"
+else
+    rm -f "$NVX_MOUNT/test_accel/test_display_modes.exe"
+fi
 if [ -f "$NVX_ROOT/test/nvx_p2mf_probe.exe" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_ROOT/test/nvx_p2mf_probe.exe" "$NVX_MOUNT/test_accel/nvx_p2mf_probe.exe"
@@ -278,6 +283,10 @@ if exist C:\test_accel\p2mf_probe_fb.flag (
     echo [TEST] Isolated FB P2MF probe... >> C:\test_accel.log
     nvx_p2mf_probe.exe fb >> C:\test_accel.log 2>&1
     if errorlevel 1 (echo [TEST] FB P2MF probe: FAIL >> C:\test_accel.log) else (echo [TEST] FB P2MF probe: PASS >> C:\test_accel.log)
+)
+if exist C:\test_accel\test_display_modes.exe (
+    test_display_modes.exe >> C:\test_accel.log 2>&1
+    if errorlevel 1 set NVX_SUITE_FAILED=1
 )
 if exist C:\test_accel\wglgears.exe (
     cd /d C:\test_accel

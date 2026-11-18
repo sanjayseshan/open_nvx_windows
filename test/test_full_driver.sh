@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.297"
+NVX_TEST_VERSION="3.0.0.298"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -18,6 +18,13 @@ if [ "${NVX_BUILD_WINED3D:-1}" = "1" ]; then
     export NVX_WINE_BUILD
     echo "==> Building pinned WineD3D with the current XP patches"
     "$NVX_ROOT/test/build_wined3d_xp.sh"
+fi
+if [ "${NVX_DISPLAY_MODE_CYCLES:-0}" = "1" ]; then
+    x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -static-libgcc \
+        "$NVX_ROOT/test/test_display_modes.c" -luser32 \
+        -o "$NVX_ROOT/test/test_display_modes.exe"
+else
+    rm -f "$NVX_ROOT/test/test_display_modes.exe"
 fi
 NVX_TEST_FLAGS=()
 NVX_MESA_TEST_FLAGS=()
@@ -224,7 +231,12 @@ finish() {
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
         for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
+            case "$guest_log" in
+                3dmark05.log|3dmark_caps.log)
+                    [ "$NVX_RUN_3DMARK" = "1" ] || continue ;;
+            esac
             echo "==> Guest OpenGL trace: $guest_log"
+            printf "\n[GUEST_LOG_BEGIN] %s\n" "$guest_log" >> "$NVX_RUN_LOG"
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || \
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/test_accel/$guest_log" \
@@ -371,6 +383,12 @@ fi
 
 finish
 trap - EXIT
+
+if [ "${NVX_DISPLAY_MODE_CYCLES:-0}" = "1" ] &&
+   ! grep -Fq '[DISPLAY_CYCLES] PASS' "$NVX_RUN_LOG"; then
+    echo "ERROR: repeated native display mode test did not pass; see $NVX_RUN_LOG" >&2
+    exit 1
+fi
 
 if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
    ! grep -q '\[OPENGL_RESULT\] RENDERED' "$NVX_RUN_LOG"; then

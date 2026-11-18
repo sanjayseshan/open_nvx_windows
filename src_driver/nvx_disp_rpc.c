@@ -420,6 +420,37 @@ static BOOLEAN NvxNativeHead(PULONG push,PULONG count,ULONG head,
     return TRUE;
 }
 
+/* Nouveau nv50_dmac_wait/wind: reserve room before constructing a commit.
+   Drain old work, emit DMA JUMP(0), publish PUT=0 and wait for GET=0 before
+   reusing the start. Preserving channels requires recycling their ring. */
+static BOOLEAN NvxNativeReserveDma(PNVX_DEVICE_EXTENSION dev,ULONG user,
+                                  PULONG buffer,ULONG threshold,ULONG *words)
+{
+    PUCHAR bar0=dev->Bar0MmioVirtual;
+    ULONG put=NvxDisplayGetWords(VideoPortReadRegisterUlong((PULONG)(bar0+user)));
+    if(put<=threshold) {*words=put;return TRUE;}
+    for(ULONG wait=0;wait<2000;wait++) {
+        ULONG raw=VideoPortReadRegisterUlong((PULONG)(bar0+user+4));
+        if(raw!=0xffffffffU && NvxDisplayGetWords(raw)==put) {
+            buffer[put]=0x20000000U; /* NV507C_DMA_OPCODE_JUMP, offset zero. */
+            if(!NvxNativeFlushDma(buffer,0x1000)) return FALSE;
+            VideoPortWriteRegisterUlong((PULONG)(bar0+user),0);
+            for(ULONG wrap=0;wrap<2000;wrap++) {
+                raw=VideoPortReadRegisterUlong((PULONG)(bar0+user+4));
+                if(raw!=0xffffffffU && NvxDisplayGetWords(raw)==0) {
+                    LogStr("NVX [NATIVE]: DMA ring wrapped channel=");LogHex(user);LogStr("\n");
+                    *words=0;return TRUE;
+                }
+                VideoPortStallExecution(100);
+            }
+            break;
+        }
+        VideoPortStallExecution(100);
+    }
+    LogStr("NVX [NATIVE]: DMA ring drain/wrap timed out; commit skipped.\n");
+    return FALSE;
+}
+
 BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
 {
     PNVX_DEVICE_EXTENSION dev=extension,sec;
@@ -566,11 +597,7 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
             LogStr(" clientSlot=");LogHex(slot);LogStr(" v169Slot=");LogHex(legacy);LogStr("\n");
         }
     }
-    n=NvxDisplayGetWords(VideoPortReadRegisterUlong((PULONG)(bar0+0x680000)));
-    if(n>600) {
-        LogStr("NVX [NATIVE]: core pushbuffer limit exceeded: ");LogHex(n);LogStr("\n");
-        return FALSE;
-    }
+    if(!NvxNativeReserveDma(dev,0x680000,core,600,&n)) return FALSE;
     for(ULONG i=0;i<2;i++) {
         ULONG owner=VideoPortReadRegisterUlong((PULONG)(bar0+0x681000+windowIds[i]*0x80))&15;
         if(owner!=i) {
@@ -604,12 +631,8 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
     }
     for(ULONG i=0;i<2;i++) {
         windows[i]=(PULONG)((PUCHAR)core+channels[i]*0x1000);
-        counts[i]=NvxDisplayGetWords(VideoPortReadRegisterUlong((PULONG)(bar0+
-                                    (i?0x692000:0x690000))));
-        if(counts[i]>900) {
-            LogStr("NVX [NATIVE]: window pushbuffer limit exceeded for head=");LogHex(i);LogStr("\n");
-            return FALSE;
-        }
+        if(!NvxNativeReserveDma(dev,i?0x692000:0x690000,
+                                windows[i],900,&counts[i])) return FALSE;
         NvxNativeWindow(windows[i],&counts[i],widths[i],heights[i],pitches[i],
                         offsets[i],0xd1500002+i);
         if(!NvxNativeHead(core,&n,i,&modes[i],widths[i],heights[i],

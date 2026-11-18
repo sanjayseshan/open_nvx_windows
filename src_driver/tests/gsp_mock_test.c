@@ -24,6 +24,7 @@ static BOOLEAN injectRpcTimeout;
 static UCHAR timeoutCmdQueue[64*4096],timeoutStatQueue[64*4096];
 static ULONG emulatedHeads[2]={1,0};
 static ULONG emulatedUpdates;
+static ULONG emulatedWraps;
 static ULONG regoff(PULONG p) { return (ULONG)((PUCHAR)p-(PUCHAR)regs); }
 static void gpuWrite64(ULONG offset,ULONG64 value) {memcpy(gpuMemory+offset,&value,8);}
 VOID LogStr(const char *s) {
@@ -417,6 +418,10 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
         PULONG buffer=(PULONG)((PUCHAR)dev.GspDmaVirtual+GSP_DISPLAY_PUSH_OFFSET+channel*0x1000);
         if(emulateModeset) {
             ULONG cursor=regs[off/4+1]>>2;
+            if(value==0) {
+                assert(cursor>0 && cursor<1024 && buffer[cursor]==0x20000000U);
+                regs[off/4+1]=0;emulatedWraps++;return;
+            }
             assert(value>cursor && value<1024);
             while(cursor<value) {
                 ULONG header=buffer[cursor++];
@@ -807,8 +812,15 @@ int main(void)
                 dev.MonitorTiming[1]=timing;
                 dev.MonitorProtocol[0]=dev.MonitorProtocol[1]=8;
                 dev.GspScanoutMapped=FALSE;
+                /* Model repeated prior modesets nearing the end of each
+                   ring. Every channel must wind without teardown. */
+                regs[0x680000/4]=regs[0x680004/4]=700*4;
+                regs[0x690000/4]=regs[0x690004/4]=960*4;
+                regs[0x692000/4]=regs[0x692004/4]=960*4;
+                emulatedWraps=0;
                 emulateModeset=TRUE;
                 assert(NvxNativeSetSecondaryScanout(&dev));
+                assert(emulatedWraps==3);
                 assert(dev.NativeDualActive && emulatedUpdates==2);
                 assert(emulatedHeads[0]==1 && emulatedHeads[1]==4);
                 emulateModeset=FALSE;dev.SecondaryDeviceExtension=NULL;
