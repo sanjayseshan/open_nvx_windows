@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.315"
+NVX_TEST_VERSION="3.0.0.317"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -114,6 +114,15 @@ if [ -d "$NVX_ROOT/test/wined3d_xp/x64" ]; then
     for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
         if [ -f "$NVX_ROOT/test/wined3d_xp/x64/$dll" ]; then
             cp -v "$NVX_ROOT/test/wined3d_xp/x64/$dll" "$NVX_ROOT/dist_full/"
+        fi
+    done
+    # 32-bit Direct3D applications (including 3DMark05) load their WineD3D
+    # stack from SysWOW64. Keep that package in step with the x86 runtime just
+    # built above instead of silently reusing older dist_full/x86 DLLs.
+    mkdir -p "$NVX_ROOT/dist_full/x86"
+    for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+        if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
+            cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_ROOT/dist_full/x86/"
         fi
     done
 elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
