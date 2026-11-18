@@ -35,7 +35,8 @@ $repo_root/mesa_patches/0032-nouveau-xp-process-session-close.patch
 $repo_root/mesa_patches/0033-nouveau-xp-tls-allocation-fallback.patch
 $repo_root/mesa_patches/0034-nouveau-wgl-present-before-flush.patch
 $repo_root/mesa_patches/0035-nouveau-xp-submission-profile.patch
-$repo_root/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch"
+$repo_root/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
+$repo_root/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch"
 expected_revision=cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
 
 actual_revision=$(git -C "$mesa_dir" rev-parse HEAD)

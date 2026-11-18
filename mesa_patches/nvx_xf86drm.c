@@ -1081,7 +1081,8 @@ nvx_drm_submit_pushbuf(int fd,
    winsys = device->device;
    client_token = device->client_token;
 #if defined(_WIN32) || defined(_WIN64)
-   submit_ring_slot = winsys.NouveauBatchPushIndex % 4U;
+   submit_ring_slot = winsys.NouveauBatchPushIndex %
+                      NVX_WINSYS_BATCH_PUSH_SLOTS;
 #endif
    nvx_drm_lock_release();
    profile_prepare_us = nvx_wgl_present_elapsed_us(profile_start);
@@ -1186,33 +1187,6 @@ nvx_drm_submit_pushbuf(int fd,
                if (slot->handle && slot->bo.allocation.BufferId ==
                                       references[reference_index].BufferId) {
                   int marked = NvxNouveauBoMarkUsed(&slot->bo, fence_value);
-                  /* Nouveau reads its small fence/query BO through a
-                   * persistent map, without another CPU_PREP. Linux maps
-                   * coherent memory; XP currently maps a shadow. Publish
-                   * actual GPU writes once this synchronous batch completed
-                   * so Gallium can retire fences and recycle resources.
-                   * Large render targets retain lazy readback. */
-                  if (marked &&
-                      (references[reference_index].Access & NVX_3D_RELOC_WRITE) &&
-                      slot->bo.allocation.Usage == NVX_3D_USAGE_GART_BUFFER &&
-                      slot->bo.allocation.Bytes <= NVX_3D_PAGE_BYTES &&
-                      slot->bo.map_count &&
-                      (slot->bo.map_access & NVX_NOUVEAU_BO_READ)) {
-                     int refreshed = NvxNouveauBoRefreshReadIfStale(&slot->bo);
-                     if (!refreshed) {
-                        failure_stage = 11U;
-                        failure_index = reference_index;
-                        valid = 0;
-                     }
-                     if (nvx_drm_coherent_trace_count < 4U) {
-                        NvxWglRecordNouveauPushbufItem(20U,
-                           nvx_drm_coherent_trace_count++,
-                           (uint32_t)slot->bo.allocation.BufferId,
-                           (uint32_t)refreshed,
-                           refreshed ? Nvx3dBatchReadDword(slot->bo.shadow, 0) : 0U,
-                           (uint32_t)fence_value, 0U, 0U);
-                     }
-                  }
                   if (nvx_drm_fence_trace_count < 4U) {
                      uint32_t trace_index = nvx_drm_fence_trace_count++;
                      NvxWglRecordNouveauPushbufItem(9U, trace_index,
@@ -2398,6 +2372,42 @@ NvxXf86DrmWaitBufferFence(int fd, uint32_t handle)
    }
    nvx_drm_lock_release();
    return completed;
+}
+
+/* The NVC0 screen polls its persistently mapped query/fence BO without a
+ * CPU_PREP ioctl. Linux reads coherent mapped memory directly; XP uses a
+ * shadow, so refresh only after the associated miniport batch fence signals.
+ * This keeps the normal asynchronous pushbuf path free of readback waits. */
+int
+NvxXf86DrmRefreshBufferReadIfSignalled(int fd, uint32_t handle)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int result = 0;
+
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   if (slot && device) {
+      NVX_NOUVEAU_BO *bo = &slot->bo;
+      if (!bo->map_count || !(bo->map_access & NVX_NOUVEAU_BO_READ) ||
+          !bo->shadow || bo->shadow_fence >= bo->last_fence) {
+         result = 1;
+      } else if (NvxWinsysWaitFence(&device->device, bo->last_fence, 0U)) {
+         result = NvxNouveauBoRefreshReadIfStale(bo);
+         if (nvx_drm_coherent_trace_count < 4U) {
+            NvxWglRecordNouveauPushbufItem(20U,
+               nvx_drm_coherent_trace_count++,
+               (uint32_t)bo->allocation.BufferId, (uint32_t)result,
+               result ? Nvx3dBatchReadDword(bo->shadow, 0) : 0U,
+               (uint32_t)bo->last_fence, 0U, 0U);
+         }
+      } else {
+         result = 0;
+      }
+   }
+   nvx_drm_lock_release();
+   return result;
 }
 
 int

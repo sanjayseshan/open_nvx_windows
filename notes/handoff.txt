@@ -1,76 +1,48 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.315**.
+Updated November 18, 2026. Current candidate: **3.0.0.318**, async Nouveau-style submission, pending hardware verification.
 
-## Performance work list (after .314)
+## Latest benchmark and performance change
 
-The .314 run enumerated both display outputs and reported NV170. The short GL
-and D3D9 smoke tests were near 60 FPS, but 3DMark did not produce a result: the
-run was interrupted while the monitors were off. During its active interval,
-the host QEMU process used about one CPU core. The serial trace recorded 616
-client BO registrations and 2,240 BO frees, plus 687 D3D9 capability records
-and 264 failed format/multisample probes. These point to CPU/driver overhead
-and resource churn as plausible limits, but do not identify one measured root
-cause. No queue timeout, MMU fault, or firmware assertion was seen in the
-captured interval. The extracted 3DMark output is empty, so there is no valid
-3DMark FPS measurement.
+The user reported a **230 3DMark05 score** on the `.317` run. Its saved
+serial log, `test_logs/v3.0.0.317-20261118-170003.log`, records the Nouveau
+renderer (`NV170`), gears at 52.333 FPS, and a passing 57.8 FPS D3D9 smoke test;
+the 3DMark score itself was reported by the user and is not present in that
+serial file. This is close to the earlier 232 result, so `.317` did not show a
+meaningful benchmark improvement.
 
-Prioritized speed-up plan:
+The main submission mismatch was confirmed in code: Linux Nouveau queues a
+pushbuffer and returns, then retains BO references until a fence retires. Our
+miniport appended a semaphore but polled it to completion before every submit
+returned. The Mesa bridge also immediately downloaded the small fence/query BO
+for each submission, which imposed another synchronous edge. The client had a
+four-BO pushbuffer ring, limiting safe queue depth to four batches.
 
-1. **Remove diagnostic I/O from timed runs (implemented in .315).** D3D9 caps
-   and failed-probe Wine patches are now opt-in with
-   `NVX_D3D9_CAPS_DIAGNOSTICS=1`; the default Wine build keeps the point-size
-   compatibility fix but does not write `3dmark_caps.log` on every query.
-2. **Reduce hot-path driver logging (implemented in .315).** The default build
-   suppresses successful RM RPC/reply, RM-backed BO register/free, user BO
-   commit/free, and free-IOCTL trace lines. Error replies and all failure,
-   timeout, fault, ownership, and allocation diagnostics remain visible.
-   `NVX_TRACE_HOTPATH=1` at the driver build restores successful hot-path
-   traces for debugging. Submission/fence aggregates still emit on client
-   teardown. This removes serial-ring and debug-print work from common success
-   paths without changing synchronization or resource ownership.
-3. **Add aggregate stage timing before optimizing.** Measure CPU time and call
-   counts for WineD3D GL calls, Nouveau state/BO work, miniport escape handling,
-   RM registration, NVC0 submission, fence wait, and present/copy. Report totals,
-   averages, and worst waits once at the end; avoid per-call trace output. Use
-   the same scene, resolution, monitor state, and warm-up for before/after.
-4. **Investigate BO churn and reuse.** Trace why .314 saw hundreds of client BO
-   registrations and thousands of frees during the 3DMark interval. Compare
-   Mesa Nouveau resource lifetime/pool behavior with the XP winsys. Reuse and
-   pool compatible BOs where lifetime and mapping rules permit; batch RM
-   registration only if ownership semantics remain correct. Verify the change
-   with BO counts and a completed benchmark.
-5. **Reduce submission and escape overhead.** Count submissions per frame and
-   dwords per submission. Keep Mesa's pushbuffer batching intact across draws,
-   combine work before the miniport escape, and avoid repeated validation or
-   address lookup for unchanged references. Preserve the existing ownership,
-   relocation, and fence checks; do not trade correctness for fewer calls.
-6. **Relax unnecessary synchronous waits.** Identify which submit/present paths
-   wait for each fence. Allow multiple safe submissions in flight and wait at
-   flush/present or when reusing a busy resource, using the existing fence ring
-   and BO lifetime tracking. Measure wait time and queue depth to ensure this
-   removes CPU stalls without reusing unfinished resources.
-7. **Profile presentation separately.** Time the GPU GART-to-scanout copy and
-   notifier wait independently from rendering. Avoid an extra copy when the
-   render target is already scanout-compatible; consider direct render-to-
-   scanout or page flipping only after verifying XP display/DDI ownership and
-   dual-head behavior.
-8. **Keep shader correctness as a separate gate.** D3D9 reports VS/PS 3.0, so
-   the Pixel Shader 2.0 capability gate is cleared. Earlier runs still showed
-   shader-program-header/RC faults; .314 ended before a completed complex
-   shader workload. Capture shader upload/header data and the exact failing
-   submission before changing shader methods. A fast run that faults or falls
-   back is not a performance improvement.
-9. **Use a clean hardware benchmark protocol.** Keep both monitors powered on,
-   confirm both connector IDs and protocols in the log, disable capability and
-   hot-path success logging, then let 3DMark finish. Record startup and steady-
-   state FPS separately, plus CPU use, BO counts, submit/wait timings, faults,
-   and the benchmark exit marker. Repeat once to distinguish a stable change
-   from startup variance.
+`.318` changes this path to upstream-style asynchronous queueing:
 
-Next implementation: item 3, aggregate stage timing, followed by the BO churn
-investigation. Avoid changing batching or fence semantics until timings identify
-where the CPU time is spent.
+- The miniport returns after the OpenRM channel kick and publishes the fence's
+  owner/sequence at queue time.
+- A bounded 32-entry pending-batch table retains each referenced BO until its
+  fence signals. Reaping releases those pins; free waits for its last use, and
+  client teardown drains outstanding fences before stopping the channel.
+- Mesa's pushbuffer ring is expanded to 32 BOs, with fence waits only when a
+  ring slot is reused. This matches the miniport's in-flight limit.
+- The per-submit fence BO readback is removed. NVC0's fence poll refreshes its
+  XP shadow only after a zero-timeout miniport fence query reports completion.
+
+Both x64 and x86 miniport builds passed with `make -C src_driver`. Mesa's x64
+and x86 XP Nouveau WGL ICDs both built successfully with
+`./test/build_mesa_xp64.sh`. No hardware run has tested `.318` yet. The next
+step is one full VFIO run with 3DMark enabled; compare its score/FPS and watch
+for fence timeouts, BO lifetime errors, render corruption, or a session-close
+hang. Async submission is expected to reduce CPU stalls, but no performance
+gain is established until that run completes.
+
+Remaining submission work after the hardware check: measure actual queue depth
+and time spent in miniport validation/escape calls. `.318` still copies and
+validates each user batch before queueing; those costs are separate from the
+removed fence wait. Keep shader correctness and the one firmware assertion as
+separate follow-up items.
 
 ### .315 quiet benchmark candidate
 

@@ -212,7 +212,7 @@ NvxWinsysCloseNouveauChannel(NVX_WINSYS_DEVICE *device)
              sizeof(device->NouveauObjectBindings));
       device->NouveauObjectBindingCount = 0;
    }
-   for (i = 0; i < 4; i++) {
+   for (i = 0; i < NVX_WINSYS_BATCH_PUSH_SLOTS; i++) {
       if (device->NouveauBatchPushBuffer[i].BufferId) {
          /* Closing the channel retires its in-flight BO pins. If the channel
           * was already closed, wait before freeing its last submitted slot. */
@@ -518,7 +518,8 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
        !device->NouveauChannelHandle ||
        batch_bytes < sizeof(header) || batch_bytes > NVX_3D_MAX_BATCH_BYTES)
       return 0;
-   uint32_t slot_idx = device->NouveauBatchPushIndex % 4U;
+   uint32_t slot_idx = device->NouveauBatchPushIndex %
+                       NVX_WINSYS_BATCH_PUSH_SLOTS;
    if (!device->NouveauBatchPushBuffer[slot_idx].BufferId) {
       memset(&allocation, 0, sizeof(allocation));
       allocation.Size = sizeof(allocation);
@@ -584,11 +585,13 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
        !result.FenceValue) {
       device->NouveauBatchLastFence[slot_idx] =
          NVX_WINSYS_FENCE_QUARANTINED;
-      device->NouveauBatchPushIndex = (slot_idx + 1U) % 4U;
+      device->NouveauBatchPushIndex = (slot_idx + 1U) %
+                                      NVX_WINSYS_BATCH_PUSH_SLOTS;
       return 0;
    }
    device->NouveauBatchLastFence[slot_idx] = result.FenceValue;
-   device->NouveauBatchPushIndex = (slot_idx + 1U) % 4U;
+   device->NouveauBatchPushIndex = (slot_idx + 1U) %
+                                  NVX_WINSYS_BATCH_PUSH_SLOTS;
    *fence_value = result.FenceValue;
    NVX_RECORD_WINSYS_PROFILE(NVX_PROFILE_ELAPSED(profile_start),
                              ring_wait_us, escape_us);

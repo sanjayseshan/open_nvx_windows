@@ -321,6 +321,7 @@ typedef struct _VIDEO_MODE_DEF {
 #define NVX_3D_USER_BUFFER_SLOTS 8192U
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
 #define NVX_3D_FENCE_TRACK_SLOTS 256U
+#define NVX_3D_MAX_INFLIGHT_BATCHES 32U
 /* RM resources belong to a client, never to the currently submitting app.
  * GPU VAs are disjoint in the validated shared aperture; contexts and queues
  * are private. Hardware scheduling remains RM's responsibility. */
@@ -365,6 +366,9 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG MemoryKind;
     ULONG Alignment;
     ULONG Busy;
+    ULONG InFlightRefs;
+    ULONG64 LastFence;
+    BOOLEAN PendingFree;
     ULONG GartFirstPage;
     ULONG GartPageCount;
     BOOLEAN GartUnmapPending;
@@ -377,6 +381,14 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     PHYSICAL_ADDRESS SystemPhysical;
 } NVX_3D_USER_BUFFER_ENTRY;
 typedef NVX_3D_USER_BUFFER_ENTRY *PNVX_3D_USER_BUFFER_ENTRY;
+typedef struct _NVX_3D_PENDING_BATCH {
+    ULONG State; /* 0 free, 1 reserved, 2 queued, 3 being retired */
+    ULONG BufferCount;
+    ULONG64 ClientToken;
+    ULONG64 FenceValue;
+    ULONG BufferSlots[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG64 BufferIds[NVX_3D_MAX_BATCH_BUFFERS];
+} NVX_3D_PENDING_BATCH;
 
 typedef struct _NVX_DEVICE_EXTENSION {
     ULONG DeviceId;
@@ -527,6 +539,7 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG64 Nvx3dCompletedFence;
     ULONG64 Nvx3dFenceSequence[NVX_3D_FENCE_TRACK_SLOTS];
     ULONG64 Nvx3dFenceOwner[NVX_3D_FENCE_TRACK_SLOTS];
+    NVX_3D_PENDING_BATCH Nvx3dPendingBatches[NVX_3D_MAX_INFLIGHT_BATCHES];
     NVX_3D_CLIENT_SESSION_ENTRY Nvx3dClientSessions[NVX_3D_CLIENT_SESSION_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
     NVX_GART_HEAP GspGartHeap;

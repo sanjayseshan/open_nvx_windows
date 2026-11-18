@@ -52,7 +52,7 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" dwords=");LogHex(channel->PerfDwordCount);
     LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" fence_fast_poll_1us=");LogHex(channel->PerfFenceFastPolls);
-    LogStr(" fence_wait_poll_100us=");LogHex(channel->PerfFenceWaitPolls);
+    LogStr(" fence_wait_poll_1ms=");LogHex(channel->PerfFenceWaitPolls);
     LogStr(" max_fence_wait_polls=");LogHex(channel->PerfFenceWaitMaxPolls);
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
     LogStr(" doorbell_retries=");LogHex(channel->PerfDoorbellRetries);
@@ -3979,10 +3979,8 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     volatile ULONG *userd,*fence;
     volatile ULONG64 *fifo;
     PULONG push;
-    ULONG put,wait,lockPolls,tailCount=5U,pushBytesNeeded,totalDwords,i;
+    ULONG put,wait,lockPolls,tailCount=5U,pushBytesNeeded,totalDwords;
     ULONG64 fenceVa,pushVa,fifoEntry;
-    ULONG64 totalPolls;
-    ULONG retryCount=0;
     ULONG fenceSlot;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        !pushVirtual||!pushGpuVa||!pushBytes||!dev->GspInitialized||
@@ -4029,8 +4027,8 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     VideoPortMoveMemory(push,(PVOID)nvc0Dwords,
                         dwordCount*sizeof(ULONG));
     __sync_synchronize();
-    /* The release is the per-batch completion point. Keep submission
-       synchronous until the XP fence path can safely queue independently. */
+    /* The release is the per-batch completion point. Like Nouveau's normal
+       pushbuf path, queue it and let fence waits/BO retirement observe it. */
     push[dwordCount+0]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|
             (NVC797_SET_REPORT_SEMAPHORE_A>>2);
     push[dwordCount+1]=(ULONG)(fenceVa>>32);
@@ -4053,152 +4051,28 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     userd[0x8c/4]=channel->Put;
     __sync_synchronize();
     (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
-    /* Small Nouveau batches usually finish within a few microseconds. Avoid
-       rounding each completion up to a 100 us stall. Bound the fine poll to
-       20 us, then retain the existing long wait and doorbell recovery. Keep
-       completion synchronous so every pinned BO remains protected. */
-    for(i=0;i<20U;i++) {
-        if(fence[0]==(ULONG)fenceValue||channel->Faulted||
-           dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
-        VideoPortStallExecution(1U);
-    }
-    channel->PerfFenceFastPolls+=i;
-    totalPolls=0;
-    for(wait=0;wait<50000U;wait++) {
-        if(fence[0]==(ULONG)fenceValue) {
-            totalPolls+=wait;
-            NvxGspRecordNvc0BatchTiming(channel,dwordCount,totalPolls,retryCount);
-            __sync_synchronize();
-            dev->Nvx3dCompletedFence=fenceValue;
-            channel->CompletedFence=fenceValue;
-            channel->CompletedBatches++;
-            dev->Nvx3dFenceOwner[fenceSlot]=clientToken;
-            __sync_synchronize();
-            dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
-            if(channel->DrawTraceCount<4U) {
-                ULONG primitive,vertexStart,vertexCount;
-                if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
-                                      &vertexStart,&vertexCount)) {
-                    LogStr("NVX [NVC0-DRAW]: token=");LogHex(clientToken);
-                    LogStr(" channel=");LogHex(channel->Channel);
-                    LogStr(" completed index=");
-                    LogHex(channel->DrawTraceCount++);LogStr(" sourceVA=");
-                    LogHex(pushGpuVa);LogStr(" dwords=");LogHex(dwordCount);
-                    LogStr(" primitive=");LogHex(primitive);
-                    LogStr(" start=");LogHex(vertexStart);
-                    LogStr(" count=");LogHex(vertexCount);
-                    LogStr(" fence=");LogHex(fenceValue);
-                    LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
-                }
-            }
-            __sync_lock_release(&NvxGrUserSubmitBusy);
-            return TRUE;
-        }
-        if(channel->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
-        VideoPortStallExecution(100U);
-    }
-    if(fence[0]!=(ULONG)fenceValue&&!channel->Faulted&&
-       !dev->GspGraphicsDeviceFaulted&&!dev->GspMmuFaultQueued) {
-        totalPolls+=wait;
-        ULONG64 visibleEntry=fifo[put];
-        LogStr("NVX [NVC0-BATCH]: retry doorbell fifoIndex=");LogHex(put);
-        LogStr(" expectedEntry=");LogHex(fifoEntry);
-        LogStr(" visibleEntry=");LogHex(visibleEntry);
-        LogStr(" USERD_GET=");LogHex(userd[0x88/4]);
-        LogStr(" USERD_PUT=");LogHex(userd[0x8c/4]);LogStr("\n");
-        __sync_synchronize();
-        (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
-        retryCount++;
-        for(wait=0;wait<50000U;wait++) {
-            if(fence[0]==(ULONG)fenceValue) {
-                totalPolls+=wait;
-                NvxGspRecordNvc0BatchTiming(channel,dwordCount,totalPolls,retryCount);
-                __sync_synchronize();
-                dev->Nvx3dCompletedFence=fenceValue;
-            channel->CompletedFence=fenceValue;
-            channel->CompletedBatches++;
-            dev->Nvx3dFenceOwner[fenceSlot]=clientToken;
-            __sync_synchronize();
-            dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
-                LogStr("NVX [NVC0-BATCH]: second doorbell completed fence=");
-                LogHex(fenceValue);LogStr(" wait=" );LogHex(wait);LogStr("\n");
-                __sync_lock_release(&NvxGrUserSubmitBusy);
-                return TRUE;
-            }
-            if(channel->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
-            VideoPortStallExecution(100U);
+    dev->Nvx3dFenceOwner[fenceSlot]=clientToken;
+    __sync_synchronize();
+    dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
+    NvxGspRecordNvc0BatchTiming(channel,dwordCount,0,0);
+    if(channel->DrawTraceCount<4U) {
+        ULONG primitive,vertexStart,vertexCount;
+        if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
+                              &vertexStart,&vertexCount)) {
+            LogStr("NVX [NVC0-DRAW]: token=");LogHex(clientToken);
+            LogStr(" channel=");LogHex(channel->Channel);
+            LogStr(" queued index=");LogHex(channel->DrawTraceCount++);
+            LogStr(" sourceVA=");LogHex(pushGpuVa);
+            LogStr(" dwords=");LogHex(dwordCount);
+            LogStr(" primitive=");LogHex(primitive);
+            LogStr(" start=");LogHex(vertexStart);
+            LogStr(" count=");LogHex(vertexCount);
+            LogStr(" fence=");LogHex(fenceValue);LogStr("\n");
         }
     }
-    LogStr("NVX [NVC0-BATCH]: timeout state fifoIndex=");LogHex(put);
-    LogStr(" fifoEntry=");LogHex(fifoEntry);LogStr(" pushVa=");LogHex(pushVa);
-    LogStr(" dwords=");LogHex(totalDwords);LogStr(" pushBytes=");LogHex(pushBytes);
-    LogStr(" userdGet=");LogHex(userd[0x88/4]);
-    LogStr(" userdPut=");LogHex(userd[0x8c/4]);
-    LogStr(" expectedPut=");LogHex(channel->Put);LogStr(" fence=");
-    LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
-    /* Preserve the exact Nouveau stream that triggered the timeout. This is
-       failure-only, so normal submission cost is unchanged. It lets us tell
-       whether bad methods/data originated in Mesa or appeared after submit. */
-    LogStr("NVX [NVC0-STREAM]: begin token=");LogHex(clientToken);
-    LogStr(" sourceVa=");LogHex(pushGpuVa);
-    LogStr(" dwords=");LogHex(dwordCount);LogStr("\n");
-    for(i=0;i<dwordCount;i++) {
-        if((i&7U)==0U) {
-            LogStr("NVX [NVC0-STREAM]: ");LogHex(i);LogStr(":");
-        }
-        LogStr(" ");LogHex(nvc0Dwords[i]);
-        if((i&7U)==7U||i+1U==dwordCount) LogStr("\n");
-    }
-    LogStr("NVX [NVC0-STREAM]: end\n");
-    for(i=0;i<tailCount;i++) {
-        LogStr("NVX [NVC0-BATCH]: tail[");LogHex(i);LogStr("]=");
-        LogHex(push[dwordCount+i]);LogStr("\n");
-    }
-    NvxGspLogPbdmaFault(dev);
-    if(channel->RunlistBase&&dev->Bar0Length>=
-       channel->RunlistBase+0x10U) {
-        ULONG channelConfig=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+channel->RunlistBase+4U));
-        ULONG chramBase=channelConfig&0xfffffff0U;
-        ULONG channelId=channel->HardwareChannelId;
-        ULONG chramOffset=chramBase+channelId*4U;
-        if(chramOffset<=dev->Bar0Length-4U) {
-            ULONG channelState=VideoPortReadRegisterUlong((PULONG)
-                ((PUCHAR)dev->Bar0MmioVirtual+chramOffset));
-            LogStr("NVX [CHRAM]: config=");LogHex(channelConfig);
-            LogStr(" base=");LogHex(chramBase);LogStr(" chid=");LogHex(channelId);
-            LogStr(" state=");LogHex(channelState);LogStr("\n");
-        }
-    }
-    BOOLEAN realHardwareFault=FALSE;
-    if(dev->Bar0Length>=0x400140) {
-        ULONG graphIntr=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+0x400100));
-        ULONG graphTrap=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+0x400108));
-        ULONG graphTrapEnable=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+0x400138));
-        ULONG graphIntrEnable=VideoPortReadRegisterUlong((PULONG)
-            ((PUCHAR)dev->Bar0MmioVirtual+0x40013c));
-        LogStr("NVX [PGRAPH]: INTR=");LogHex(graphIntr);
-        LogStr(" TRAP=");LogHex(graphTrap);
-        LogStr(" TRAP_EN=");LogHex(graphTrapEnable);
-        LogStr(" INTR_EN=");LogHex(graphIntrEnable);LogStr("\n");
-        if((graphTrap&graphTrapEnable)!=0||(graphIntr&graphIntrEnable)!=0)
-            realHardwareFault=TRUE;
-    }
-    if(dev->GspMmuFaultQueued) realHardwareFault=TRUE;
-    if(realHardwareFault) {
-        channel->Faulted=TRUE;
-        LogStr("NVX [NVC0-BATCH]: verified hardware fault; channel marked faulted\n");
-    } else {
-        channel->Faulted=TRUE;
-        LogStr("NVX [NVC0-BATCH]: timeout; channel quarantined until teardown\n");
-    }
-    LogStr("NVX [NVC0-BATCH]: submission did not complete; fence=");
-    LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
     __sync_lock_release(&NvxGrUserSubmitBusy);
-    return FALSE;
+    return TRUE;
+
 }
 
 BOOLEAN NvxGspSubmitUserColorTargetTriangles(PVOID HwDeviceExtension,
@@ -4547,8 +4421,12 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
                  fenceSlot*sizeof(ULONG));
             if(fence[0]>=(ULONG)fenceValue) {
                 __sync_synchronize();
-                if(ownerChannel->CompletedFence<fenceValue)
+                if(ownerChannel->CompletedFence<fenceValue) {
                     ownerChannel->CompletedFence=fenceValue;
+                    ownerChannel->CompletedBatches++;
+                }
+                if(dev->Nvx3dCompletedFence<fenceValue)
+                    dev->Nvx3dCompletedFence=fenceValue;
                 return TRUE;
             }
             if(ownerChannel->Faulted) return FALSE;
@@ -4565,6 +4443,16 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
            Never stall the calling thread after its final readiness check. */
         if(elapsed>=timeoutMs) break;
         VideoPortStallExecution(1000);elapsed++;
+        if(ownerChannel) ownerChannel->PerfFenceWaitPolls++;
+    }
+    if(timeoutMs>=5000U&&ownerChannel&&!ownerChannel->Faulted) {
+        ownerChannel->Faulted=TRUE;
+        LogStr("NVX [NVC0-FENCE]: completion timeout fence=");
+        LogHex(fenceValue);LogStr(" channel=");LogHex(ownerChannel->Channel);
+        LogStr(" observed=");
+        LogHex(((volatile ULONG *)((PUCHAR)ownerChannel->Virtual+0x5000+
+            fenceSlot*sizeof(ULONG)))[0]);LogStr("\n");
+        NvxGspLogPbdmaFault(dev);
     }
     return FALSE;
 }

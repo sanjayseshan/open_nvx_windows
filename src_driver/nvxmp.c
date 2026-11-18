@@ -1472,6 +1472,93 @@ static PNVX_3D_USER_BUFFER_ENTRY Nvx3dFindBuffer(PNVX_DEVICE_EXTENSION engine,
     return Nvx3dFindBufferCounted(engine,id,NULL);
 }
 
+static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
+                               ULONG64 clientToken);
+
+/* Nouveau retires pushbuffers from fences. Keep the miniport BO allocation
+ * alive until its last queued use signals, then drop one reference per batch. */
+static VOID Nvx3dReapPendingBatches(PNVX_DEVICE_EXTENSION engine)
+{
+    ULONG slot;
+    if(!engine) return;
+    for(slot=0;slot<NVX_3D_MAX_INFLIGHT_BATCHES;slot++) {
+        ULONG64 fenceValue,clientToken,freeIds[NVX_3D_MAX_BATCH_BUFFERS];
+        ULONG bufferCount=0,i,freeCount=0;
+        NVX_3D_PENDING_BATCH *batch;
+        if(!Nvx3dLockBuffers()) return;
+        batch=&engine->Nvx3dPendingBatches[slot];
+        if(batch->State!=2U) {
+            Nvx3dUnlockBuffers();continue;
+        }
+        batch->State=3U;fenceValue=batch->FenceValue;
+        clientToken=batch->ClientToken;bufferCount=batch->BufferCount;
+        Nvx3dUnlockBuffers();
+        if(!NvxGspWaitUserFence(engine,fenceValue,0U)) {
+            if(Nvx3dLockBuffers()) {
+                batch=&engine->Nvx3dPendingBatches[slot];
+                if(batch->State==3U&&batch->FenceValue==fenceValue)
+                    batch->State=2U;
+                Nvx3dUnlockBuffers();
+            }
+            continue;
+        }
+        if(!Nvx3dLockBuffers()) return;
+        batch=&engine->Nvx3dPendingBatches[slot];
+        if(batch->State==3U&&batch->FenceValue==fenceValue) {
+            for(i=0;i<bufferCount;i++) {
+                ULONG bufferSlot=batch->BufferSlots[i];
+                PNVX_3D_USER_BUFFER_ENTRY entry=
+                    bufferSlot<NVX_3D_USER_BUFFER_SLOTS?
+                    &engine->Nvx3dBuffers[bufferSlot]:NULL;
+                if(entry&&entry->Id==batch->BufferIds[i]&&
+                   entry->ClientToken==clientToken&&
+                   entry->InFlightRefs) {
+                    entry->InFlightRefs--;
+                    if(entry->PendingFree&&!entry->Busy&&
+                       !entry->InFlightRefs&&freeCount<NVX_3D_MAX_BATCH_BUFFERS)
+                        freeIds[freeCount++]=entry->Id;
+                }
+            }
+            VideoPortZeroMemory(batch,sizeof(*batch));
+        }
+        Nvx3dUnlockBuffers();
+        for(i=0;i<freeCount;i++)
+            (void)Nvx3dFreeBuffer(engine,freeIds[i],clientToken);
+    }
+}
+
+static BOOLEAN Nvx3dReservePendingBatch(PNVX_DEVICE_EXTENSION engine,
+                                        ULONG *reservedSlot)
+{
+    ULONG tries;
+    if(!engine||!reservedSlot) return FALSE;
+    for(tries=0;tries<5000U;tries++) {
+        ULONG i,freeSlot=NVX_3D_MAX_INFLIGHT_BATCHES;
+        ULONG64 oldestFence=~0ULL;
+        Nvx3dReapPendingBatches(engine);
+        if(!Nvx3dLockBuffers()) return FALSE;
+        for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++) {
+            NVX_3D_PENDING_BATCH *batch=&engine->Nvx3dPendingBatches[i];
+            if(!batch->State) {freeSlot=i;break;}
+            if(batch->State==2U&&batch->FenceValue<oldestFence)
+                oldestFence=batch->FenceValue;
+        }
+        if(freeSlot<NVX_3D_MAX_INFLIGHT_BATCHES) {
+            engine->Nvx3dPendingBatches[freeSlot].State=1U;
+            *reservedSlot=freeSlot;Nvx3dUnlockBuffers();return TRUE;
+        }
+        Nvx3dUnlockBuffers();
+        if(oldestFence!=~0ULL) {
+            if(!NvxGspWaitUserFence(engine,oldestFence,5000U)) return FALSE;
+            continue;
+        }
+        /* Another submitter has reserved its slot and is between validation
+         * and the GPU kick. Give it a short window to publish the fence. */
+        VideoPortStallExecution(1000U);
+    }
+    return FALSE;
+}
+
 /* The validator needs ownership metadata only for buffers named by this
  * batch. Gathering the first NVX_3D_MAX_BATCH_BUFFERS live allocations is
  * incorrect once the client's much larger BO table has more than 64 entries:
@@ -1496,7 +1583,8 @@ static BOOLEAN Nvx3dCollectBatchAllocations(
         VideoPortMoveMemory(&reference,(PVOID)(references+
             (ULONG64)i*sizeof(reference)),sizeof(reference));
         entry=Nvx3dFindBufferCounted(engine,reference.BufferId,slotScans);
-        if(!entry||entry->Busy||entry->ClientToken!=clientToken)
+        if(!entry||entry->Busy||entry->PendingFree||
+           entry->ClientToken!=clientToken)
             return FALSE;
         allocation=&allocations[(*allocationCount)++];
         VideoPortZeroMemory(allocation,sizeof(*allocation));
@@ -2263,12 +2351,34 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
        !Nvx3dClientSessionActiveLocked(engine,clientToken)) {
         Nvx3dUnlockBuffers();return FALSE;
     }
+    if(entry->InFlightRefs) {
+        ULONG64 lastFence=entry->LastFence;
+        if(entry->Busy) {Nvx3dUnlockBuffers();return FALSE;}
+        entry->PendingFree=TRUE;entry->Busy=TRUE;
+        Nvx3dUnlockBuffers();
+        if(!lastFence||!NvxGspWaitUserFence(engine,lastFence,5000U)) {
+            if(Nvx3dLockBuffers()) {
+                entry=Nvx3dFindBuffer(engine,id);
+                if(entry&&entry->ClientToken==clientToken) entry->Busy=FALSE;
+                Nvx3dUnlockBuffers();
+            }
+            return FALSE;
+        }
+        Nvx3dReapPendingBatches(engine);
+        if(Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,id);
+            if(entry&&entry->ClientToken==clientToken) entry->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+        }
+        return Nvx3dFreeBuffer(engine,id,clientToken);
+    }
     if(entry->Usage&NVX_3D_USAGE_DEPTH_TARGET) {
         if(!entry->Busy) {
             /* A pooled depth surface is no longer owned by the session that
                released it; the next allocation assigns a fresh session. */
             entry->ClientToken=0;
             entry->AllocationToken=0;
+            entry->PendingFree=FALSE;
             Nvx3dUnlockBuffers();return TRUE;
         }
         saved=*entry;Nvx3dUnlockBuffers();
@@ -2419,6 +2529,36 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
     return TRUE;
 }
 
+static BOOLEAN Nvx3dDrainPendingBatches(PNVX_DEVICE_EXTENSION engine,
+                                        ULONG64 clientToken)
+{
+    ULONG tries;
+    if(!engine||!clientToken) return FALSE;
+    for(tries=0;tries<NVX_3D_MAX_INFLIGHT_BATCHES+2U;tries++) {
+        ULONG i;
+        ULONG64 oldest=~0ULL;
+        BOOLEAN retiring=FALSE;
+        if(!Nvx3dLockBuffers()) return FALSE;
+        for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++) {
+            NVX_3D_PENDING_BATCH *batch=&engine->Nvx3dPendingBatches[i];
+            if(batch->State==2U&&batch->ClientToken==clientToken&&
+               batch->FenceValue<oldest)
+                oldest=batch->FenceValue;
+            else if(batch->State==3U&&batch->ClientToken==clientToken)
+                retiring=TRUE;
+        }
+        Nvx3dUnlockBuffers();
+        if(oldest==~0ULL) {
+            if(!retiring) return TRUE;
+            VideoPortStallExecution(1000U);
+            continue;
+        }
+        if(!NvxGspWaitUserFence(engine,oldest,5000U)) return FALSE;
+        Nvx3dReapPendingBatches(engine);
+    }
+    return FALSE;
+}
+
 /* Channel backing is allocated through the existing checked GART allocator.
  * Busy keeps it private until RM has acknowledged stop/evict/free. */
 static BOOLEAN Nvx3dCloseGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,ULONG64 token)
@@ -2430,10 +2570,15 @@ static BOOLEAN Nvx3dCloseGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,ULONG
     if(c&&c->Submitting) {Nvx3dUnlockBuffers();return FALSE;}
     if(c) c->Ready=FALSE;
     Nvx3dUnlockBuffers();
+    if(!Nvx3dDrainPendingBatches(engine,token)) {
+        LogStr("NVX [3D-SESSION]: pending batches did not drain token=");
+        LogHex(token);LogStr("\n");
+        return FALSE;
+    }
     NvxGspLogClientSubmissionStats(engine,token);
     if(!NvxGspCloseClientChannel(engine,token)) return FALSE;
-    /* STOP/EVICT/FREE acknowledged; synchronous submission has completed all
-       BO references before it returns. */
+    /* STOP/EVICT/FREE acknowledged after this session's queued fences and BO
+       references have retired. */
     for(ULONG i=0;i<NVX_3D_FENCE_TRACK_SLOTS;i++) {
         if(engine->Nvx3dFenceOwner[i]==token) {
             engine->Nvx3dFenceOwner[i]=0;
@@ -3813,10 +3958,11 @@ validate_batch_done:
         uint32_t addressFailMethod=0xffffffffU;
         uint64_t addressFailVa=0;
         ULONG ownedCount=0,pinnedCount=0,i,ownedOffset,ownedBytes;
+        ULONG pendingSlot=0;
         ULONG64 scratchBytes;
         ULONG64 lookupSlotScans=0;
         ULONG64 fenceValue;
-        BOOLEAN submitted=FALSE,clientReserved=FALSE;
+        BOOLEAN submitted=FALSE,clientReserved=FALSE,batchSlotReserved=FALSE;
         NVX_GR_CLIENT_CHANNEL *channel=NULL;
         status=ERROR_DEVICE_NOT_READY;
         if(!RequestPacket->InputBuffer||
@@ -3855,6 +4001,10 @@ validate_batch_done:
                                                    ownedOffset);
         VideoPortMoveMemory(copiedInput,RequestPacket->InputBuffer,
                             requiredBytes);
+        if(!engine||!Nvx3dReservePendingBatch(engine,&pendingSlot)) {
+            status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
+        }
+        batchSlotReserved=TRUE;
         if(!engine||!Nvx3dLockBuffers()) {
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
         }
@@ -3979,10 +4129,30 @@ validate_batch_done:
             if(!Nvx3dLockBuffers()) {
                 status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
             }
-            for(i=0;i<pinnedCount;i++)
-                pinned[i]->Busy=FALSE;
+            {
+                NVX_3D_PENDING_BATCH *batch=
+                    &engine->Nvx3dPendingBatches[pendingSlot];
+                if(batch->State!=1U||pinnedCount>NVX_3D_MAX_BATCH_BUFFERS) {
+                    Nvx3dUnlockBuffers();
+                    status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
+                }
+                batch->ClientToken=header.ClientToken;
+                batch->FenceValue=fenceValue;
+                batch->BufferCount=pinnedCount;
+                for(i=0;i<pinnedCount;i++) {
+                    pinned[i]->Busy=FALSE;
+                    pinned[i]->InFlightRefs++;
+                    pinned[i]->LastFence=fenceValue;
+                    batch->BufferSlots[i]=(ULONG)(pinned[i]-
+                                                  engine->Nvx3dBuffers);
+                    batch->BufferIds[i]=pinned[i]->Id;
+                }
+                __sync_synchronize();
+                batch->State=2U;
+            }
             Nvx3dUnlockBuffers();
             pinnedCount=0;
+            batchSlotReserved=FALSE;
             result.Size=sizeof(result);result.Version=NVX_3D_ABI_VERSION;
             result.FenceValue=fenceValue;
             VideoPortMoveMemory(RequestPacket->OutputBuffer,&result,sizeof(result));
@@ -3994,6 +4164,12 @@ release_batch_buffers:
             Nvx3dUnlockBuffers();
         }
 submit_batch_done:
+        if(batchSlotReserved&&engine&&Nvx3dLockBuffers()) {
+            NVX_3D_PENDING_BATCH *batch=
+                &engine->Nvx3dPendingBatches[pendingSlot];
+            if(batch->State==1U) VideoPortZeroMemory(batch,sizeof(*batch));
+            Nvx3dUnlockBuffers();
+        }
         if(clientReserved&&Nvx3dLockBuffers()) {
             channel->Submitting=FALSE;
             Nvx3dUnlockBuffers();
@@ -4385,6 +4561,7 @@ submit_batch_done:
         if(!NvxGspWaitUserFence(engine,request.FenceValue,request.TimeoutMs)) {
             status=ERROR_DEVICE_NOT_READY;break;
         }
+        Nvx3dReapPendingBatches(engine);
         request.Status=0;
         VideoPortMoveMemory(RequestPacket->OutputBuffer,&request,sizeof(request));
         statusBlock->Information=sizeof(request);status=NO_ERROR;

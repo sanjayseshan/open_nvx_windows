@@ -5,6 +5,8 @@
 
 #include "../src_driver/nvx_3d_abi.h"
 
+#define NVX_WINSYS_BATCH_PUSH_SLOTS 32U
+
 typedef int (*NVX_WINSYS_ESCAPE)(void *opaque, uint32_t escape,
                                  uint32_t input_bytes, const void *input,
                                  uint32_t output_bytes, void *output);
@@ -20,8 +22,8 @@ typedef struct NVX_WINSYS_DEVICE {
    uint32_t NouveauChannelHandle;
    uint32_t NouveauGraphicsObjectHandle;
    uint32_t NouveauComputeObjectHandle;
-   NVX_3D_ALLOC_BUFFER NouveauBatchPushBuffer[4];
-   uint64_t NouveauBatchLastFence[4];
+   NVX_3D_ALLOC_BUFFER NouveauBatchPushBuffer[NVX_WINSYS_BATCH_PUSH_SLOTS];
+   uint64_t NouveauBatchLastFence[NVX_WINSYS_BATCH_PUSH_SLOTS];
    uint32_t NouveauBatchPushIndex;
    NVX_3D_NVC0_OBJECT_BINDING NouveauObjectBindings[5];
    uint32_t NouveauObjectBindingCount;

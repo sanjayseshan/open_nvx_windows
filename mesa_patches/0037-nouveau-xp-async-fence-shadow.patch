@@ -1,0 +1,17 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+index 07fa13d0fd4aa..fad875132efc8 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+@@ -604,6 +604,12 @@ static u32
+ nvc0_screen_fence_update(struct pipe_screen *pscreen)
+ {
+    struct nvc0_screen *screen = nvc0_screen(pscreen);
++#ifdef NVX_XP_WIN32_SHIMS
++   if (screen->fence.bo)
++      (void)NvxXf86DrmRefreshBufferReadIfSignalled(
++         nouveau_drm(&screen->base.device->object)->fd,
++         screen->fence.bo->handle);
++#endif
+    return screen->fence.map[0];
+ }
+ 
