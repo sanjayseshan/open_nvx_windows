@@ -6,16 +6,24 @@ set "SRC_DIR=%~dp0"
 if "%SRC_DIR:~-1%"=="\" set "SRC_DIR=%SRC_DIR:~0,-1%"
 
 echo ==========================================================
-echo  Installing Antigravity RTX 3070 XDDM Driver (WinXP)
+echo  Installing Antigravity RTX 3070 XDDM + OpenGL + DirectX (WinXP x64)
 echo  Source Folder: %SRC_DIR%
 echo ==========================================================
 echo.
 
-:: Verify all required files from dist_full are in the same folder
-for %%F in (gsp_ga104.bin nvx.inf nvxdisp.dll nvxmesa.dll nvxmp.sys nvxogl32.dll nvxogl64.dll) do (
+:: Require the complete x64 and WOW64 graphics runtime before changing the guest.
+for %%F in (gsp_ga104.bin nvx.inf nvxdisp.dll nvxmesa.dll nvxmp.sys nvxogl32.dll nvxogl64.dll d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do (
     if not exist "%SRC_DIR%\%%F" (
-        echo [ERROR] Missing required file: "%SRC_DIR%\%%F"
-        echo Make sure install.bat is inside the dist_full folder.
+        echo [ERROR] Missing required x64 package file: %%F
+        echo Build and stage the driver, Mesa ICD, and WineD3D outputs first.
+        pause
+        exit /b 1
+    )
+)
+for %%F in (d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do (
+    if not exist "%SRC_DIR%\x86\%%F" (
+        echo [ERROR] Missing required x86 WineD3D file: x86\%%F
+        echo Build and stage both WineD3D architectures first.
         pause
         exit /b 1
     )
@@ -30,52 +38,53 @@ if exist "%SystemRoot%\Sysnative\cmd.exe" (
     set "REG_VIEW=/reg:64"
 )
 set "DRV_DIR=%SYS32%\drivers"
+if not exist "%SYSWOW64%" (
+    echo [ERROR] This installer targets Windows XP x64; SysWOW64 was not found.
+    pause
+    exit /b 1
+)
 
-:: 1. Backup existing driver files
+:: 1. Back up every replaced binary, keeping x86 and x64 files separate.
 set "BACKUP_DIR=%SystemDrive%\nvx_backup"
-if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
-for %%F in ("%DRV_DIR%\nvxmp.sys" "%DRV_DIR%\gsp_ga104.bin" "%SYS32%\nvxdisp.dll" "%SYS32%\nvxmesa.dll" "%SYS32%\nvxogl64.dll" "%SYSWOW64%\nvxogl32.dll") do (
-    if exist %%F copy /y %%F "%BACKUP_DIR%\" >nul
-)
-echo [1/5] Existing files backed up to %BACKUP_DIR%
+if not exist "%BACKUP_DIR%\drivers" mkdir "%BACKUP_DIR%\drivers"
+if not exist "%BACKUP_DIR%\System32" mkdir "%BACKUP_DIR%\System32"
+if not exist "%BACKUP_DIR%\SysWOW64" mkdir "%BACKUP_DIR%\SysWOW64"
+for %%F in (nvxmp.sys gsp_ga104.bin) do if exist "%DRV_DIR%\%%F" copy /y "%DRV_DIR%\%%F" "%BACKUP_DIR%\drivers\%%F" >nul
+for %%F in (nvxdisp.dll nvxmesa.dll nvxogl64.dll d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll ucrtbase.dll nvxgdi.dl) do if exist "%SYS32%\%%F" copy /y "%SYS32%\%%F" "%BACKUP_DIR%\System32\%%F" >nul
+for %%F in (nvxogl32.dll d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll ucrtbase.dll nvxgdi.dl) do if exist "%SYSWOW64%\%%F" copy /y "%SYSWOW64%\%%F" "%BACKUP_DIR%\SysWOW64\%%F" >nul
+echo [1/5] Existing driver and graphics files backed up to %BACKUP_DIR%
 
-:: 2. Copy kernel miniport, GSP firmware, display DLL, Mesa, and OpenGL ICD
-echo [2/5] Copying driver, OpenGL, and WineD3D binaries...
-copy /y "%SRC_DIR%\nvxmp.sys"     "%DRV_DIR%\nvxmp.sys"     >nul || goto :copy_fail
-copy /y "%SRC_DIR%\gsp_ga104.bin" "%DRV_DIR%\gsp_ga104.bin" >nul || goto :copy_fail
-copy /y "%SRC_DIR%\nvxdisp.dll"   "%SYS32%\nvxdisp.dll"     >nul || goto :copy_fail
-copy /y "%SRC_DIR%\nvxmesa.dll"   "%SYS32%\nvxmesa.dll"     >nul || goto :copy_fail
-copy /y "%SRC_DIR%\nvxogl64.dll"  "%SYS32%\nvxogl64.dll"    >nul || goto :copy_fail
-if exist "%SystemRoot%\SysWOW64" (
-    copy /y "%SRC_DIR%\nvxogl32.dll" "%SYSWOW64%\nvxogl32.dll" >nul || goto :copy_fail
+:: 2. Install miniport, display DDI, firmware, OpenGL ICDs, and both WineD3D runtimes.
+echo [2/5] Installing x64 and x86 driver, OpenGL, and DirectX components...
+for %%F in (nvxmp.sys gsp_ga104.bin) do copy /y "%SRC_DIR%\%%F" "%DRV_DIR%\%%F" >nul || goto :copy_fail
+for %%F in (nvxdisp.dll nvxmesa.dll nvxogl64.dll d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do copy /y "%SRC_DIR%\%%F" "%SYS32%\%%F" >nul || goto :copy_fail
+for %%F in (nvxogl32.dll d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do (
+    if "%%F"=="nvxogl32.dll" (
+        copy /y "%SRC_DIR%\%%F" "%SYSWOW64%\%%F" >nul || goto :copy_fail
+    ) else (
+        copy /y "%SRC_DIR%\x86\%%F" "%SYSWOW64%\%%F" >nul || goto :copy_fail
+    )
 )
-copy /y "%SRC_DIR%\nvx.inf"       "%SystemRoot%\inf\nvx.inf" >nul || goto :copy_fail
-if exist "%SRC_DIR%\nvxgdi.dl"    copy /y "%SRC_DIR%\nvxgdi.dl"    "%SYS32%\nvxgdi.dl"    >nul
-if exist "%SRC_DIR%\ucrtbase.dll" copy /y "%SRC_DIR%\ucrtbase.dll" "%SYS32%\ucrtbase.dll" >nul
-if exist "%SRC_DIR%\libwine.dll"  copy /y "%SRC_DIR%\libwine.dll"  "%SYS32%\libwine.dll"  >nul
-if exist "%SRC_DIR%\d3d9.dll"     copy /y "%SRC_DIR%\d3d9.dll"     "%SYS32%\d3d9.dll"     >nul
-if exist "%SRC_DIR%\d3d8.dll"     copy /y "%SRC_DIR%\d3d8.dll"     "%SYS32%\d3d8.dll"     >nul
-if exist "%SRC_DIR%\ddraw.dll"    copy /y "%SRC_DIR%\ddraw.dll"    "%SYS32%\ddraw.dll"    >nul
-if exist "%SRC_DIR%\wined3d.dll"  copy /y "%SRC_DIR%\wined3d.dll"  "%SYS32%\wined3d.dll"  >nul
+copy /y "%SRC_DIR%\nvx.inf" "%SystemRoot%\inf\nvx.inf" >nul || goto :copy_fail
+if exist "%SRC_DIR%\nvxgdi.dl" copy /y "%SRC_DIR%\nvxgdi.dl" "%SYS32%\nvxgdi.dl" >nul || goto :copy_fail
+if exist "%SRC_DIR%\x86\nvxgdi.dl" copy /y "%SRC_DIR%\x86\nvxgdi.dl" "%SYSWOW64%\nvxgdi.dl" >nul || goto :copy_fail
+if exist "%SRC_DIR%\ucrtbase.dll" copy /y "%SRC_DIR%\ucrtbase.dll" "%SYS32%\ucrtbase.dll" >nul || goto :copy_fail
+if exist "%SRC_DIR%\x86\ucrtbase.dll" copy /y "%SRC_DIR%\x86\ucrtbase.dll" "%SYSWOW64%\ucrtbase.dll" >nul || goto :copy_fail
 
-:: Stage a clean copy in C:\nvx_driver for Device Manager / PnP Wizard
+:: Stage the complete package and tests for Device Manager and local diagnostics.
 if not exist "%SystemDrive%\nvx_driver" mkdir "%SystemDrive%\nvx_driver"
-copy /y "%SRC_DIR%\*.*" "%SystemDrive%\nvx_driver\" >nul
-
-:: Stage test suite in C:\test_accel if present
-if not exist "%SystemDrive%\test_accel" mkdir "%SystemDrive%\test_accel"
-if exist "%SRC_DIR%\test_gpu_accel.exe" copy /y "%SRC_DIR%\test_gpu_accel.exe" "%SystemDrive%\test_accel\test_gpu_accel.exe" >nul
-if exist "%SRC_DIR%\wglgears.exe"       copy /y "%SRC_DIR%\wglgears.exe"       "%SystemDrive%\test_accel\wglgears.exe"       >nul
-if exist "%SRC_DIR%\nvxgdi.dl"          copy /y "%SRC_DIR%\nvxgdi.dl"          "%SystemDrive%\test_accel\nvxgdi.dl"          >nul
-if exist "%SRC_DIR%\ucrtbase.dll"       copy /y "%SRC_DIR%\ucrtbase.dll"       "%SystemDrive%\test_accel\ucrtbase.dll"       >nul
-if exist "%SRC_DIR%\libwine.dll"        copy /y "%SRC_DIR%\libwine.dll"        "%SystemDrive%\test_accel\libwine.dll"        >nul
-if exist "%SRC_DIR%\d3d9.dll"           copy /y "%SRC_DIR%\d3d9.dll"           "%SystemDrive%\test_accel\d3d9.dll"           >nul
-if exist "%SRC_DIR%\d3d8.dll"           copy /y "%SRC_DIR%\d3d8.dll"           "%SystemDrive%\test_accel\d3d8.dll"           >nul
-if exist "%SRC_DIR%\ddraw.dll"          copy /y "%SRC_DIR%\ddraw.dll"          "%SystemDrive%\test_accel\ddraw.dll"          >nul
-if exist "%SRC_DIR%\wined3d.dll"        copy /y "%SRC_DIR%\wined3d.dll"        "%SystemDrive%\test_accel\wined3d.dll"        >nul
+xcopy /e /i /y "%SRC_DIR%\*" "%SystemDrive%\nvx_driver\" >nul || goto :copy_fail
+if not exist "%SystemDrive%\test_accel\x86" mkdir "%SystemDrive%\test_accel\x86"
+copy /y "%SRC_DIR%\nvxmesa.dll" "%SystemDrive%\test_accel\nvxmesa.dll" >nul || goto :copy_fail
+if exist "%SRC_DIR%\nvxgdi.dl" copy /y "%SRC_DIR%\nvxgdi.dl" "%SystemDrive%\test_accel\nvxgdi.dl" >nul || goto :copy_fail
+for %%F in (test_gpu_accel.exe wglgears.exe ucrtbase.dll) do if exist "%SRC_DIR%\%%F" copy /y "%SRC_DIR%\%%F" "%SystemDrive%\test_accel\%%F" >nul
+for %%F in (d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do copy /y "%SRC_DIR%\%%F" "%SystemDrive%\test_accel\%%F" >nul || goto :copy_fail
+if exist "%SRC_DIR%\x86\nvxgdi.dl" copy /y "%SRC_DIR%\x86\nvxgdi.dl" "%SystemDrive%\test_accel\x86\nvxgdi.dl" >nul || goto :copy_fail
+for %%F in (test_gpu_accel32.exe wglgears32.exe ucrtbase.dll) do if exist "%SRC_DIR%\x86\%%F" copy /y "%SRC_DIR%\x86\%%F" "%SystemDrive%\test_accel\x86\%%F" >nul
+for %%F in (d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll) do copy /y "%SRC_DIR%\x86\%%F" "%SystemDrive%\test_accel\x86\%%F" >nul || goto :copy_fail
 
 :: 3. Register nvxmp kernel service & display settings in Registry
-echo [3/5] Registering nvxmp service and OpenGL ICD in Registry...
+echo [3/5] Registering nvxmp service and x64/WOW64 OpenGL ICDs...
 set "SVC_KEY=HKLM\SYSTEM\CurrentControlSet\Services\nvxmp"
 
 reg add "%SVC_KEY%" /v Type /t REG_DWORD /d 1 /f %REG_VIEW% >nul
@@ -128,7 +137,8 @@ echo     still listed under "Video Controller (VGA Compatible)" or
 echo     "Standard VGA Graphics Adapter", right-click it -^>
 echo     "Update Driver..." and point it to: C:\nvx_driver
 echo  2. Reboot Windows XP.
-echo  3. After reboot, run C:\test_accel\test_gpu_accel.exe and
+echo  3. Direct3D 9/8/DirectDraw use the installed WineD3D runtimes.
+echo  4. After reboot, run C:\test_accel\test_gpu_accel.exe and
 echo     check C:\WINDOWS\nvxmp.log and C:\WINDOWS\nvxdisp.log.
 echo ==========================================================
 pause

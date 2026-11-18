@@ -171,7 +171,7 @@ The project uses its pinned Wine source submodule to build XP-compatible WineD3D
 ./test/build_wined3d_xp.sh
 ```
 
-The script checks the pinned Wine revision and builds both architectures into `test/wined3d_xp/x64/` and `test/wined3d_xp/x86/`. For the x64 installer bundle, stage the native DLLs at the package root and preserve the x86 set in a subdirectory:
+The script checks the pinned Wine revision and builds the XP-supported Direct3D 9, Direct3D 8, and DirectDraw DLLs for both architectures into `test/wined3d_xp/x64/` and `test/wined3d_xp/x86/`. Stage every runtime DLL for the full installer:
 
 ```sh
 for dll in d3d9 d3d8 ddraw wined3d libwine; do
@@ -180,7 +180,7 @@ for dll in d3d9 d3d8 ddraw wined3d libwine; do
 done
 ```
 
-The offline image updater also reads the x86 outputs directly from `test/wined3d_xp/x86/` and installs them into `SysWOW64` when present. For a manual installation, place those x86 DLLs in the guest's `Windows\SysWOW64` directory; the x64 DLLs belong in `Windows\System32`. Do not mix architectures. `test_full_driver.sh` builds WineD3D by default before its integration run; set `NVX_BUILD_WINED3D=0` only when deliberately reusing an already-built WineD3D package.
+For a full package, keep the x86 DLLs under `dist_full/x86/`; the offline updater and batch installer both use that directory for `SysWOW64`. The x64 DLLs belong at the package root and go to `Windows\System32`. Do not mix architectures. `test_full_driver.sh` builds WineD3D by default before its integration run; set `NVX_BUILD_WINED3D=0` only when deliberately reusing an already-built WineD3D package.
 
 ### Build Windows XP x86 driver binaries
 
@@ -211,7 +211,7 @@ The output files are placed in `dist_win98/`.
 
 ### Windows XP x64
 
-`dist_full/` is the full integration bundle. For OpenGL and DirectX support it must contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvxogl64.dll`, `nvxogl32.dll`, the x64 WineD3D DLLs at its root, the x86 WineD3D DLLs under `x86/`, and `nvx.inf`. Test programs may also be included. These files are architecture-specific: native x64 DLLs go in `System32`; x86 DLLs for WOW64 applications go in `SysWOW64`.
+`dist_full/` is the full integration bundle. For OpenGL and DirectX support it must contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvxmesa.dll`, `nvxogl64.dll`, `nvxogl32.dll`, the five x64 WineD3D DLLs (`d3d9.dll`, `d3d8.dll`, `ddraw.dll`, `wined3d.dll`, `libwine.dll`) at its root, the matching five x86 DLLs under `x86/`, and `nvx.inf`. Test programs can also be included. Native x64 DLLs go in `System32`; x86 DLLs for WOW64 applications go in `SysWOW64`.
 
 For the repository's prepared XP x64 guest image, shut the VM down and run the rootless offline updater:
 
@@ -219,13 +219,13 @@ For the repository's prepared XP x64 guest image, shut the VM down and run the r
 ./test/update_disk_driver_user.sh full
 ```
 
-This updates `winxp_x64.qcow2`, installs Mesa ICDs present in `dist_full/`, updates their OpenGL registry entries, and stages test binaries. It requires working libguestfs/guestmount support. For a mounted physical XP partition, the mounted-volume updater rebuilds and copies the x64 miniport and display DLL:
+This updates `winxp_x64.qcow2`, installs the miniport, display DDI, firmware and INF, both Mesa ICDs, the Mesa test frontend, and the x64/x86 WineD3D DLL sets into their system directories, updates OpenGL registry entries, and stages available test binaries. Build both Mesa ICDs and both WineD3D architectures first; the updater rejects an incomplete `full` bundle. It requires working libguestfs/guestmount support. For a mounted physical XP partition, the mounted-volume updater only rebuilds and copies the x64 miniport and display DLL; it does not install the OpenGL or DirectX runtimes:
 
 ```sh
 XP_MOUNT=/mnt/xp ./test/update_xp_driver.sh
 ```
 
-For manual installation in XP, copy the complete x64 integration package to a directory and run `install.bat` as Administrator. The batch file requires `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvx.inf`, `nvxmesa.dll`, `nvxogl64.dll`, and `nvxogl32.dll`; build both Mesa architectures before using it. Stage the x64 WineD3D DLLs at the package root before running it, since those provide the DirectX-to-OpenGL path. It copies the miniport, firmware, display DLL, Mesa ICDs, and staged x64 D3D/WineD3D DLLs, then registers the OpenGL ICD. Review the output and reboot. For 32-bit DirectX applications, copy the built x86 WineD3D DLLs from `x86/` into `Windows\SysWOW64`. If installing only the display driver, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; install the OpenGL ICD separately by copying the matching DLL and adding the `OpenGLDrivers\nvxdisp` registry entry. Back up the guest before replacing system D3D DLLs.
+For a complete manual installation in XP x64, place the full package in one directory, including all five DLLs in `x86/`, and run `install.bat` as Administrator. It checks that the miniport, display DDI, firmware, Mesa frontends, both OpenGL ICDs, and both WineD3D architectures are present before copying. It backs up replaced system DLLs, installs the x64 runtime set into `System32` and the x86 set into `SysWOW64`, stages the package and included tests under `C:\nvx_driver` and `C:\test_accel`, registers both OpenGL ICDs, and runs the INF/PnP setup. Reboot after it completes. For a driver-only installation, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; that path alone does not install OpenGL or DirectX support. Back up the guest before installing because WineD3D replaces the system D3D runtime DLLs.
 
 After reboot, verify the renderer using the included test tools and logs. `GDI Generic` means the application fell back to software OpenGL. Successful installation does not prove that all OpenGL or Direct3D workloads are supported; 3D performance/correctness remains under active validation.
 

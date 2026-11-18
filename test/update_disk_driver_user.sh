@@ -4,10 +4,14 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_QCOW="$NVX_ROOT/winxp_x64.qcow2"
 NVX_PACKAGE="$NVX_ROOT/dist"
+NVX_FULL_PACKAGE=0
+NVX_WINE_X86_DIR="$NVX_ROOT/test/wined3d_xp/x86"
 NVX_OPENGL_ICD_DLL="${NVX_OPENGL_ICD_DLL:-nvxogl64.dll}"
 NVX_MESA_APPLOCAL="${NVX_MESA_APPLOCAL:-0}"
 if [ "${1:-}" = full ]; then
     NVX_PACKAGE="$NVX_ROOT/dist_full"
+    NVX_FULL_PACKAGE=1
+    NVX_WINE_X86_DIR="$NVX_PACKAGE/x86"
 elif [ "$#" -ne 0 ]; then
     echo "Usage: $0 [full]" >&2
     exit 1
@@ -42,6 +46,22 @@ fi
 for file in "$NVX_PACKAGE/nvxmp.sys" "$NVX_PACKAGE/nvxdisp.dll"; do
     [ -f "$file" ] || { echo "Missing package file: $file" >&2; exit 1; }
 done
+if [ "$NVX_FULL_PACKAGE" = "1" ]; then
+    for file in \
+        nvx.inf gsp_ga104.bin nvxmesa.dll nvxogl64.dll nvxogl32.dll \
+        d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+        [ -f "$NVX_PACKAGE/$file" ] || {
+            echo "Full install bundle is incomplete: missing $NVX_PACKAGE/$file" >&2
+            exit 1
+        }
+    done
+    for file in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+        [ -f "$NVX_WINE_X86_DIR/$file" ] || {
+            echo "Full install bundle is incomplete: missing $NVX_WINE_X86_DIR/$file" >&2
+            exit 1
+        }
+    done
+fi
 
 NVX_MOUNT="$(mktemp -d /tmp/nvx-xp-mount.XXXXXX)"
 NVX_GUESTMOUNT_PID="${NVX_MOUNT}.pid"
@@ -81,6 +101,10 @@ if [ -z "$NVX_SYSTEM32" ] || [ -z "$NVX_DRIVERS" ]; then
     echo "Could not locate the Windows system directories." >&2
     exit 1
 fi
+if [ "$NVX_FULL_PACKAGE" = "1" ] && [ ! -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+    echo "XP x64 SysWOW64 directory is missing; refusing an incomplete full install." >&2
+    exit 1
+fi
 echo "==> Auditing every package import against this XP installation"
 NVX_AUDIT_ARGS=(--package "$NVX_PACKAGE" "$NVX_SYSTEM32" "$NVX_DRIVERS")
 if [ -f "$NVX_ROOT/test/test_gpu_accel32.exe" ] || \
@@ -96,14 +120,20 @@ fi
 # Resolve x86 WineD3D imports against the DLLs being installed, not stale
 # copies in SysWOW64. Mixing packaged Wine versions otherwise passes unnoticed.
 for nvx_dll in d3d9 d3d8 ddraw wined3d libwine; do
-    if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$nvx_dll.dll" ]; then
-        NVX_AUDIT_ARGS+=(--package "$NVX_ROOT/test/wined3d_xp/x86/$nvx_dll.dll")
+    if [ -f "$NVX_WINE_X86_DIR/$nvx_dll.dll" ]; then
+        NVX_AUDIT_ARGS+=(--package "$NVX_WINE_X86_DIR/$nvx_dll.dll")
     fi
 done
 python3 "$NVX_ROOT/test/audit_xp_imports.py" "${NVX_AUDIT_ARGS[@]}"
 
 cp -v "$NVX_PACKAGE/nvxmp.sys" "$NVX_DRIVERS/nvxmp.sys"
 cp -v "$NVX_PACKAGE/nvxdisp.dll" "$NVX_SYSTEM32/nvxdisp.dll"
+if [ -f "$NVX_PACKAGE/gsp_ga104.bin" ]; then
+    cp -v "$NVX_PACKAGE/gsp_ga104.bin" "$NVX_DRIVERS/gsp_ga104.bin"
+fi
+if [ -f "$NVX_PACKAGE/nvx.inf" ]; then
+    cp -v "$NVX_PACKAGE/nvx.inf" "$NVX_MOUNT/WINDOWS/inf/nvx.inf"
+fi
 if [ -f "$NVX_PACKAGE/nvxogl64.dll" ]; then
     cp -v "$NVX_PACKAGE/nvxogl64.dll" "$NVX_SYSTEM32/nvxogl64.dll"
     mkdir -p "$NVX_MOUNT/test_accel"
@@ -148,6 +178,7 @@ REGFILE
 fi
 if [ -f "$NVX_PACKAGE/nvxmesa.dll" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/nvxmesa.dll" "$NVX_SYSTEM32/nvxmesa.dll"
     cp -v "$NVX_PACKAGE/nvxmesa.dll" "$NVX_MOUNT/test_accel/nvxmesa.dll"
     if [ "$NVX_MESA_APPLOCAL" = "1" ]; then
         cp -v "$NVX_PACKAGE/nvxmesa.dll" "$NVX_MOUNT/test_accel/opengl32.dll"
@@ -247,14 +278,16 @@ elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
 fi
 
 # Deploy 32-bit WineD3D for SysWOW64 if available
-if [ -d "$NVX_ROOT/test/wined3d_xp/x86" ]; then
+if [ -d "$NVX_WINE_X86_DIR" ]; then
+    [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ] || {
+        echo "XP x64 SysWOW64 directory is missing; cannot install 32-bit DirectX support." >&2
+        exit 1
+    }
     mkdir -p "$NVX_MOUNT/test_accel/x86"
     for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
-        if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
-            cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_MOUNT/test_accel/x86/"
-            if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
-                cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_MOUNT/WINDOWS/SysWOW64/"
-            fi
+        if [ -f "$NVX_WINE_X86_DIR/$dll" ]; then
+            cp -v "$NVX_WINE_X86_DIR/$dll" "$NVX_MOUNT/test_accel/x86/"
+            cp -v "$NVX_WINE_X86_DIR/$dll" "$NVX_MOUNT/WINDOWS/SysWOW64/"
         fi
     done
 fi
