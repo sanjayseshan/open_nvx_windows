@@ -58,7 +58,7 @@ void NvxWglRecordNouveauDrawState(const uint32_t *methods,
 
 #define NVX_DRM_DEVICE_SLOTS 8U
 #define NVX_DRM_BUFFER_SLOTS 2048U
-#define NVX_DRM_ADDRESS_CACHE_SLOTS 32U
+#define NVX_DRM_ADDRESS_CACHE_SLOTS 128U
 #define NVX_DRM_OBJECT_SLOTS 8U
 #define NVX_DRM_MAX_SCLASS 16U
 #define NVX_DRM_FD_BASE 0x4e580100
@@ -164,9 +164,14 @@ static int nvx_drm_nvif_object_del(int fd, void *data, unsigned long size);
 static struct nvx_drm_device_slot *nvx_drm_find_device_locked(int fd);
 static struct nvx_drm_bo_slot *nvx_drm_find_bo_locked(
    struct nvx_drm_device_slot *device, uint32_t handle);
+#if defined(_WIN32) || defined(_WIN64)
 static struct nvx_drm_bo_slot *nvx_drm_find_bo_address_locked(
    struct nvx_drm_device_slot *device, uint64_t address,
    uint32_t *slot_index);
+static struct nvx_drm_bo_slot *nvx_drm_find_bo_id_locked(
+   struct nvx_drm_device_slot *device, uint64_t buffer_id,
+   uint32_t *slot_index);
+#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #define NVX_DRM_VERTEX_DUMP_MAX_BYTES 1024U
@@ -897,16 +902,8 @@ nvx_drm_submit_pushbuf(int fd,
    failure_stage = 7U;
    for (i = 0; i < reference_count; i++) {
       failure_index = i;
-      struct nvx_drm_bo_slot *slot = NULL;
-      uint32_t slot_index;
-      for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS; slot_index++) {
-         if (device->buffers[slot_index].handle &&
-             device->buffers[slot_index].bo.allocation.BufferId ==
-                references[i].BufferId) {
-            slot = &device->buffers[slot_index];
-            break;
-         }
-      }
+      struct nvx_drm_bo_slot *slot =
+         nvx_drm_find_bo_id_locked(device, references[i].BufferId, NULL);
       if (!slot)
          goto done;
       if (device->shader_triangle_input_vertex_address &&
@@ -1179,21 +1176,16 @@ nvx_drm_submit_pushbuf(int fd,
       if (device) {
          for (reference_index = 0; reference_index < reference_count;
               reference_index++) {
-            unsigned slot_index;
-            for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS;
-                 slot_index++) {
-               struct nvx_drm_bo_slot *slot = &device->buffers[slot_index];
-               if (slot->handle && slot->bo.allocation.BufferId ==
-                                      references[reference_index].BufferId) {
-                  int marked = NvxNouveauBoMarkUsed(&slot->bo, fence_value);
-                  if (nvx_drm_fence_trace_count < 4U) {
-                     uint32_t trace_index = nvx_drm_fence_trace_count++;
-                     NvxWglRecordNouveauPushbufItem(9U, trace_index,
-                        (uint32_t)slot->bo.allocation.BufferId,
-                        (uint32_t)fence_value, (uint32_t)marked,
-                        (uint32_t)slot->bo.last_fence, 0U, 0U);
-                  }
-                  break;
+            struct nvx_drm_bo_slot *slot = nvx_drm_find_bo_id_locked(
+               device, references[reference_index].BufferId, NULL);
+            if (slot) {
+               int marked = NvxNouveauBoMarkUsed(&slot->bo, fence_value);
+               if (nvx_drm_fence_trace_count < 4U) {
+                  uint32_t trace_index = nvx_drm_fence_trace_count++;
+                  NvxWglRecordNouveauPushbufItem(9U, trace_index,
+                     (uint32_t)slot->bo.allocation.BufferId,
+                     (uint32_t)fence_value, (uint32_t)marked,
+                     (uint32_t)slot->bo.last_fence, 0U, 0U);
                }
             }
          }
@@ -1308,6 +1300,71 @@ nvx_drm_find_bo_locked(struct nvx_drm_device_slot *device, uint32_t handle)
    return NULL;
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static void
+nvx_drm_cache_bo_slot_locked(struct nvx_drm_device_slot *device,
+                             struct nvx_drm_bo_slot *slot, uint32_t index)
+{
+   struct nvx_drm_address_cache_entry *cache;
+   if (!device || !slot || !slot->handle ||
+       index >= NVX_DRM_BUFFER_SLOTS ||
+       !slot->bo.allocation.BufferId ||
+       slot->bo.allocation.ClientToken != device->client_token ||
+       !slot->bo.allocation.GpuVa || !slot->bo.allocation.Bytes)
+      return;
+   cache = &device->address_cache[
+      device->address_cache_next++ % NVX_DRM_ADDRESS_CACHE_SLOTS];
+   cache->gpu_va = slot->bo.allocation.GpuVa;
+   cache->bytes = slot->bo.allocation.Bytes;
+   cache->buffer_id = slot->bo.allocation.BufferId;
+   cache->slot_index = index;
+}
+
+static struct nvx_drm_bo_slot *
+nvx_drm_find_bo_id_locked(struct nvx_drm_device_slot *device,
+                          uint64_t buffer_id, uint32_t *slot_index)
+{
+   uint32_t i;
+   if (slot_index)
+      *slot_index = UINT32_MAX;
+   if (!device || !buffer_id)
+      return NULL;
+
+   /* Batch references are revisited after address translation and after the
+    * submit. Reuse the live-validated address cache instead of walking all
+    * 2,048 BO records at each stage. */
+   for (i = 0; i < NVX_DRM_ADDRESS_CACHE_SLOTS; i++) {
+      struct nvx_drm_address_cache_entry *cache = &device->address_cache[i];
+      struct nvx_drm_bo_slot *slot;
+      if (cache->buffer_id != buffer_id ||
+          cache->slot_index >= NVX_DRM_BUFFER_SLOTS)
+         continue;
+      slot = &device->buffers[cache->slot_index];
+      if (slot->handle &&
+          slot->bo.allocation.BufferId == buffer_id &&
+          slot->bo.allocation.ClientToken == device->client_token &&
+          slot->bo.allocation.GpuVa == cache->gpu_va &&
+          slot->bo.allocation.Bytes == cache->bytes) {
+         if (slot_index)
+            *slot_index = cache->slot_index;
+         return slot;
+      }
+      cache->buffer_id = 0;
+   }
+
+   for (i = 0; i < NVX_DRM_BUFFER_SLOTS; i++) {
+      struct nvx_drm_bo_slot *slot = &device->buffers[i];
+      if (!slot->handle || slot->bo.allocation.BufferId != buffer_id ||
+          slot->bo.allocation.ClientToken != device->client_token)
+         continue;
+      nvx_drm_cache_bo_slot_locked(device, slot, i);
+      if (slot_index)
+         *slot_index = i;
+      return slot;
+   }
+   return NULL;
+}
+
 static struct nvx_drm_bo_slot *
 nvx_drm_find_bo_address_locked(struct nvx_drm_device_slot *device,
                                uint64_t address, uint32_t *slot_index)
@@ -1362,6 +1419,7 @@ nvx_drm_find_bo_address_locked(struct nvx_drm_device_slot *device,
    }
    return NULL;
 }
+#endif
 
 /* nouveau_object_channel_new stores the signed drm_nouveau_channel_alloc
  * channel field in a 64-bit object handle. RM handles such as C56Fxxxx have

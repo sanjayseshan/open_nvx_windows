@@ -307,10 +307,11 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
    return bo->shadow;
 }
 
-int
-NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
+static int
+nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
+                           uint32_t end)
 {
-   uint32_t offset = 0, uploaded = 0;
+   uint32_t uploaded = 0;
    int waited = 0;
    if (!bo || !bo->references)
       return 0;
@@ -318,12 +319,15 @@ NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
       return 1;
    if (!bo->shadow || !bo->shadow_base)
       return 0;
-   while (offset < bo->allocation.Bytes) {
+   if (end > bo->allocation.Bytes || offset > end || (offset & 3U) ||
+       (end & 3U))
+      return 0;
+   while (offset < end) {
       uint32_t start = offset;
       /* Skip unchanged pages quickly, then publish exact changed dwords.
        * Whole-BO uploads can clobber GPU-written neighbouring allocations. */
       if (bo->shadow_base_valid && !(offset & 4095U) &&
-          bo->allocation.Bytes - offset >= 4096U &&
+          end - offset >= 4096U &&
           !memcmp(bo->shadow + offset, bo->shadow_base + offset, 4096U)) {
          offset += 4096U;
          continue;
@@ -335,7 +339,7 @@ NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
       }
       do {
          offset += 4U;
-      } while (offset < bo->allocation.Bytes &&
+      } while (offset < end &&
                (!bo->shadow_base_valid ||
                 memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U)));
       if (!waited && bo->last_fence &&
@@ -375,6 +379,14 @@ NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
 }
 
 int
+NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
+{
+   if (!bo || !bo->references)
+      return 0;
+   return nvx_nouveau_bo_flush_range(bo, 0U, bo->allocation.Bytes);
+}
+
+int
 NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset, uint64_t bytes)
 {
    if (!bo || !bo->references || !bo->map_count || !bo->shadow || !bytes ||
@@ -383,9 +395,13 @@ NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset, uint64_t bytes)
        offset > UINT32_MAX || bytes > UINT32_MAX || (offset & 3U) ||
        (bytes & 3U))
       return 0;
-   /* Publish all CPU changes without overwriting unchanged GPU-owned words.
-    * The caller's span remains validated, but is not an ownership boundary. */
-   return NvxNouveauBoFlush(bo);
+   /* The caller supplies the bytes that its upcoming GPU operation consumes.
+    * Upload only changes in this span here; the batch's common BO flush pass
+    * still publishes any other dirty ranges before submission. This mirrors
+    * Nouveau's range-based pushbuf validation and avoids scanning a large
+    * vertex BO once for every vertex-array address. */
+   return nvx_nouveau_bo_flush_range(bo, (uint32_t)offset,
+                                     (uint32_t)(offset + bytes));
 }
 
 int

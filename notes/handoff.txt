@@ -1,46 +1,32 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Latest hardware run: **3.0.0.319**. OpenGL and D3D9 smoke tests work on NV170 at roughly 53–60 FPS. 3DMark05 triggers a GPU shader-header exception, channel RC fault, then exits with access violation `0xC0000005`. Current source contains an untested BO-address lookup optimization; x64 and x86 Mesa builds pass. Keep this file to current status and next steps; archive run history in `test_logs/`.
+Updated November 18, 2026. Current candidate: **3.0.0.320**. The RTX 3070 runs the NV170 hardware OpenGL path. Cube is about 59.8–59.9 FPS; gears about 53.0–54.5 FPS. The .320 BO-flush/address-lookup optimization builds and boots, but did not produce a measurable gears improvement. 3DMark05 still fails.
 
-## Latest failure: 3DMark05 on .319
+## Latest hardware run
 
-- Full log: `test_logs/v3.0.0.319-20261118-174425.log`
-- Extracted WineD3D/Nouveau trace: `test_logs/v3.0.0.319-20261118-174425-3dmark05.log` (185 MB)
-- Successful before 3DMark: cube 59.5–59.8 FPS; gears 53.7–57.3 FPS; D3D9 smoke 56.4–60.6 FPS. Renderer stayed NV170.
-- Fence `0x3E331` on channel `0x61000405` timed out; semaphore stayed zero. PBDMA GET/PUT both reached `0x18C`, `PB_COUNT=0`: the queue item was consumed but its completion semaphore did not fire.
-- OpenRM reported Shader Program Header exceptions 2, 6, 9, 11, and 18, ESR `0x405840=0xa2040a44`, `0x405848=0x80000000`, then a graphics channel RC fault.
-- Later `status=0x15` batch rejects, WineD3D “kernel rejected pushbuf,” and miptree allocation errors are after channel quarantine. No preceding MMU fault was logged.
-- The async submission change removed the per-submit CPU fence wait, but this GPU fault remains. Async conversion dropped the old failure-only `[NVC0-STREAM]` dump. Restore bounded capture of the queued stream when its async fence times out; use it to trace shader-header address/data and upload ordering.
+- Log: `test_logs/v3.0.0.320-20261118-182553.log`.
+- VRAM aperture reported by the driver is 8,352,301,056 bytes (~7.78 GiB); this is aperture capacity, not a measurement of currently free VRAM. The log does not show an allocation failure before the 3DMark fault.
+- A NVC0 fence timed out with observed value zero. OpenRM then reported Shader Program Header errors and a graphics channel RC fault; 3DMark exited with `0xC0000005`. The later `miptree BO allocation failed` follows the fault and may be fallout from the quarantined channel, not evidence that the card ran out of VRAM.
+- The WGL presentation bridge copies visible rectangles through `ExtEscape`; the miniport waits for a CE completion fence. This is synchronous work and can add frame latency, but the current guest log has no `PRESENT_TIMING` measurements, so it is not proven to explain the 3DMark rate. The benchmark’s command/shader fault is the clearest observed failure.
+- Gears/cube/D3D9 remain hardware-rendered in the smoke tests. The full test runner exited nonzero because 3DMark failed; this is not a clean full-suite pass.
 
-## WineD3D assessment
+## Changes in .320
 
-The `wine` submodule is pinned at `a786dca9` (`wine-1.7.55`). The current Wine 11.x line includes years of D3D/WineD3D fixes and is worth an isolated XP-targeted A/B build for compatibility and CPU overhead. This log has no explicit WineD3D shader compile error before the hardware fault. It reports the GL path and a card-detection warning: vendor `0000`, fallback to renderer `NV170`. That may affect Wine’s feature selection, but does not by itself explain the GPU Shader Program Header exception. A newer WineD3D may improve behavior/performance; it is not yet a demonstrated fix for the RC fault. Preserve Wine as a submodule and keep local changes in `wine_patches/`; audit XP imports and APIs before installation. The new WineD3D Vulkan renderer is not used by this OpenGL path.
+- `mesa_patches/nvx_nouveau_bo.c`: range flush now compares/uploads only the requested BO span. The common batch flush still publishes other dirty spans.
+- `mesa_patches/nvx_xf86drm.c`: use the validated address cache for repeated BufferId resolution and increase cache slots from 32 to 128.
+- Version bumped to 3.0.0.320 in the miniport, INF and test script.
+- Host/unit/mock checks and x64/x86 Mesa/driver builds passed; VFIO boot and smoke tests passed. FPS impact is neutral within run variation.
 
-Official references: [Wine 11.x release notes](https://www.winehq.org/news/11) and [Wine 9.10 announcement](https://www.winehq.org/news/79).
+## Next work
 
-## Current performance change
-
-`mesa_patches/nvx_xf86drm.c` now caches 32 recent GPU-address-to-BO resolutions. The XP libdrm shim previously scanned all 2,048 BO slots for each raw NVC0 GPU address; repeated shader/texture/vertex addresses now use cache hits validated against the live slot, BufferId, VA, and size. A cache miss retains the full scan and ownership checks. x64/x86 Mesa ICD builds pass and import only `GDI32.dll`, `KERNEL32.dll`, `msvcrt.dll`, and `USER32.dll`. FPS impact is unmeasured; compare a hardware run against .319 before calling it an improvement.
-
-Other measurable differences from Linux Nouveau/OpenRM:
-
-- CPU shadow BO writes can cross an XP escape and invoke a synchronous CE upload for each changed span. Linux has native shared/GART mappings and orders M2MF uploads in the graphics push stream. Profile frequency/time before changing synchronization.
-- The XP shim copies/parses/validates each batch, resolves GPU-address references in user mode, and serializes callers. Linux uses native DRM GEM handles/relocations and kernel pushbuf validation.
-- Fence/BO retirement uses a bounded 32-batch pending table and ring-slot waits. Measure actual queue depth and wait time before changing limits.
-
-## Next actions
-
-1. Build/install the current cache candidate as the next driver version; increment the version before a hardware test.
-2. Run gears/cube/D3D9 and 3DMark05 once. Compare submission profile and FPS with .319; retain the crash log even if the cache makes no measurable difference.
-3. Add bounded asynchronous NVC0 stream capture at fence timeout. Correlate shader program addresses with their BO contents, then compare the submitted bytes and SPH layout with upstream Mesa/OpenRM.
-4. Separately build newer WineD3D with XP compatibility checks, without moving the Wine submodule. Compare the same workload and logs before/after.
+1. Capture the failed batch and shader BO contents at the async fence timeout; compare shader program header uploads/addresses with upstream NVC0 behavior. Do not increase VRAM limits based only on the post-fault miptree error.
+2. Enable/preserve `PRESENT_TIMING` output and measure clip-copy/fence wait separately from draw/submit time. If it is significant, use an asynchronous or page-flip-style present only with explicit source-buffer lifetime fencing.
+3. Re-run 3DMark after addressing the shader-header/channel fault. Keep the Wine submodule pinned unless an isolated WineD3D A/B demonstrates a benefit.
 
 ## Relevant files
 
-- `mesa_patches/nvx_xf86drm.c`: DRM ioctl shim, batch translation, address/BO resolution, submit profiling.
-- `mesa_patches/nvx_nouveau_bo.c`, `mesa_patches/nvx_winsys.c`: BO shadow map/flush, escapes, batch ring/fences.
-- `mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch`: NVC0 copy/upload selection.
-- `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c`: upstream shader/SPH upload path; `nvc0_transfer.c`: push-data implementation.
-- `src_driver/nvx_gsp.c`: async graphics submission and user-fence timeout; `src_driver/nvxmp.c`: batch validation and pending BO/fence lifetime.
-- `wine` submodule and `wine_patches/`: legacy WineD3D build/patches.
-- `test/build_mesa_xp64.sh`, `test/build_mesa_xp32.sh`, `test/test_full_driver.sh`: build and VFIO run.
+- `mesa_patches/nvx_nouveau_bo.c`, `mesa_patches/nvx_xf86drm.c`: BO shadow flush and Nouveau DRM/pushbuf shims.
+- `mesa_patches/nvx_wgl_bridge.c`: WGL presentation copy and timing instrumentation.
+- `src_driver/nvx_gsp.c`, `src_driver/nvxmp.c`, `src_driver/nvx_ce.c`: graphics submission/fences, channel fault handling and CE copy.
+- `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c`, `nvc0_context.c`: upstream shader and NVC0 submission reference.
+- `test/test_full_driver.sh`: full build and VFIO hardware test.
