@@ -328,7 +328,7 @@ if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05_START] > \\.\COM1
     if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
-        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -verbose -res=800x600 > C:\3dmark05.log 2>&1
+        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -res=800x600 > C:\3dmark05.log 2>&1
         set NVX_TEST_RC=!ERRORLEVEL!
         echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
         echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1

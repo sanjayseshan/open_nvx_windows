@@ -314,7 +314,7 @@ typedef struct _VIDEO_MODE_DEF {
 #define NVX_TRACE_ALLOCATIONS 0
 #endif
 
-#define NVX_3D_USER_BUFFER_SLOTS 2048U
+#define NVX_3D_USER_BUFFER_SLOTS 8192U
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
 #define NVX_3D_FENCE_TRACK_SLOTS 256U
 /* RM resources belong to a client, never to the currently submitting app.

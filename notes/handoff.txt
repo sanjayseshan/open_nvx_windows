@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.309**.
+Updated November 18, 2026. Current candidate: **3.0.0.310**.
 
 ## .307: correct OpenRM RPC message sizing (hardware verified)
 
@@ -41,7 +41,7 @@ open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
 src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
-## Current status and remaining work (.309 built; hardware retest pending)
+## Current status and remaining work (.310 built; hardware retest pending)
 
 .307 restored hardware NV170 rendering on both architectures and resolved the
 function-71 INVALID_FUNCTION/RPC quarantine that caused GDI Generic and
@@ -86,21 +86,37 @@ Before 3DMark, `.308` kept hardware rendering on NV170: gears completed around
 checks passed. Host tests and x64/x86 builds passed before the VFIO run. These
 results do not establish that the large 3DMark resource workload works.
 
-`.309` implements noncontiguous page backing for ordinary GART BOs using the
-XP WDM MDL page allocation and PFN array. It maps one physical PFN per GART PTE,
-retains the MDL through GPU use, and frees its pages only after a confirmed GART
-unmap/TLB invalidate. Small BOs and the internal RM channel backing still use
-VideoPort common buffers; the channel path requires contiguous backing for its
-OpenRM page-list registration. x86/x64 cache flush handling follows the WDM
-contract (KeFlushIoBuffers is a no-op on these coherent targets). Failure-only
-logs count live GART BO bytes by client. Host checks and x64/x86 miniport
-builds pass; only existing unused-function and x86 pointer-width warnings
-remain.
+`.309` was hardware-tested with `NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1
+NVX_BUILD_WINED3D=0 ./test/test_full_driver.sh`. Log:
+`test_logs/v3.0.0.309-20261118-111737.log`; captured 3DMark output:
+`test_logs/v3.0.0.309-20261118-111737-3dmark05.log`.
 
-Next: hardware-test `.309` and verify the MDL path handles 3DMark's larger
-resources, then inspect GL out-of-memory and mapped-resource errors. Do not
-claim 3DMark fixed until it renders and exits with the benchmark suite PASS
-marker.
+The new page-backed path cleared the `.308` failure: 3DMark passed the prior
+large physical backing allocations without any `MmAllocatePagesForMdl` or
+`VideoPortAllocateCommonBuffer` failures, GART backing pressure, PFN-range
+errors, or GPU queue timeout. Native GL remained NV170; gears reached 63 FPS,
+the cube completed 300 frames at about 60.7 FPS, D3D9 ran at about 58 FPS,
+and the miniport 3D and 2D checks passed. No RC/MMU fault appeared.
+
+The longer workload exposed the next limit: the fixed 2,048-entry user BO
+table filled 565 times. That produced repeated `nouveau: kernel rejected
+pushbuf: Operation not permitted` messages and prevented 3DMark from exiting;
+the run was stopped after the failure was established. It does not prove the
+3DMark benchmark result. `-verbose` also expanded the captured trace to about
+1.5 GB and is removed from the next automated run.
+
+`.310` raises the BO table to 8,192 entries and reports live/busy/GART/client
+counts sparsely if it fills again. It emits a single proof line for the first
+successful MDL-backed GART mapping, including page count and physical run
+count. The automated 3DMark command no longer requests verbose output.
+`make -C src_driver check` and x64/x86 builds passed on `.309`; `.310` checks
+and hardware test remain pending.
+
+Next: run the host suite and VFIO test on `.310`. Confirm table pressure is
+gone, MDL mappings remain valid through submit/free, and 3DMark produces its
+exit and suite PASS markers. Relevant implementation files remain
+src_driver/nvx_gr_context.{c,h}, src_driver/nvx_gsp.{c,h}, src_driver/nvx_mdl.{c,h},
+src_driver/nvxmp.c, and test/update_disk_driver_user.sh.
 
 Relevant files: src_driver/nvx_gr_context.{c,h} (VA allocation/translation),
 src_driver/nvx_gsp.c (GART PTE mapping), src_driver/nvxmp.c

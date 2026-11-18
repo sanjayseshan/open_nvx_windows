@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.309
+ * Driver Version: 3.0.0.310
  */
 
 #include "miniport.h"
@@ -1549,6 +1549,7 @@ static VOID Nvx3dFreeGartBacking(PNVX_DEVICE_EXTENSION engine,ULONG bytes,
 }
 
 static ULONG NvxGartBackingFailureCount;
+static ULONG NvxMdlGartLogged;
 
 static VOID Nvx3dLogGartBackingPressure(PNVX_DEVICE_EXTENSION engine,
                                        ULONG64 clientToken)
@@ -1577,6 +1578,40 @@ static VOID Nvx3dLogGartBackingPressure(PNVX_DEVICE_EXTENSION engine,
         LogStr(" other_client_bytes=");LogHex(otherBytes);
         LogStr("\n");
     }
+}
+
+/* Called with Nvx3dBuffersLock held. Report pressure sparsely so a full table
+ * does not turn a repeated allocation failure into a serial-log storm. */
+static VOID Nvx3dLogUserBufferTablePressureLocked(
+    PNVX_DEVICE_EXTENSION engine,ULONG64 clientToken)
+{
+    ULONG index,used=0,busy=0,gart=0,client=0;
+    ULONG64 liveBytes=0,gartBytes=0,clientBytes=0;
+    static ULONG failures;
+    failures++;
+    if(failures!=1U&&(failures&127U)!=0U) return;
+    for(index=0;index<NVX_3D_USER_BUFFER_SLOTS;index++) {
+        NVX_3D_USER_BUFFER_ENTRY *entry=&engine->Nvx3dBuffers[index];
+        if(!entry->Id) continue;
+        used++;
+        liveBytes+=entry->Bytes;
+        if(entry->Busy) busy++;
+        if(entry->Usage&NVX_3D_USAGE_GART_BUFFER) {
+            gart++;
+            gartBytes+=entry->Bytes;
+        }
+        if(entry->ClientToken==clientToken) {
+            client++;
+            clientBytes+=entry->Bytes;
+        }
+    }
+    LogStr("NVX [3D-BUFFER-PRESSURE]: failures=");LogHex(failures);
+    LogStr(" capacity=");LogHex(NVX_3D_USER_BUFFER_SLOTS);
+    LogStr(" live=");LogHex(used);LogStr(" busy=");LogHex(busy);
+    LogStr(" gart=");LogHex(gart);LogStr(" client=");LogHex(client);
+    LogStr(" live_bytes=");LogHex(liveBytes);
+    LogStr(" gart_bytes=");LogHex(gartBytes);
+    LogStr(" client_bytes=");LogHex(clientBytes);LogStr("\n");
 }
 
 /* The caller holds the global buffer lock. Publish the allocation only after
@@ -1771,6 +1806,18 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
        flag must not depend on a separate FB allocation having happened. */
     engine->GspGraphicsUserAllocReady=TRUE;
     if(failureStage) *failureStage=0;
+    if(useMdl&&__sync_bool_compare_and_swap(&NvxMdlGartLogged,0U,1U)) {
+        ULONG pages=request->Bytes>>12,runs=pages?1U:0U,index;
+        ULONG_PTR *pfns=(ULONG_PTR *)pfnArray;
+        for(index=1;index<pages;index++)
+            if(pfns[index]!=pfns[index-1]+1U) runs++;
+        LogStr("NVX [GART-MDL]: mapped bytes=");LogHex(request->Bytes);
+        LogStr(" pages=");LogHex(pages);LogStr(" physical_runs=");
+        LogHex(runs);LogStr(" first_pfn=");
+        LogHex(pages?(ULONG64)pfns[0]:0);LogStr(" last_pfn=");
+        LogHex(pages?(ULONG64)pfns[pages-1]:0);LogStr(" gpu_va=");
+        LogHex(gpuVa);LogStr("\n");
+    }
 #if NVX_TRACE_ALLOCATIONS
     LogStr("NVX [GART]: committed client BO id=");LogHex(id);
     LogStr(" va=");LogHex(gpuVa);LogStr(" bytes=");LogHex(request->Bytes);
@@ -2058,7 +2105,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
     for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++)
         if(!engine->Nvx3dBuffers[i].Id) {slot=i;break;}
     if(slot==NVX_3D_USER_BUFFER_SLOTS) {
-        LogStr("NVX [3D-ALLOC]: user buffer table is full.\n");
+        Nvx3dLogUserBufferTablePressureLocked(engine,request->ClientToken);
         Nvx3dUnlockBuffers();return FALSE;
     }
     if(request->Usage&NVX_3D_USAGE_GART_BUFFER)
@@ -4528,7 +4575,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.309 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.310 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));
