@@ -345,7 +345,7 @@ static BOOLEAN NvxGspSendRpcElement(PNVX_DEVICE_EXTENSION dev,
     volatile NVX_MSGQ_HEADER *cmd=dev->CmdQueueVirtual,*stat=dev->StatQueueVirtual;
     ULONG write,next;
     for(ULONG wait=0;wait<20000;wait++) {
-        ULONG read=cmd->ReadPtr;
+        ULONG read=stat->ReadPtr;
         if(cmd->WritePtr>=63||read>=63||stat->ReadPtr>=63) return FALSE;
         write=cmd->WritePtr;
         next=(write+1)%63;
@@ -405,7 +405,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
         return FALSE;
     if(bytes<=4016) {
         next=(write+1)%63;
-        if(next==cmd->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
+        if(next==stat->ReadPtr||!NvxEncodeRpc((PUCHAR)dev->CmdQueueVirtual+4096+write*4096,
             4096,expected,dev->RpcTxSequence,payload,bytes)) return FALSE;
     } else {
         if(!NvxGspSendRpcLargeLocked(dev,expected,payload,bytes)) return FALSE;
@@ -418,7 +418,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
     if(bytes<=4016) nvx_msgq_notify_remote(FCN_FLAG_NOTIFY_MSG_WRITE,dev);
     LogStr("NVX [RM]: RPC submitted function=");LogHex(expected);LogStr("\n");
     for(ULONG wait=0;wait<20000;wait++) {
-        ULONG read=stat->ReadPtr,head=stat->WritePtr;
+        ULONG read=cmd->ReadPtr,head=stat->WritePtr;
         uint32_t elements=0,decoded=0,function=0,result=0,sequence=0;
         int gathered;
         if(head>=63||read>=63) return FALSE;
@@ -500,7 +500,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 if(words[14]<40||words[21]>words[14]-40) return FALSE;
                 LogStr("NVX [RM]: LibOS notification bytes=");LogHex(words[21]);LogStr("\n");
             }
-            __sync_synchronize();stat->ReadPtr=(read+elements)%63;__sync_synchronize();
+            __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
             dev->RpcRxSequence++;
             continue;
         }
@@ -510,7 +510,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             LogHex(expected);LogStr(" actual=");LogHex(function);LogStr("\n");
             return FALSE;
         }
-        __sync_synchronize();stat->ReadPtr=(read+elements)%63;__sync_synchronize();
+        __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
         dev->RpcRxSequence++;
         return result==0;
     }

@@ -715,7 +715,8 @@ BOOLEAN NvxGspInitSubsystem(PVOID HwDeviceExtension) {
     timeout = 20000;
     while (timeout--) {
         volatile NVX_MSGQ_HEADER *msg = (volatile NVX_MSGQ_HEADER *)devExt->StatQueueVirtual;
-        ULONG write=msg->WritePtr,read=msg->ReadPtr;
+        volatile NVX_MSGQ_HEADER *local=(volatile NVX_MSGQ_HEADER *)devExt->CmdQueueVirtual;
+        ULONG write=msg->WritePtr,read=local->ReadPtr;
         if (write>=63||read>=63) {
             LogStr("NVX [RPC]: invalid queue pointer; receive stopped.\n");return FALSE;
         }
@@ -756,7 +757,7 @@ BOOLEAN NvxGspInitSubsystem(PVOID HwDeviceExtension) {
                 }
                 /* Match OpenRM receive ordering: acknowledge the validated
                    copy before dispatch or slow serial diagnostics. */
-                __sync_synchronize();msg->ReadPtr=(read+elements)%63;__sync_synchronize();
+                __sync_synchronize();local->ReadPtr=(read+elements)%63;__sync_synchronize();
                 rxSequence++;consumed=TRUE;
                 LogStr("NVX [SEQ]: validated capacity=");LogHex(params[0]);
                 LogStr(" used=");LogHex(params[1]);LogStr(" commands=");LogHex(count);LogStr("\n");
@@ -810,7 +811,7 @@ BOOLEAN NvxGspInitSubsystem(PVOID HwDeviceExtension) {
                 LogHex(devExt->GspAssertCount);LogStr("\n");
             }
             if(!consumed) {
-                __sync_synchronize();msg->ReadPtr=(read+elements)%63;__sync_synchronize();
+                __sync_synchronize();local->ReadPtr=(read+elements)%63;__sync_synchronize();
                 rxSequence++;
             }
             if (function==0x1001) {

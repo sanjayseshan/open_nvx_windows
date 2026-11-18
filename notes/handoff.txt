@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 17, 2026. Current candidate: **3.0.0.299**.
+Updated November 17, 2026. Current candidate: **3.0.0.300**.
 
 ## Current status and remaining work
 
@@ -59,14 +59,23 @@ Large OpenRM page-list registrations use one ordinary RPC element followed
 by function-71 continuation elements. The prior XP code instead treated the
 whole PFN list as one 16-element contiguous record. .299 ports the upstream
 chunking pattern, waiting for command-ring slots as needed. It also consumes
-replies through the status queue's own ReadPtr; command and status rings have
-independent producer/consumer pointers, and continuation chunks make their
-positions diverge. Startup event polling now follows the same status-ring
-ownership. Host tests verify frame checksums, full multi-frame page-list
-reconstruction, separate queue pointers, and successful allocation/free.
+replies through the command header's ReadPtr and command-ring free space from
+the status header's ReadPtr, matching OpenRM `MSGQ_FLAGS_SWAP_RX`: the command
+header tracks host consumption of status replies, while the status header
+tracks RM consumption of commands. Each continuation advances only the
+command consumer pointer; the large RPC still produces one status response.
+Host tests verify frame checksums, full multi-frame page-list reconstruction,
+swapped queue pointers, and successful allocation/free.
 Hardware validation is pending. Files: src_driver/nvx_gsp.c,
 src_driver/nvx_gsp_boot.c, src_driver/nvx_rpc.{c,h},
 src_driver/tests/{rpc_test.c,gsp_mock_test.c}.
+
+The first .299 VFIO package stopped during GSP startup with an invalid status
+record, before `INIT_DONE`; it did not reach the continuation path. The trace
+came from temporarily treating the two `MSGQ_FLAGS_SWAP_RX` read-pointer
+locations as independent. .300 restores the established swapped ownership;
+the full host/mock suite then passed. The failed attempt log is
+test_logs/v3.0.0.299-20261117-230922.log. .300 hardware validation is pending.
 
 ## .298: wrap native display DMA rings; isolate primary visual check
 

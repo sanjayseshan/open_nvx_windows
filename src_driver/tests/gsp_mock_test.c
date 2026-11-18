@@ -34,7 +34,7 @@ VOID LogStr(const char *s) {
     if(!strcmp(s,"NVX [RM]: consumed asynchronous performance notification.\n"))
         perfNotifications++;
     if(!strcmp(s,"NVX [SEQ]: validated capacity="))
-        assert(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr>=5);
+        assert(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr>=5);
 }
 VOID LogHex(unsigned long long x) { (void)x; }
 VOID VideoPortDebugPrint(VIDEO_DEBUG_LEVEL level, const CHAR *fmt, ...) { (void)level;(void)fmt; }
@@ -75,7 +75,7 @@ ULONG VideoPortReadRegisterUlong(PULONG p) {
         memcpy(&value,gpuMemory+address,4);return value;
     }
     if(regoff(p)==0x110040 && dev.CmdQueueVirtual &&
-       ((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr>=5)
+       ((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr>=5)
         return 0x80000000;
     return regs[regoff(p)/4];
 }
@@ -115,7 +115,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
                    chunk<=largeRpcExpectedBytes-largeRpcReceivedBytes);
             memcpy(largeRpcPayload+largeRpcReceivedBytes,request+20,chunk);
             largeRpcReceivedBytes+=chunk;
-            cmd->ReadPtr=cmd->WritePtr;
+            q->ReadPtr=cmd->WritePtr;
             if(largeRpcReceivedBytes<largeRpcExpectedBytes) return;
             assert(largeRpcReceivedBytes==largeRpcExpectedBytes&&largeRpcFunction==4);
             {
@@ -129,7 +129,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             }
             assert(NvxEncodeRpc((PUCHAR)packet,4096,largeRpcFunction,s,alloc,32));
             packet[16]=0;packet[8]^=0xffffffffU;
-            q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
+            q->WritePtr=(write+1)%63;q->ReadPtr=cmd->WritePtr;
             largeRpcExpectedBytes=largeRpcReceivedBytes=largeRpcFunction=0;
             return;
         }
@@ -154,7 +154,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             cfg[896+28]=cfg[896+29]=1;
             assert(NvxEncodeRpc((PUCHAR)packet,4096,f,write-1,cfg,scenario==9?840:sizeof(cfg)));
             packet[16]=0;packet[8]^=0xffffffffU;
-            q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
+            q->WritePtr=(write+1)%63;q->ReadPtr=cmd->WritePtr;
             return;
         }
         if(f==4) {
@@ -176,7 +176,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
                     largeRpcSequence=s;largeRpcFunction=f;
                     assert(largeRpcExpectedBytes<=sizeof(largeRpcPayload));
                     memcpy(largeRpcPayload,request+20,4016);
-                    cmd->ReadPtr=cmd->WritePtr;
+                    q->ReadPtr=cmd->WritePtr;
                     return;
                 }
                 assert(request[28]==0x10000&&request[30]==16);
@@ -449,7 +449,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
         }
         assert(NvxEncodeRpc((PUCHAR)packet,4096,f,write-1,alloc,replyBytes));
         packet[16]=0;packet[8]^=0xffffffffU;
-        q->WritePtr=(write+1)%63;cmd->ReadPtr=cmd->WritePtr;
+        q->WritePtr=(write+1)%63;q->ReadPtr=cmd->WritePtr;
     }
     if(off==0x680000 || off==0x690000 || off==0x692000) {
         if(scenario==12) assert(dpLinkTrained); /* Train before any channel DMA. */
@@ -702,13 +702,13 @@ int main(void)
         if (dev.GspInitialized) {
             ULONG expectedRead=(ULONG)((scenario==4?30:28)+15+dev.MonitorCount+
                                        (scenario==12?5:0)+(scenario==4?1:0));
-            if(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr!=expectedRead)
-                fprintf(stderr,"scenario=%d stat ReadPtr=%lu expected=%lu monitors=%lu\n",
+            if(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr!=expectedRead)
+                fprintf(stderr,"scenario=%d cmd ReadPtr=%lu expected=%lu monitors=%lu\n",
                         scenario,
-                        (unsigned long)((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr,
+                        (unsigned long)((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr,
                         (unsigned long)expectedRead,
                         (unsigned long)dev.MonitorCount);
-            assert(((NVX_MSGQ_HEADER *)dev.StatQueueVirtual)->ReadPtr==
+            assert(((NVX_MSGQ_HEADER *)dev.CmdQueueVirtual)->ReadPtr==
                    expectedRead);
             if(scenario==4) {
                 assert(!dev.GspCopyVerified);
@@ -911,8 +911,8 @@ int main(void)
         memset(&dev,0,sizeof(dev));
         dev.Bar0MmioVirtual=regs;dev.Bar0Length=sizeof(regs);
         dev.CmdQueueVirtual=cmd;dev.StatQueueVirtual=stat;
-        cmd->WritePtr=3;cmd->ReadPtr=3;cmd->MsgSize=4096;cmd->MsgCount=63;cmd->EntryOff=4096;
-        stat->WritePtr=4;stat->ReadPtr=4;stat->MsgSize=4096;stat->MsgCount=63;stat->EntryOff=4096;
+        cmd->WritePtr=3;cmd->ReadPtr=4;cmd->MsgSize=4096;cmd->MsgCount=63;cmd->EntryOff=4096;
+        stat->WritePtr=4;stat->ReadPtr=3;stat->MsgSize=4096;stat->MsgCount=63;stat->EntryOff=4096;
         dev.RpcTxSequence=dev.RpcRxSequence=3;
         dev.GspInitialized=TRUE;dev.GspClientHandle=0xc1d00001;
         dev.GspDeviceHandle=0x80000001;
