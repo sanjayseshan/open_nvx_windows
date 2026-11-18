@@ -41,7 +41,7 @@ open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
 src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
-## Current status and remaining work (.311 built; hardware retest pending)
+## Current status and remaining work (.311 hardware tested; 3DMark still fails)
 
 .307 restored hardware NV170 rendering on both architectures and resolved the
 function-71 INVALID_FUNCTION/RPC quarantine that caused GDI Generic and
@@ -113,16 +113,38 @@ GART mapping used 128 distinct physical runs; 3DMark did not exhaust the table.
 Native GL stayed on NV170, the cube rendered 300 frames at 60.5–60.8 FPS, and
 the standard 3D/2D checks passed.
 
-`.311` maps MDL pages with `MmMapLockedPagesSpecifyCache(..., MmNonCached, ...)`
+`.311` was built with x64/x86 MinGW and passed `make -C src_driver check`.
+It maps MDL pages with `MmMapLockedPagesSpecifyCache(..., MmNonCached, ...)`
 instead of `MmGetSystemAddressForMdlSafe`, matching the existing uncached
-VideoPort common-buffer mapping. The candidate targets stale/corrupt shader
-bytes as the likely cause of the shader-header fault. Host checks and x64/x86
-builds pass on `.310`; `.311` checks and hardware retest remain pending.
+VideoPort common-buffer mapping. The VFIO run confirmed this mapping is active
+and retained NV170: gears completed at 54 FPS, cube completed 300 frames at
+about 60 FPS, and D3D9 smoke tests rendered at 58–63 FPS. The normal 3D/2D
+checks passed.
 
-Next: run host checks and a VFIO test on `.311`. Confirm the shader-header/RC
-fault is gone, MDL mappings remain valid through submit/free, and 3DMark exits
-with suite PASS. Relevant files: src_driver/nvx_mdl.c, src_driver/nvx_gsp.c,
-src_driver/nvxmp.c, and test/update_disk_driver_user.sh.
+The cache-mode change did **not** fix 3DMark. After `[3DMARK05_START]`, the
+same batch failure recurred: push VA `0x13080000`, 20 KiB push buffer, fence
+`0x5915C` remained zero. PBDMA consumed the FIFO entry and reached the end of
+the push buffer (`PB_COUNT=0`), but OpenRM reported shader-program-header
+errors (SPH IDs 1, 2, 9, 11, 18; ESR `0xa2040a06`) and reset channel 10. No MMU
+fault, MDL allocation failure, common-buffer failure, or BO-table exhaustion
+preceded it. `.309` and `.310` showed the same failure, so uncached CPU mapping
+is not the root fix. The log has no `[3DMARK05_EXIT]` or success marker and the
+test runner correctly failed. Full log:
+`test_logs/v3.0.0.311-20261118-115511.log`; 3DMark output:
+`test_logs/v3.0.0.311-20261118-115511-3dmark05.log`.
+
+The driver log proves the GPU faults while processing a submitted shader batch,
+but it does not yet identify which shader header bytes or state are invalid.
+Next, add failure-only capture of the full submitted dword stream and relevant
+shader-code BO contents/addresses; correlate those bytes with Mesa's
+`nvc0_program_upload_code()` and the winsys BO flush/upload path. Verify code
+upload completion/order before changing shader headers. Key files:
+`src_driver/nvx_gsp.c` (`NvxGspSubmitNvc0Batch`), `src_driver/nvxmp.c`
+(`IOCTL_NVX_3D_UPLOAD_BUFFER`), `src_driver/nvx_mdl.c`,
+`mesa_patches/nvx_nouveau_bo.c` (`NvxNouveauBoFlush`),
+`mesa_patches/nvx_winsys.c` (`NvxWinsysUploadBuffer`),
+`mesa_patches/nvx_xf86drm.c` (relocation translation), and upstream-style
+`mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c`.
 
 Relevant files: src_driver/nvx_gr_context.{c,h} (VA allocation/translation),
 src_driver/nvx_gsp.c (GART PTE mapping), src_driver/nvxmp.c
