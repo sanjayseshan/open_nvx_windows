@@ -395,6 +395,71 @@ static BOOLEAN NvxGspSendRpcLargeLocked(PNVX_DEVICE_EXTENSION dev,
     return TRUE;
 }
 
+/* OpenRM drains unsolicited RPC events while waiting for a synchronous
+   response. Keep the event policy shared by normal RPC waits and the large
+   bidirectional continuation receive path. */
+static BOOLEAN NvxGspHandleRpcEvent(PNVX_DEVICE_EXTENSION dev,ULONG function,
+                                    ULONG result,const ULONG *words)
+{
+    if(result) return FALSE;
+    if(function==0x1006) {
+        char message[257];
+        if(words[14]<300) return FALSE;
+        VideoPortMoveMemory(message,(PVOID)(words+23),256);message[256]=0;
+        LogStr("NVX [RM ERROR]: type=");LogHex(words[20]);
+        LogStr(" runlist=");LogHex(words[21]);LogStr(" channel=");LogHex(words[22]);
+        LogStr(" message=");LogStr(message);LogStr("\n");
+        if(words[20]==0x38) dev->NativeDisplayFaulted=TRUE;
+    } else if(function==0x101b) {
+        if(words[14]<36) return FALSE;
+        if(dev->GspGraphicsCommandVerified&&words[20]>dev->GspAssertCount) {
+            dev->GspGraphicsDeviceFaulted=TRUE;
+            dev->GspGraphicsChannelFaulted=TRUE;
+            LogStr("NVX [GR]: runtime firmware assertion; device graphics quarantined.\n");
+        }
+        dev->GspAssertCount=words[20];
+        LogStr("NVX [RM]: firmware assertion count=");LogHex(words[20]);LogStr("\n");
+    } else if(function==0x1004) {
+        if(words[14]<52) return FALSE;
+        LogStr("NVX [RM]: channel RC fault engine=");LogHex(words[20]);
+        LogStr(" chid=");LogHex(words[21]);LogStr(" type=");LogHex(words[22]);
+        LogStr(" scope=");LogHex(words[23]);LogStr("\n");
+        if(words[22]==ROBUST_CHANNEL_PBDMA_ERROR) NvxGspLogPbdmaFault(dev);
+        if(words[22]==ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT) {
+            LogStr("NVX [GR-FAULT]: FIFO MMU RC received; shadow queue snapshot follows.\n");
+#if NVX_ENABLE_GR_CHANNEL_PROBE
+            NvxGspDumpFaultShadow(dev);
+#endif
+        }
+        if(words[21]==1) dev->GspChannelFaulted=TRUE;
+        if(words[21]==2) dev->GspGraphicsChannelFaulted=TRUE;
+        for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
+            NVX_GR_CLIENT_CHANNEL *c=&dev->Nvx3dClientSessions[i].Graphics;
+            if(c->ClientToken&&c->HardwareIdAllocated&&c->HardwareChannelId==words[21]) {
+                c->Faulted=TRUE;c->Ready=FALSE;
+            }
+        }
+    } else if(function==0x1005) {
+        if(words[14]<32) return FALSE;
+#if NVX_ENABLE_GR_CHANNEL_PROBE
+        NvxGspDumpFaultShadow(dev);
+#endif
+        dev->GspMmuFaultQueued=TRUE;
+        dev->GspChannelFaulted=TRUE;
+        dev->GspGraphicsChannelFaulted=TRUE;
+        dev->GspGrContextAliasVerified=FALSE;
+        LogStr("NVX [RM]: MMU fault queued; UVM fault handling unavailable, accelerated queues disabled.\n");
+    } else if(function==0x100f) {
+        LogStr("NVX [RM]: consumed asynchronous performance notification.\n");
+    } else if(function==0x100c) {
+        if(words[14]<40||words[21]>words[14]-40) return FALSE;
+        LogStr("NVX [RM]: LibOS notification bytes=");LogHex(words[21]);LogStr("\n");
+    } else {
+        return FALSE;
+    }
+    return TRUE;
+}
+
 /* OpenRM's _issueRpcLarge bidirectional path receives one ordinary reply,
    then one function-71 record for every remaining request chunk. Reassemble
    those payload bytes in-place before exposing the reply to control callers. */
@@ -440,10 +505,21 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
                 LogHex(*(ULONG *)(dev->RpcTxRecord+40));LogStr(" function=");
                 LogHex(*(ULONG *)(dev->RpcTxRecord+60));LogStr("\n");return FALSE;
             }
+            if(fragSequence!=dev->RpcRxSequence) {
+                LogStr("NVX [RM]: continuation sequence mismatch expected=");
+                LogHex(dev->RpcRxSequence);LogStr(" actual=");
+                LogHex(fragSequence);LogStr("\n");return FALSE;
+            }
             if(fragFunction!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) {
+                if(NvxGspHandleRpcEvent(dev,fragFunction,fragResult,
+                                      (const ULONG *)dev->RpcTxRecord)) {
+                    __sync_synchronize();cmd->ReadPtr=(read+fragElements)%63;
+                    __sync_synchronize();dev->RpcRxSequence++;
+                    LogStr("NVX [RM]: drained async event while receiving large reply.\n");
+                    continue;
+                }
                 LogStr("NVX [RM]: expected continuation function, received=");
-                LogHex(fragFunction);LogStr(" seq=");LogHex(fragSequence);LogStr("\n");
-                return FALSE;
+                LogHex(fragFunction);LogStr(" seq=");LogHex(fragSequence);LogStr("\n");return FALSE;
             }
             if(!NvxRpcAppendContinuation(dev->RpcRxRecord,
                     sizeof(dev->RpcRxRecord),&received,dev->RpcTxRecord,
@@ -454,7 +530,7 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
                 return FALSE;
             }
             __sync_synchronize();cmd->ReadPtr=(read+fragElements)%63;
-            __sync_synchronize();got=TRUE;break;
+            __sync_synchronize();dev->RpcRxSequence++;got=TRUE;break;
         }
         if(!got) {
             LogStr("NVX [RM]: continuation reply timed out index=");
@@ -607,7 +683,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 LogHex(expectedReplyBytes);LogStr(" continuation_records=");
                 LogHex(requestRecords-1);LogStr("\n");
                 __sync_synchronize();cmd->ReadPtr=(read+elements)%63;
-                __sync_synchronize();
+                __sync_synchronize();dev->RpcRxSequence++;
                 initialReplyConsumed=TRUE;
                 if(!NvxGspGatherReplyLocked(dev,expectedReplyBytes,&elements)) {
                     dev->GspRpcFaulted=TRUE;
@@ -619,7 +695,7 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
         if(!initialReplyConsumed) {
             __sync_synchronize();cmd->ReadPtr=(cmd->ReadPtr+elements)%63;__sync_synchronize();
         }
-        dev->RpcRxSequence++;
+        if(!initialReplyConsumed) dev->RpcRxSequence++;
         return result==0;
     }
     /* The request may still complete after our bounded wait. Do not send
