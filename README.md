@@ -30,13 +30,13 @@ The diagrams show the intended data flow and the current implementation boundari
 flowchart TB
   subgraph User[User mode]
     APP[OpenGL application]
-    D3D[Direct3D 9 application]
+    D3D[DirectX application]
     OGL[XP OpenGL loader / WGL]
     ICD[Mesa WGL ICD<br/>nvxogl64.dll]
-    WD[Optional WineD3D build<br/>D3D9 to OpenGL]
+    WD[WineD3D<br/>D3D9 / D3D8 / DirectDraw to OpenGL]
     GDI[GDI / XDDM display calls]
     APP --> OGL --> ICD
-    D3D -. optional test path .-> WD --> OGL
+    D3D --> WD --> OGL
     GDI --> DDI
   end
   subgraph Kernel[Windows XP x64 kernel]
@@ -55,7 +55,7 @@ flowchart TB
   MP -->|DMA, RM RPC, channel submission| RM
 ```
 
-The miniport owns device setup, memory mappings, RM/GSP communication, display modes, and the user/kernel submission ABI. `nvxdisp.dll` provides the XP XDDM display interface. The OpenGL ICD and Nouveau winsys use that ABI; the hardware 3D path is still being validated with broader workloads. Optional WineD3D binaries provide a compatibility/test layer for D3D applications; they are not part of the Windows display driver.
+The miniport owns device setup, memory mappings, RM/GSP communication, display modes, and the user/kernel submission ABI. `nvxdisp.dll` provides the XP XDDM display interface. The OpenGL ICD and Nouveau winsys use that ABI; the hardware 3D path is still being validated with broader workloads. WineD3D is the project's DirectX compatibility layer: it implements the D3D9, D3D8, and DirectDraw interfaces and translates their rendering through the OpenGL ICD. It is a required part of the DirectX path, although it is built and packaged separately from the display driver.
 
 ### Windows XP x86 and WOW64
 
@@ -105,11 +105,11 @@ sudo apt update
 sudo apt install build-essential git python3 \
   gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
   gcc-mingw-w64-i686 g++-mingw-w64-i686 \
-  binutils-mingw-w64 genisoimage
+  binutils-mingw-w64 genisoimage perl
 git submodule update --init --recursive
 ```
 
-The XP miniport embeds `dist_full/gsp_ga104.bin`; this firmware file must already be present. The minimal driver build does not build Mesa or WineD3D.
+The XP miniport embeds `dist_full/gsp_ga104.bin`; this firmware file must already be present. The miniport build does not build the OpenGL ICD or DirectX translation layer; build both before packaging graphics support.
 
 For the Mesa WGL ICD, install the additional cross-build tools:
 
@@ -163,6 +163,25 @@ NVX_MESA_ARCH=x86 MESON=/tmp/nvx-meson-venv/bin/meson ./test/build_mesa_xp64.sh
 
 The x64 build produces `dist_full/nvxogl64.dll` and `dist_full/nvxmesa.dll`; x86 produces `dist_full/nvxogl32.dll`. The ICD build includes Nouveau and Softpipe. A DLL's presence alone does not establish that an application selected Nouveau or completed its workload on the GPU.
 
+### Build the DirectX-to-OpenGL layer (required for DirectX)
+
+The project uses its pinned Wine source submodule to build XP-compatible WineD3D DLLs for both x64 and x86 applications. These provide Direct3D 9, Direct3D 8, and DirectDraw entry points and route rendering to the Mesa OpenGL ICD. Build them after installing the Debian cross-compilers above:
+
+```sh
+./test/build_wined3d_xp.sh
+```
+
+The script checks the pinned Wine revision and builds both architectures into `test/wined3d_xp/x64/` and `test/wined3d_xp/x86/`. For the x64 installer bundle, stage the native DLLs at the package root and preserve the x86 set in a subdirectory:
+
+```sh
+for dll in d3d9 d3d8 ddraw wined3d libwine; do
+  install -D -m 0644 "test/wined3d_xp/x64/$dll.dll" "dist_full/$dll.dll"
+  install -D -m 0644 "test/wined3d_xp/x86/$dll.dll" "dist_full/x86/$dll.dll"
+done
+```
+
+The offline image updater also reads the x86 outputs directly from `test/wined3d_xp/x86/` and installs them into `SysWOW64` when present. For a manual installation, place those x86 DLLs in the guest's `Windows\SysWOW64` directory; the x64 DLLs belong in `Windows\System32`. Do not mix architectures. `test_full_driver.sh` builds WineD3D by default before its integration run; set `NVX_BUILD_WINED3D=0` only when deliberately reusing an already-built WineD3D package.
+
 ### Build Windows XP x86 driver binaries
 
 ```sh
@@ -192,7 +211,7 @@ The output files are placed in `dist_win98/`.
 
 ### Windows XP x64
 
-`dist_full/` is the full integration bundle. Depending on what has been built, it can contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, x64/x86 OpenGL ICDs, `nvx.inf`, test programs, and optional WineD3D DLLs. These files are architecture-specific: the native x64 display driver and ICD go in `System32`; the x86 ICD for WOW64 applications goes in `SysWOW64`.
+`dist_full/` is the full integration bundle. For OpenGL and DirectX support it must contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvxogl64.dll`, `nvxogl32.dll`, the x64 WineD3D DLLs at its root, the x86 WineD3D DLLs under `x86/`, and `nvx.inf`. Test programs may also be included. These files are architecture-specific: native x64 DLLs go in `System32`; x86 DLLs for WOW64 applications go in `SysWOW64`.
 
 For the repository's prepared XP x64 guest image, shut the VM down and run the rootless offline updater:
 
@@ -206,7 +225,7 @@ This updates `winxp_x64.qcow2`, installs Mesa ICDs present in `dist_full/`, upda
 XP_MOUNT=/mnt/xp ./test/update_xp_driver.sh
 ```
 
-For manual installation in XP, copy the complete x64 integration package to a directory and run `install.bat` as Administrator. The batch file requires `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvx.inf`, `nvxmesa.dll`, `nvxogl64.dll`, and `nvxogl32.dll`; build both Mesa architectures before using it. It copies the miniport, firmware, display DLL, Mesa ICDs, and any optional D3D/WineD3D files in that folder, then registers the OpenGL ICD. Review the output and reboot. If installing only the display driver, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; install the OpenGL ICD separately by copying the matching DLL and adding the `OpenGLDrivers\nvxdisp` registry entry. Back up the guest before replacing system D3D DLLs.
+For manual installation in XP, copy the complete x64 integration package to a directory and run `install.bat` as Administrator. The batch file requires `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvx.inf`, `nvxmesa.dll`, `nvxogl64.dll`, and `nvxogl32.dll`; build both Mesa architectures before using it. Stage the x64 WineD3D DLLs at the package root before running it, since those provide the DirectX-to-OpenGL path. It copies the miniport, firmware, display DLL, Mesa ICDs, and staged x64 D3D/WineD3D DLLs, then registers the OpenGL ICD. Review the output and reboot. For 32-bit DirectX applications, copy the built x86 WineD3D DLLs from `x86/` into `Windows\SysWOW64`. If installing only the display driver, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; install the OpenGL ICD separately by copying the matching DLL and adding the `OpenGLDrivers\nvxdisp` registry entry. Back up the guest before replacing system D3D DLLs.
 
 After reboot, verify the renderer using the included test tools and logs. `GDI Generic` means the application fell back to software OpenGL. Successful installation does not prove that all OpenGL or Direct3D workloads are supported; 3D performance/correctness remains under active validation.
 
@@ -228,7 +247,7 @@ Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist
 
 ```
 ├── README.md           # Project overview and build instructions
-├── dist_full/           # XP x64 integration bundle: driver, firmware, ICDs, tests, optional WineD3D DLLs
+├── dist_full/           # XP x64 integration bundle: driver, firmware, ICDs, tests, and WineD3D DLLs
 ├── dist32/              # Windows XP x86 release package (nvxmp.sys, nvxdisp.dll, nvx.inf)
 ├── dist_win98/          # Windows 98 SE release package (nvx.drv, nvx2.drv, nvx.vxd, nvx.inf, attach_sec.exe)
 ├── src_driver/          # Unified GA104 miniport engine, GSP/RPC/MMU/Display code, and OpenRM HAL shim
