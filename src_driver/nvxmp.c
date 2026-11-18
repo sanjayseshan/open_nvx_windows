@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.314
+ * Driver Version: 3.0.0.315
  */
 
 #include "miniport.h"
@@ -2031,9 +2031,11 @@ static BOOLEAN Nvx3dAllocateRmBuffer(PNVX_DEVICE_EXTENSION engine,
     request->GpuVa=gpuVa;
     Nvx3dUnlockBuffers();
     engine->GspGraphicsUserAllocReady=TRUE;
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [RM-BO]: committed client BO id=");LogHex(id);
     LogStr(" handle=");LogHex(memoryHandle);LogStr(" va=");LogHex(gpuVa);
     LogStr(" bytes=");LogHex(request->Bytes);LogStr("\n");
+#endif
     return TRUE;
 }
 
@@ -2275,8 +2277,10 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
         if(entry&&entry->Busy&&entry->GpuVa==saved.GpuVa)
             entry->Busy=FALSE;
         Nvx3dUnlockBuffers();
+#if NVX_TRACE_HOTPATH
         LogStr("NVX [3D-FREE]: retained depth pool id=");LogHex(id);
         LogStr(" va=");LogHex(saved.GpuVa);LogStr("\n");
+#endif
         return TRUE;
     }
     if(entry->Busy) {
@@ -2309,10 +2313,12 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
         Nvx3dUnlockBuffers();return FALSE;
     }
     entry->Busy=TRUE;saved=*entry;Nvx3dUnlockBuffers();
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [3D-FREE]: found id=");LogHex(id);
     LogStr(" engine=");LogHex((ULONG64)engine);
     LogStr(" va=");LogHex(saved.GpuVa);LogStr(" usage=");
     LogHex(saved.Usage);LogStr("\n");
+#endif
     if(saved.Usage&NVX_3D_USAGE_GART_BUFFER) {
         if(!saved.SystemVirtual||!saved.GartPageCount) return FALSE;
         VideoPortZeroMemory(saved.SystemVirtual,saved.Bytes);
@@ -2535,7 +2541,9 @@ BOOLEAN NTAPI HwVidStartIO(
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_UPLOAD_BUFFER &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_DOWNLOAD_BUFFER &&
-       RequestPacket->IoControlCode!=IOCTL_NVX_3D_WAIT_FENCE) {
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_WAIT_FENCE &&
+       (NVX_TRACE_HOTPATH ||
+        RequestPacket->IoControlCode!=IOCTL_NVX_3D_FREE_BUFFER)) {
         LogStr("NVX: HwVidStartIO IoControlCode: ");
         LogHex(RequestPacket->IoControlCode);
         LogStr("\n");
@@ -4576,7 +4584,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.314 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.315 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.314**.
+Updated November 18, 2026. Current candidate: **3.0.0.315**.
 
 ## Performance work list (after .314)
 
@@ -17,17 +17,18 @@ captured interval. The extracted 3DMark output is empty, so there is no valid
 
 Prioritized speed-up plan:
 
-1. **Remove diagnostic I/O from timed runs.** Make the WineD3D D3D9 capability
-   patch write one summary per process/device or only when a capability check
-   fails, behind an explicit diagnostic switch. Keep the performance run's
-   log silent by default. The current patch opens/appends a file for every
-   `GetDeviceCaps` call; 687 records and 264 probe failures were captured in
-   .314. Do not interpret that run as a clean baseline.
-2. **Reduce hot-path driver logging.** Gate successful RM RPC, BO register/free,
-   NVC0 draw, and presentation messages behind a debug flag. On success, keep
-   counters and emit one summary at process exit or benchmark completion.
-   Preserve immediate logs for errors, timeouts, faults, invalid ownership, and
-   failed allocations. Avoid synchronous serial/file output in per-frame paths.
+1. **Remove diagnostic I/O from timed runs (implemented in .315).** D3D9 caps
+   and failed-probe Wine patches are now opt-in with
+   `NVX_D3D9_CAPS_DIAGNOSTICS=1`; the default Wine build keeps the point-size
+   compatibility fix but does not write `3dmark_caps.log` on every query.
+2. **Reduce hot-path driver logging (implemented in .315).** The default build
+   suppresses successful RM RPC/reply, RM-backed BO register/free, user BO
+   commit/free, and free-IOCTL trace lines. Error replies and all failure,
+   timeout, fault, ownership, and allocation diagnostics remain visible.
+   `NVX_TRACE_HOTPATH=1` at the driver build restores successful hot-path
+   traces for debugging. Submission/fence aggregates still emit on client
+   teardown. This removes serial-ring and debug-print work from common success
+   paths without changing synchronization or resource ownership.
 3. **Add aggregate stage timing before optimizing.** Measure CPU time and call
    counts for WineD3D GL calls, Nouveau state/BO work, miniport escape handling,
    RM registration, NVC0 submission, fence wait, and present/copy. Report totals,
@@ -67,8 +68,21 @@ Prioritized speed-up plan:
    and the benchmark exit marker. Repeat once to distinguish a stable change
    from startup variance.
 
-Suggested first implementation: items 1 and 2, followed by item 3. This gives
-a trustworthy baseline before changing batching, waits, or resource policy.
+Next implementation: item 3, aggregate stage timing, followed by the BO churn
+investigation. Avoid changing batching or fence semantics until timings identify
+where the CPU time is spent.
+
+### .315 quiet benchmark candidate
+
+Version `.315` contains the first performance-measurement changes. The Wine
+build script now omits the D3D9 failed-probe patch unless
+`NVX_D3D9_CAPS_DIAGNOSTICS=1` is set. The caps log blocks in the existing Wine
+patch are compile-time guarded by the same switch. Driver hot-path success logs
+are compile-time gated by `NVX_TRACE_HOTPATH`, default off. The change does not
+alter allocation policy, submission batching, fence waits, or presentation.
+The next full test should rebuild Wine (do not set `NVX_BUILD_WINED3D=0`), keep
+both monitors on, and complete 3DMark before comparing FPS. No hardware test of
+`.315` has been run yet.
 
 ### .314 run notes
 

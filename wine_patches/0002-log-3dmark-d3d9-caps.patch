@@ -11,6 +11,7 @@ index 16b27e5..a576494 100644
 +    if (caps->MaxPointSize >= 63.0f && caps->MaxPointSize < 64.0f)
 +        caps->MaxPointSize = 64.0f;
 +
++#ifdef NVX_D3D9_CAPS_DIAGNOSTICS
 +    {
 +        char process_name[MAX_PATH], line[1024];
 +        DWORD length, written;
@@ -58,6 +59,7 @@ index 16b27e5..a576494 100644
 +            }
 +        }
 +    }
++#endif
 +
      return hr;
  }
@@ -74,6 +76,7 @@ index 58c4d44..8ee6e9d 100644
 +    if (caps->MaxPointSize >= 63.0f && caps->MaxPointSize < 64.0f)
 +        caps->MaxPointSize = 64.0f;
 +
++#ifdef NVX_D3D9_CAPS_DIAGNOSTICS
 +    {
 +        char process_name[MAX_PATH], line[1024];
 +        DWORD length, written;
@@ -121,6 +124,7 @@ index 58c4d44..8ee6e9d 100644
 +            }
 +        }
 +    }
++#endif
 +
      return hr;
  }

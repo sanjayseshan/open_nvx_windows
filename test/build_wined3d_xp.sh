@@ -4,6 +4,7 @@ NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_WINE_COMMIT=a786dca935c3e9b3d85853db4b61700e590a1c8b
 NVX_WINE_BUILD="${NVX_WINE_BUILD:-/tmp/nvx-wined3d-xp}"
 NVX_WINE_JOBS="${JOBS:-8}"
+NVX_D3D9_CAPS_DIAGNOSTICS="${NVX_D3D9_CAPS_DIAGNOSTICS:-0}"
 if [ "$(git -C "$NVX_ROOT/wine" rev-parse HEAD)" != "$NVX_WINE_COMMIT" ]; then
     echo "Expected Wine 1.7.55 at $NVX_WINE_COMMIT" >&2
     exit 1
@@ -13,7 +14,11 @@ mkdir -p "$NVX_WINE_BUILD/source" "$NVX_WINE_BUILD/host-tools"
 git -C "$NVX_ROOT/wine" archive "$NVX_WINE_COMMIT" | tar -xf - -C "$NVX_WINE_BUILD/source"
 git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0001-native-wgl-pixel-format-query.patch"
 git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0002-log-3dmark-d3d9-caps.patch"
-git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0003-log-3dmark-d3d9-failed-probes.patch"
+NVX_WINE_DIAG_CFLAGS=
+if [ "${NVX_D3D9_CAPS_DIAGNOSTICS:-0}" = "1" ]; then
+    git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0003-log-3dmark-d3d9-failed-probes.patch"
+    NVX_WINE_DIAG_CFLAGS='-DNVX_D3D9_CAPS_DIAGNOSTICS'
+fi
 (
     cd "$NVX_WINE_BUILD/host-tools"
     ../source/configure --enable-win64 --without-x --without-freetype
@@ -32,7 +37,7 @@ for nvx_arch in x64 x86; do
         # Wine 1.7 predates GCC's -fno-common default.
         ../source/configure --host="$nvx_target" "${nvx_options[@]}" \
             --with-wine-tools="$NVX_WINE_BUILD/host-tools" --without-x --without-freetype \
-            CFLAGS='-O2 -fcommon -DUSE_WIN32_OPENGL -D_WIN32_WINNT=0x0502 -DWINVER=0x0502'
+            CFLAGS="-O2 -fcommon -DUSE_WIN32_OPENGL -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 $NVX_WINE_DIAG_CFLAGS"
         make -j"$NVX_WINE_JOBS" dlls/wined3d dlls/d3d9 dlls/d3d8 dlls/ddraw
     )
     mkdir -p "$NVX_ROOT/test/wined3d_xp/$nvx_arch"

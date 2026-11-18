@@ -554,8 +554,10 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
         LogHex(totalBytes);LogStr(" request_records=");LogHex(recordCount);LogStr("\n");
         return FALSE;
     }
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [RM]: reassembled large bidirectional reply bytes=");
     LogHex(totalBytes);LogStr(" queue_records=");LogHex(recordCount);LogStr("\n");
+#endif
     return TRUE;
 }
 
@@ -566,7 +568,9 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
     if(!dev->GspInitialized||dev->GspRpcFaulted||cmd->WritePtr>=63||
        cmd->ReadPtr>=63||stat->ReadPtr>=63) return FALSE;
     if(!NvxGspSendRpcLargeLocked(dev,expected,payload,bytes)) return FALSE;
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [RM]: RPC submitted function=");LogHex(expected);LogStr("\n");
+#endif
     BOOLEAN initialReplyConsumed=FALSE;
     for(ULONG wait=0;wait<20000;wait++) {
         ULONG read=cmd->ReadPtr,head=stat->WritePtr;
@@ -584,8 +588,10 @@ static BOOLEAN NvxGspCallLocked(PNVX_DEVICE_EXTENSION dev,ULONG expected,
             LogStr("NVX [RM]: RPC stream validation failed; queue quarantined.\n");
             return FALSE;
         }
-        LogStr("NVX [RM]: reply function=");LogHex(function);
-        LogStr(" result=");LogHex(result);LogStr("\n");
+        if(result || NVX_TRACE_HOTPATH) {
+            LogStr("NVX [RM]: reply function=");LogHex(function);
+            LogStr(" result=");LogHex(result);LogStr("\n");
+        }
         if(!result && NvxGspHandleRpcEvent(dev,function,result,
                                           (const ULONG *)dev->RpcRxRecord)) {
             __sync_synchronize();cmd->ReadPtr=(read+elements)%63;__sync_synchronize();
@@ -673,8 +679,10 @@ static BOOLEAN NvxGspAlloc(PNVX_DEVICE_EXTENSION dev,ULONG parent,ULONG object,
         LogStr(" parent=");LogHex(words[21]);LogStr(" handle=");LogHex(words[22]);
         LogStr(" reply class=");LogHex(words[23]);LogStr("\n");return FALSE;
     }
-    LogStr("NVX [RM]: allocation class=");LogHex(hclass);
-    LogStr(" status=");LogHex(words[24]);LogStr("\n");
+    if(words[24] || NVX_TRACE_HOTPATH) {
+        LogStr("NVX [RM]: allocation class=");LogHex(hclass);
+        LogStr(" status=");LogHex(words[24]);LogStr("\n");
+    }
     return words[24]==0;
 }
 
@@ -756,10 +764,13 @@ BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
         LogStr(" pages=");LogHex(pageCount);LogStr("\n");return FALSE;
     }
     *gpuVa=mappedVa;
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [RM-BO]: OpenRM registered FB pages handle=");LogHex(memoryHandle);
     LogStr(" va=");LogHex(mappedVa);LogStr(" physical-offset=");
     LogHex(physicalOffset);LogStr(" bytes=");LogHex(bytes);
-    LogStr(" alignment=");LogHex(alignment);LogStr("\n");return TRUE;
+    LogStr(" alignment=");LogHex(alignment);LogStr("\n");
+#endif
+    return TRUE;
 }
 
 BOOLEAN NvxGspFreeVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
@@ -772,8 +783,11 @@ BOOLEAN NvxGspFreeVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
     payload[2]=memoryHandle;payload[3]=0; /* NVOS00 status output */
     if(!NvxGspCall(dev,10,payload,sizeof(payload))) return FALSE;
     /* RPC FREE also reports success in the common header without echo data. */
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [RM-BO]: OpenRM deregistered FB pages handle=");
-    LogHex(memoryHandle);LogStr(" va=");LogHex(dmaOffset);LogStr("\n");return TRUE;
+    LogHex(memoryHandle);LogStr(" va=");LogHex(dmaOffset);LogStr("\n");
+#endif
+    return TRUE;
 }
 
 static BOOLEAN __attribute__((unused)) NvxGspGetClassEngineId(PNVX_DEVICE_EXTENSION dev,
