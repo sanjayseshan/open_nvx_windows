@@ -328,6 +328,8 @@ if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05_START] > \\.\COM1
     if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
+        rem Keep WineD3D diagnostics from dominating the serial log during this long run.
+        set WINEDEBUG=-all
         3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -res=800x600 > C:\3dmark05.log 2>&1
         set NVX_TEST_RC=!ERRORLEVEL!
         echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log

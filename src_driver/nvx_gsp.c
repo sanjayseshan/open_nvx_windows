@@ -4122,6 +4122,20 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     LogStr(" userdPut=");LogHex(userd[0x8c/4]);
     LogStr(" expectedPut=");LogHex(channel->Put);LogStr(" fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
+    /* Preserve the exact Nouveau stream that triggered the timeout. This is
+       failure-only, so normal submission cost is unchanged. It lets us tell
+       whether bad methods/data originated in Mesa or appeared after submit. */
+    LogStr("NVX [NVC0-STREAM]: begin token=");LogHex(clientToken);
+    LogStr(" sourceVa=");LogHex(pushGpuVa);
+    LogStr(" dwords=");LogHex(dwordCount);LogStr("\n");
+    for(i=0;i<dwordCount;i++) {
+        if((i&7U)==0U) {
+            LogStr("NVX [NVC0-STREAM]: ");LogHex(i);LogStr(":");
+        }
+        LogStr(" ");LogHex(nvc0Dwords[i]);
+        if((i&7U)==7U||i+1U==dwordCount) LogStr("\n");
+    }
+    LogStr("NVX [NVC0-STREAM]: end\n");
     for(i=0;i<tailCount;i++) {
         LogStr("NVX [NVC0-BATCH]: tail[");LogHex(i);LogStr("]=");
         LogHex(push[dwordCount+i]);LogStr("\n");

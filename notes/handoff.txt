@@ -1,6 +1,23 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.311**.
+Updated November 18, 2026. Current candidate: **3.0.0.312**.
+
+## .312: capture the exact stream on the recurring 3DMark GPU fault
+
+The .311 run reproduced the same shader-program-header/RC fault seen in .309
+and .310. The failure report only retained the final five semaphore-tail
+dwords, so it could not show whether the invalid method or data was already
+present in Mesa's NVC0 batch. .312 adds a failure-only dump of every submitted
+Nouveau dword, with token, source GPU VA, and offsets. It runs only after a
+batch fence timeout; successful submission behavior is unchanged. The next
+3DMark VFIO trace should let us decode the methods and shader upload sequence
+and compare source data with the miniport pushbuffer.
+
+The automated 3DMark launch sets `WINEDEBUG=-all` to prevent repetitive
+WineD3D fixme output from overwhelming the serial log. If the guest build does
+not honor this setting, inspect log size and adjust the launcher separately.
+Both x64 and x86 miniport builds and `make -C src_driver check` passed for
+.312. Hardware validation is pending.
 
 ## .307: correct OpenRM RPC message sizing (hardware verified)
 
