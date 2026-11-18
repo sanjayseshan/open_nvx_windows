@@ -406,7 +406,10 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
     uint32_t firstLength=((uint32_t *)dev->RpcRxRecord)[14];
     uint32_t totalBytes=requestBytes;
     size_t received;
-    if(firstLength<32||firstLength>first*4096-48) return FALSE;
+    if(firstLength<32||firstLength>first*4096-48) {
+        LogStr("NVX [RM]: large reply first length invalid len=");LogHex(firstLength);
+        LogStr(" elements=");LogHex(first);LogStr("\n");return FALSE;
+    }
     received=firstLength-32;
     if(received>totalBytes) received=totalBytes;
     if(!recordCount) recordCount=1;
@@ -420,24 +423,58 @@ static BOOLEAN NvxGspGatherReplyLocked(PNVX_DEVICE_EXTENSION dev,
             __sync_synchronize();
             gathered=NvxGatherRpc((PUCHAR)dev->StatQueueVirtual+4096,63*4096,
                 63,read,head,dev->RpcTxRecord,sizeof(dev->RpcTxRecord),&fragElements);
-            if(gathered<0) return FALSE;
+            if(gathered<0) {
+                LogStr("NVX [RM]: continuation queue record malformed read=");
+                LogHex(read);LogStr(" write=");LogHex(head);
+                LogStr(" elem_count=");LogHex(*(volatile ULONG *)((PUCHAR)dev->StatQueueVirtual+4096+read*4096+40));
+                LogStr(" length=");LogHex(*(volatile ULONG *)((PUCHAR)dev->StatQueueVirtual+4096+read*4096+56));
+                LogStr(" function=");LogHex(*(volatile ULONG *)((PUCHAR)dev->StatQueueVirtual+4096+read*4096+60));LogStr("\n");
+                return FALSE;
+            }
             if(!gathered) {VideoPortStallExecution(100);continue;}
             if(fragElements!=1||
                !NvxDecodeRpcRecord(dev->RpcTxRecord,4096,&fragFunction,
-                                   &fragResult,&fragSequence,&decoded)||decoded!=1) return FALSE;
-            if(fragFunction!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) return FALSE;
+                                   &fragResult,&fragSequence,&decoded)||decoded!=1) {
+                LogStr("NVX [RM]: continuation RPC header invalid len=");
+                LogHex(*(ULONG *)(dev->RpcTxRecord+56));LogStr(" count=");
+                LogHex(*(ULONG *)(dev->RpcTxRecord+40));LogStr(" function=");
+                LogHex(*(ULONG *)(dev->RpcTxRecord+60));LogStr("\n");return FALSE;
+            }
+            if(fragFunction!=NVX_RPC_FUNCTION_CONTINUATION_RECORD) {
+                LogStr("NVX [RM]: expected continuation function, received=");
+                LogHex(fragFunction);LogStr(" seq=");LogHex(fragSequence);LogStr("\n");
+                return FALSE;
+            }
             if(!NvxRpcAppendContinuation(dev->RpcRxRecord,
                     sizeof(dev->RpcRxRecord),&received,dev->RpcTxRecord,
-                    4096,totalBytes)) return FALSE;
+                    4096,totalBytes)) {
+                LogStr("NVX [RM]: continuation payload rejected len=");
+                LogHex(*(ULONG *)(dev->RpcTxRecord+56));LogStr(" received=");
+                LogHex(received);LogStr(" total=");LogHex(totalBytes);LogStr("\n");
+                return FALSE;
+            }
             __sync_synchronize();cmd->ReadPtr=(read+fragElements)%63;
             __sync_synchronize();got=TRUE;break;
         }
-        if(!got) return FALSE;
+        if(!got) {
+            LogStr("NVX [RM]: continuation reply timed out index=");
+            LogHex(index);LogStr(" received=");LogHex(received);
+            LogStr(" expected=");LogHex(totalBytes);LogStr(" read=");
+            LogHex(cmd->ReadPtr);LogStr(" write=");LogHex(stat->WritePtr);LogStr("\n");
+            return FALSE;
+        }
     }
-    if(received!=totalBytes) return FALSE;
+    if(received!=totalBytes) {
+        LogStr("NVX [RM]: large reply size mismatch received=");LogHex(received);
+        LogStr(" expected=");LogHex(totalBytes);LogStr("\n");return FALSE;
+    }
     /* Recreate the contiguous record as the OpenRM shim's callers expect. */
     if(!NvxRpcFinalizeLargeReply(dev->RpcRxRecord,sizeof(dev->RpcRxRecord),
-                                  totalBytes,recordCount)) return FALSE;
+                                  totalBytes,recordCount)) {
+        LogStr("NVX [RM]: large reply finalization failed bytes=");
+        LogHex(totalBytes);LogStr(" request_records=");LogHex(recordCount);LogStr("\n");
+        return FALSE;
+    }
     LogStr("NVX [RM]: reassembled large bidirectional reply bytes=");
     LogHex(totalBytes);LogStr(" queue_records=");LogHex(recordCount);LogStr("\n");
     return TRUE;

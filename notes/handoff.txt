@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.301**.
+Updated November 18, 2026. Current candidate: **3.0.0.302**.
 
 ## Current status and remaining work
 
@@ -46,7 +46,7 @@ caused its final host verdict to exit with a parser error; the saved-log
 verdict checks were rerun separately and passed. Hardware/guest suite passed;
 no additional boot was used to conceal or rerun that result.
 
-Next: hardware-test .301 large bidirectional RPC receive and page-list
+Next: hardware-test .302 large bidirectional RPC receive and page-list
 registration; audit GART lifetimes/fragmentation; then retry 3DMark with live
 allocation statistics.
 Do not expand firmware-reserved physical ranges. Relevant upstream transport:
@@ -75,6 +75,15 @@ the maximum control buffer plus the RPC header. A 24 KiB continuation
 round-trip is covered by the RPC unit test; full host suite passed. Hardware
 validation pending. Files: src_driver/nvx_gsp.{c,h}, nvx_rpc.{c,h},
 src_driver/tests/rpc_test.c.
+
+.301 reached the large-reply receive path but reported only the generic
+“invalid/incomplete” message, so it did not validate continuation records.
+Native channel setup consequently failed, and 3DMark exited with code 128
+before producing a result. Log: test_logs/v3.0.0.301-20261117-232933.log.
+.302 adds reason-specific logging for queue availability, record framing,
+continuation function, payload size, and finalization. Its no-3DMark boot
+isolates whether firmware emitted the expected continuation records and
+which receive check rejects them; retry 3DMark after native/GR startup passes.
 
 ## .299/.300: use OpenRM continuation records and swapped queue pointers
 
