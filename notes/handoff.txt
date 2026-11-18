@@ -1,6 +1,19 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.313**.
+Updated November 18, 2026. Current candidate: **3.0.0.314**.
+
+## .313: inconclusive because the DP monitor was off
+
+The .313 code compiled for x64/x86 and passed `make -C src_driver check`.
+During the hardware run the guest enumerated only one connected output
+(`0x200`, protocol 9); the DP output (`0x800`) was absent. The user later
+confirmed that monitor had been off and asked to restart with it on. This can
+change HPD, EDID, active head routing, and DP AUX status, so `.313` did not
+exercise the two-monitor AUX failure that `.312` exposed. The run did show
+NV170 and completed gears at about 53.7 FPS; 3DMark did not complete. Log:
+`test_logs/v3.0.0.313-20261118-123603.log` and extracted D3D9 caps artifact.
+Its lack of mode-loop failures is not proof of the fix because the DP display
+was absent. .314 repeats the same fix with the DP monitor on.
 
 ## .312: confirmed the 3DMark black-screen mode loop
 
