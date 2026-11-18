@@ -1,6 +1,6 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 18, 2026. Current candidate: **3.0.0.310**.
+Updated November 18, 2026. Current candidate: **3.0.0.311**.
 
 ## .307: correct OpenRM RPC message sizing (hardware verified)
 
@@ -41,7 +41,7 @@ open-gpu-kernel-modules/src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h,
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c, and
 src/nvidia/kernel/vgpu/nv/rpc.c (_issueRpcLarge).
 
-## Current status and remaining work (.310 built; hardware retest pending)
+## Current status and remaining work (.311 built; hardware retest pending)
 
 .307 restored hardware NV170 rendering on both architectures and resolved the
 function-71 INVALID_FUNCTION/RPC quarantine that caused GDI Generic and
@@ -98,24 +98,30 @@ errors, or GPU queue timeout. Native GL remained NV170; gears reached 63 FPS,
 the cube completed 300 frames at about 60.7 FPS, D3D9 ran at about 58 FPS,
 and the miniport 3D and 2D checks passed. No RC/MMU fault appeared.
 
-The longer workload exposed the next limit: the fixed 2,048-entry user BO
-table filled 565 times. That produced repeated `nouveau: kernel rejected
-pushbuf: Operation not permitted` messages and prevented 3DMark from exiting;
-the run was stopped after the failure was established. It does not prove the
-3DMark benchmark result. `-verbose` also expanded the captured trace to about
-1.5 GB and is removed from the next automated run.
+The `.309` trace also had a GPU fault before table exhaustion: a batch fence
+timed out, then OpenRM reported multiple `Shader Program Header` exceptions
+and an RC channel fault. `.310` reproduced the same shader-header/RC fault
+after 3DMark started. It did not fill the larger table and reported no MDL or
+common-buffer allocation failure, GART pressure, or MMU fault. The run was
+stopped after the GPU fault was established; 3DMark did not exit. The `.310`
+3DMark trace is only 824 KiB after removing `-verbose` (the `.309` verbose log
+was about 1.5 GB).
 
-`.310` raises the BO table to 8,192 entries and reports live/busy/GART/client
-counts sparsely if it fills again. It emits a single proof line for the first
-successful MDL-backed GART mapping, including page count and physical run
-count. The automated 3DMark command no longer requests verbose output.
-`make -C src_driver check` and x64/x86 builds passed on `.309`; `.310` checks
-and hardware test remain pending.
+`.310` raised the BO table to 8,192 entries and added sparse live/busy/GART/
+client counts if it fills again. Its trace confirmed the first successful MDL
+GART mapping used 128 distinct physical runs; 3DMark did not exhaust the table.
+Native GL stayed on NV170, the cube rendered 300 frames at 60.5–60.8 FPS, and
+the standard 3D/2D checks passed.
 
-Next: run the host suite and VFIO test on `.310`. Confirm table pressure is
-gone, MDL mappings remain valid through submit/free, and 3DMark produces its
-exit and suite PASS markers. Relevant implementation files remain
-src_driver/nvx_gr_context.{c,h}, src_driver/nvx_gsp.{c,h}, src_driver/nvx_mdl.{c,h},
+`.311` maps MDL pages with `MmMapLockedPagesSpecifyCache(..., MmNonCached, ...)`
+instead of `MmGetSystemAddressForMdlSafe`, matching the existing uncached
+VideoPort common-buffer mapping. The candidate targets stale/corrupt shader
+bytes as the likely cause of the shader-header fault. Host checks and x64/x86
+builds pass on `.310`; `.311` checks and hardware retest remain pending.
+
+Next: run host checks and a VFIO test on `.311`. Confirm the shader-header/RC
+fault is gone, MDL mappings remain valid through submit/free, and 3DMark exits
+with suite PASS. Relevant files: src_driver/nvx_mdl.c, src_driver/nvx_gsp.c,
 src_driver/nvxmp.c, and test/update_disk_driver_user.sh.
 
 Relevant files: src_driver/nvx_gr_context.{c,h} (VA allocation/translation),

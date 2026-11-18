@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.310
+ * Driver Version: 3.0.0.311
  */
 
 #include "miniport.h"
@@ -1811,7 +1811,8 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
         ULONG_PTR *pfns=(ULONG_PTR *)pfnArray;
         for(index=1;index<pages;index++)
             if(pfns[index]!=pfns[index-1]+1U) runs++;
-        LogStr("NVX [GART-MDL]: mapped bytes=");LogHex(request->Bytes);
+        LogStr("NVX [GART-MDL]: mapped cpu_cache=uncached bytes=");
+        LogHex(request->Bytes);
         LogStr(" pages=");LogHex(pages);LogStr(" physical_runs=");
         LogHex(runs);LogStr(" first_pfn=");
         LogHex(pages?(ULONG64)pfns[0]:0);LogStr(" last_pfn=");
@@ -4575,7 +4576,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.310 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.311 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

@@ -28,7 +28,11 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
         return 0;
     }
 
-    systemVirtual = MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
+    /* Match existing VideoPort common buffers, requested uncached by this
+     * miniport. The cached alias fed the GPU stale shader bytes through GART. */
+    systemVirtual = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached,
+                                                  NULL, FALSE,
+                                                  NormalPagePriority);
     if (!systemVirtual) {
         MmFreePagesFromMdl(mdl);
         ExFreePool(mdl);
