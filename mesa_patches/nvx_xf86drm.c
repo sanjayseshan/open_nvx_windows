@@ -133,6 +133,7 @@ struct nvx_drm_device_slot {
    uint32_t gr_draw_state_snapshot_done;
    uint32_t gr_ffvs_draw_state_snapshot_done;
 #endif
+   uint32_t handle_slots[NVX_DRM_BUFFER_SLOTS];
    struct nvx_drm_bo_slot buffers[NVX_DRM_BUFFER_SLOTS];
    struct nvx_drm_object_slot objects[NVX_DRM_OBJECT_SLOTS];
 };
@@ -1291,12 +1292,19 @@ nvx_drm_find_device_locked(int fd)
 static struct nvx_drm_bo_slot *
 nvx_drm_find_bo_locked(struct nvx_drm_device_slot *device, uint32_t handle)
 {
-   unsigned i;
+   unsigned i, bucket;
    if (!device || !handle)
       return NULL;
-   for (i = 0; i < NVX_DRM_BUFFER_SLOTS; i++)
-      if (device->buffers[i].handle == handle)
+   bucket=handle % NVX_DRM_BUFFER_SLOTS;
+   i=device->handle_slots[bucket];
+   if (i && i<=NVX_DRM_BUFFER_SLOTS &&
+       device->buffers[i-1U].handle==handle)
+      return &device->buffers[i-1U];
+   for (i=0; i<NVX_DRM_BUFFER_SLOTS; i++)
+      if (device->buffers[i].handle==handle) {
+         device->handle_slots[bucket]=i+1U;
          return &device->buffers[i];
+      }
    return NULL;
 }
 

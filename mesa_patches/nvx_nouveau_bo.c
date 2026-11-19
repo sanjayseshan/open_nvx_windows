@@ -9,7 +9,7 @@ void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                    uint32_t a, uint32_t b, uint32_t c,
                                    uint32_t d, uint32_t e, uint32_t f);
 static uint32_t nvx_bo_readmap_trace_count;
-static uint32_t nvx_bo_dirty_trace_count;
+
 #endif
 
 #define NVX_4K_GART_BO_POOL_CAPACITY 32
@@ -307,75 +307,86 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
    return bo->shadow;
 }
 
+/* Publish one packet, then advance the baseline only for acknowledged bytes. */
+static int
+nvx_nouveau_bo_publish_spans(NVX_NOUVEAU_BO *bo, NVX_3D_UPLOAD_SPANS *r)
+{
+   uint32_t i, cursor=0;
+   const uint8_t *data=(const uint8_t *)(r+1);
+   if (!NvxWinsysUploadSpans(bo->device, r, bo->allocation.Bytes))
+      return 0;
+   for (i=0; i<r->Count; i++) {
+      memcpy(bo->shadow_base+r->Spans[i].Offset, data+cursor,
+             r->Spans[i].Bytes);
+      cursor+=r->Spans[i].Bytes;
+   }
+   bo->contents_valid=1;
+   r->Count=0;
+   r->DataBytes=0;
+   return 1;
+}
+
 static int
 nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
                            uint32_t end)
 {
-   uint32_t uploaded = 0;
-   int waited = 0;
+   NVX_3D_UPLOAD_SPANS *r=NULL;
+   int waited=0, ok=0;
    if (!bo || !bo->references)
       return 0;
    if (!bo->map_count)
       return 1;
-   if (!bo->shadow || !bo->shadow_base)
+   if (!bo->shadow || !bo->shadow_base ||
+       end>bo->allocation.Bytes || offset>end || (offset&3U) || (end&3U))
       return 0;
-   if (end > bo->allocation.Bytes || offset > end || (offset & 3U) ||
-       (end & 3U))
-      return 0;
-   while (offset < end) {
-      uint32_t start = offset;
-      /* Skip unchanged pages quickly, then publish exact changed dwords.
-       * Whole-BO uploads can clobber GPU-written neighbouring allocations. */
-      if (bo->shadow_base_valid && !(offset & 4095U) &&
-          end - offset >= 4096U &&
-          !memcmp(bo->shadow + offset, bo->shadow_base + offset, 4096U)) {
-         offset += 4096U;
+   while (offset<end) {
+      uint32_t start=offset, bytes;
+      if (bo->shadow_base_valid && !(offset&4095U) &&
+          end-offset>=4096U &&
+          !memcmp(bo->shadow+offset, bo->shadow_base+offset, 4096U)) {
+         offset+=4096U;
          continue;
       }
       if (bo->shadow_base_valid &&
-          !memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U)) {
-         offset += 4U;
+          !memcmp(bo->shadow+offset, bo->shadow_base+offset, 4U)) {
+         offset+=4U;
          continue;
       }
+      if (!r) {
+         r=(NVX_3D_UPLOAD_SPANS *)malloc(sizeof(*r)+NVX_3D_MAX_UPLOAD_BYTES);
+         if (!r) goto done;
+         memset(r,0,sizeof(*r));
+         r->Size=sizeof(*r);
+         r->Version=NVX_3D_ABI_VERSION;
+         r->BufferId=bo->allocation.BufferId;
+         r->ClientToken=bo->allocation.ClientToken;
+      }
       do {
-         offset += 4U;
-      } while (offset < end &&
+         offset+=4U;
+      } while (offset<end &&
+               offset-start<NVX_3D_MAX_UPLOAD_BYTES-r->DataBytes &&
                (!bo->shadow_base_valid ||
-                memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U)));
+                memcmp(bo->shadow+offset, bo->shadow_base+offset, 4U)));
+      bytes=offset-start;
+      r->Spans[r->Count].Offset=start;
+      r->Spans[r->Count++].Bytes=bytes;
+      memcpy((uint8_t *)(r+1)+r->DataBytes, bo->shadow+start, bytes);
+      r->DataBytes+=bytes;
       if (!waited && bo->last_fence &&
           !NvxWinsysWaitFence(bo->device, bo->last_fence, 5000))
-         return 0;
-      waited = 1;
-      if (!NvxWinsysUploadBuffer(bo->device, bo->allocation.BufferId,
-                                 bo->allocation.Bytes, start,
-                                 bo->shadow + start, offset - start))
-         return 0;
-#if defined(NVX_XP_WIN32_SHIMS) && \
-    (defined(_WIN32) || defined(_WIN64))
-      if (nvx_bo_dirty_trace_count < 48U) {
-         uint32_t gpu[16];
-         uint32_t sample = offset - start;
-         uint32_t ok, matches;
-         if (sample > sizeof(gpu)) sample = sizeof(gpu);
-         ok = (uint32_t)NvxWinsysDownloadBuffer(bo->device,
-            bo->allocation.BufferId, bo->allocation.Bytes, start, gpu, sample);
-         matches = ok && !memcmp(gpu, bo->shadow + start, sample);
-         NvxWglRecordNouveauPushbufItem(19U, nvx_bo_dirty_trace_count++,
-            (uint32_t)bo->allocation.BufferId, start, offset - start,
-            bo->map_access, ok, matches);
-         if (!matches) return 0;
-      }
-#endif
-      memcpy(bo->shadow_base + start, bo->shadow + start, offset - start);
-      uploaded += offset - start;
+         goto done;
+      waited=1;
+      if (r->Count==NVX_3D_MAX_UPLOAD_SPANS ||
+          r->DataBytes==NVX_3D_MAX_UPLOAD_BYTES)
+         if (!nvx_nouveau_bo_publish_spans(bo,r)) goto done;
    }
-   if (!uploaded)
-      return 1;
-   bo->shadow_base_valid = 1U;
-   bo->contents_valid = 1;
-   /* A partial upload does not refresh untouched GPU-written words. Keep
-    * shadow_fence stale until an actual download has merged those words. */
-   return 1;
+   if (r && r->Count && !nvx_nouveau_bo_publish_spans(bo,r)) goto done;
+   if (r) bo->shadow_base_valid=1U;
+   /* Untouched GPU-written bytes still require an actual readback. */
+   ok=1;
+done:
+   free(r);
+   return ok;
 }
 
 int

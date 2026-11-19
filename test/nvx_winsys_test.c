@@ -39,6 +39,8 @@ struct mock_state {
    uint32_t event_count;
    uint32_t events[256];
    int fail_wait;
+   int fail_spans;
+   uint32_t span_escapes;
    struct mock_buffer buffers[MOCK_MAX_BUFFERS];
 };
 
@@ -172,6 +174,24 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       buffer->storage = calloc(1, buffer->bytes);
       assert(buffer->storage != NULL);
       record_event(mock, MOCK_EVENT_ALLOC);
+      return 1;
+   }
+   case NVX_ESCAPE_3D_UPLOAD_SPANS: {
+      const NVX_3D_UPLOAD_SPANS *r=input;
+      struct mock_buffer *buffer=find_buffer(mock,r->BufferId);
+      uint32_t i,cursor=0;
+      assert(buffer && !output_bytes && !output);
+      assert(Nvx3dValidateUploadSpans(r,input_bytes,buffer->bytes));
+      mock->span_escapes++;
+      if(mock->fail_spans) return 0;
+      for(i=0;i<r->Count;i++) {
+         memcpy(buffer->storage+r->Spans[i].Offset,
+                (const uint8_t *)(r+1)+cursor,r->Spans[i].Bytes);
+         cursor+=r->Spans[i].Bytes;
+      }
+      mock->upload_bytes+=cursor;
+      mock->upload_count++;
+      record_event(mock,MOCK_EVENT_UPLOAD);
       return 1;
    }
    case NVX_ESCAPE_3D_UPLOAD: {
@@ -765,6 +785,51 @@ main(void)
        * live session and device through its final fence wait. */
       assert(NvxNouveauScreenFreeBuffer(&nouveau_screen, &target));
       NvxNouveauScreenDestroy(&nouveau_screen);
+   }
+
+   /* Sparse CPU writes must use one escape without clobbering bytes written
+    * by the GPU between them; a rejected packet must remain dirty. */
+   {
+      NVX_3D_ALLOC_BUFFER description={0};
+      NVX_NOUVEAU_BO bo;
+      struct mock_buffer *gpu;
+      uint8_t *mapped;
+      uint32_t previous;
+      device.caps.Features|=NVX_3D_FEATURE_UPLOAD_SPANS;
+      description.Usage=NVX_3D_USAGE_GART_BUFFER;description.Bytes=131072;
+      assert(NvxNouveauBoCreate(&device,&description,device.ClientToken,&bo));
+      mapped=NvxNouveauBoMap(&bo,NVX_NOUVEAU_BO_WRITE);
+      assert(mapped);
+      /* Publish initial contents before simulating independent GPU writes. */
+      assert(NvxNouveauBoFlush(&bo));
+      gpu=find_buffer(&mock,bo.allocation.BufferId);assert(gpu);
+      gpu->storage[128]=0xab;
+      mapped[0]=0x12;mapped[4092]=0x34;
+      previous=mock.span_escapes;
+      assert(NvxNouveauBoFlush(&bo));
+      assert(mock.span_escapes==previous+1);
+      assert(gpu->storage[0]==0x12 && gpu->storage[4092]==0x34);
+      assert(gpu->storage[128]==0xab);
+      previous=mock.span_escapes;
+      assert(NvxNouveauBoFlush(&bo));
+      assert(mock.span_escapes==previous);
+      mapped[4]=0x56;mock.fail_spans=1;
+      assert(!NvxNouveauBoFlush(&bo));
+      assert(bo.shadow_base[4]!=0x56 && gpu->storage[4]!=0x56);
+      mock.fail_spans=0;
+      assert(NvxNouveauBoFlush(&bo));
+      assert(gpu->storage[4]==0x56);
+      /* More than 64 disjoint writes and >60 KiB exercise packet splitting. */
+      for(previous=0;previous<200;previous++) mapped[previous*8]=0x78;
+      assert(NvxNouveauBoFlush(&bo));
+      for(previous=0;previous<200;previous++)
+         assert(gpu->storage[previous*8]==0x78);
+      memset(mapped+8192,0x9a,122880);
+      assert(NvxNouveauBoFlush(&bo));
+      assert(gpu->storage[131071]==0x9a);
+      assert(NvxNouveauBoUnmap(&bo));
+      assert(NvxNouveauBoDestroy(&bo));
+      device.caps.Features&=~NVX_3D_FEATURE_UPLOAD_SPANS;
    }
 
    assert(NvxWinsysCloseClient(&device));

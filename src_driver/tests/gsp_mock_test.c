@@ -524,12 +524,24 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
     if(off==0x220490 && dev.GspGPPut>1) {
         PUCHAR scratch=(PUCHAR)dev.GspDmaVirtual+GSP_SCRATCH_OFFSET;
         ULONG previous=(dev.GspGPPut+1023)%1024;
-        PULONG push=(PULONG)(scratch+0x10000+(previous%16)*0x100);
+        ULONG64 queued=((PULONG64)scratch)[previous];
+        ULONG64 address=(queued&0xfffffffcULL)|((queued>>32&0xffULL)<<32);
+        PULONG push=(PULONG)(scratch+address-dev.GspScratchGpuVa);
         if(push[2]==0x20048100) {
-            assert(push[11]==1 && push[8]==push[9] && push[9]==push[10]);
-            memcpy(dmaPointer(((ULONG64)push[5]<<32)|push[6],push[10]),
-                   dmaPointer(((ULONG64)push[3]<<32)|push[4],push[10]),push[10]);
-            *(PULONG)(scratch+0x3400)=push[17];
+            ULONG cursor=2,words=(ULONG)(queued>>42);
+            while(cursor<words && push[cursor]==0x20048100) {
+                PULONG copy=push+cursor;
+                ULONG64 src=((ULONG64)copy[1]<<32)|copy[2];
+                ULONG64 dst=((ULONG64)copy[3]<<32)|copy[4];
+                assert(copy[5]==0x20048104 && copy[10]==0x200180c0 &&
+                       copy[11]==0x04000386);
+                for(ULONG row=0;row<copy[9];row++)
+                    memcpy(dmaPointer(dst+(ULONG64)row*copy[7],copy[8]),
+                           dmaPointer(src+(ULONG64)row*copy[6],copy[8]),copy[8]);
+                cursor+=12;
+            }
+            assert(cursor+6==words && push[cursor]==0x20038090);
+            *(PULONG)(scratch+0x3400)=push[cursor+3];
         } else {
             assert(push[2]==0x200281c1 && push[4]==0x00030005);
             PULONG dst=(PULONG)dmaPointer(((ULONG64)push[6]<<32)|push[7],push[9]*4);
@@ -826,6 +838,35 @@ int main(void)
                 for(ULONG i=0;i<0x1000;i++) {
                     assert(live[0xa000+i]==0x6b);
                     assert(live[0xc000+i]==0x97);
+                }
+                {
+                    struct {
+                        NVX_3D_UPLOAD_SPANS header;
+                        ULONG data[NVX_3D_MAX_UPLOAD_SPANS];
+                    } upload={0};
+                    ULONG64 target=dev.GspVramGpuVa+0x3000000;
+                    upload.header.Size=sizeof(upload.header);
+                    upload.header.Version=NVX_3D_ABI_VERSION;
+                    upload.header.BufferId=upload.header.ClientToken=1;
+                    upload.header.Count=NVX_3D_MAX_UPLOAD_SPANS;
+                    upload.header.DataBytes=sizeof(upload.data);
+                    memset(gpuVram+0x3000000,0xab,512);
+                    for(ULONG i=0;i<NVX_3D_MAX_UPLOAD_SPANS;i++) {
+                        upload.header.Spans[i].Offset=i*8;
+                        upload.header.Spans[i].Bytes=4;
+                        upload.data[i]=0x87650000+i;
+                    }
+                    ULONG before=dev.GspGPPut;
+                    assert(NvxGspUploadSpans(&dev,target,&upload.header));
+                    assert(dev.GspGPPut==(before+1)%1024);
+                    for(ULONG i=0;i<NVX_3D_MAX_UPLOAD_SPANS;i++) {
+                        assert(*(PULONG)(gpuVram+0x3000000+i*8)==upload.data[i]);
+                        assert(*(PULONG)(gpuVram+0x3000000+i*8+4)==0xabababab);
+                    }
+                    upload.header.Spans[63].Bytes=8;
+                    before=dev.GspGPPut;
+                    assert(!NvxGspUploadSpans(&dev,target,&upload.header));
+                    assert(dev.GspGPPut==before);
                 }
                 assert(!NvxGspUpload(&dev,dev.GspVramGpuVa+dev.GspFbFreeLimit+1,pixels,sizeof(pixels)));
             }

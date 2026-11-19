@@ -48,7 +48,10 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     channel=NvxGspFindClientChannel(dev,clientToken);
     if(!channel||!channel->PerfSubmitCount) return;
     LogStr("NVX [NVC0-PERF]: token=");LogHex(clientToken);
+    LogStr(" process_id=");LogHex(channel->ProcessId);
     LogStr(" batches=");LogHex(channel->PerfSubmitCount);
+    LogStr(" gpu_completed_batches=");LogHex(channel->CompletedBatches);
+    LogStr(" completed_fence=");LogHex(channel->CompletedFence);
     LogStr(" dwords=");LogHex(channel->PerfDwordCount);
     LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" fence_fast_poll_1us=");LogHex(channel->PerfFenceFastPolls);
@@ -57,6 +60,15 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
     LogStr(" doorbell_retries=");LogHex(channel->PerfDoorbellRetries);
     LogStr("\n");
+    if(channel->PerfSubmitCount&&channel->CompletedBatches&&
+       channel->CompletedFence) {
+        LogStr("[NVX_GPU_FENCE_PROOF] result=NVC0_GPU_FENCE_COMPLETED process_id=");
+        LogHex(channel->ProcessId);LogStr(" token=");LogHex(clientToken);
+        LogStr(" submitted_batches=");LogHex(channel->PerfSubmitCount);
+        LogStr(" completed_batches=");LogHex(channel->CompletedBatches);
+        LogStr(" completed_fence=");LogHex(channel->CompletedFence);
+        LogStr("\n");
+    }
 }
 
 _Static_assert(GSP_VRAM_MAP_BYTES ==

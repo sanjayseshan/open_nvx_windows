@@ -34,6 +34,8 @@ DrvEscape(SURFOBJ *pso,ULONG iEsc,ULONG cjIn,PVOID pvIn,
             requested==NVX_ESCAPE_3D_VALIDATE_BATCH ||
             requested==NVX_ESCAPE_3D_SUBMIT_BATCH ||
             requested==NVX_ESCAPE_3D_PRESENT_COPY ||
+            requested==NVX_ESCAPE_3D_PRESENT_BATCH ||
+            requested==NVX_ESCAPE_3D_UPLOAD_SPANS ||
             requested==NVX_ESCAPE_3D_CLIENT_OPEN ||
             requested==NVX_ESCAPE_3D_CLIENT_CLOSE ||
             requested==NVX_ESCAPE_3D_CHANNEL_LEASE;
@@ -137,6 +139,14 @@ DrvEscape(SURFOBJ *pso,ULONG iEsc,ULONG cjIn,PVOID pvIn,
            expectedBytes!=cjIn) return 0;
         code=IOCTL_NVX_3D_SUBMIT_BATCH;break;
     }
+    case NVX_ESCAPE_3D_UPLOAD_SPANS:
+        if(!pvIn||cjIn<sizeof(NVX_3D_UPLOAD_SPANS)||
+           cjIn>sizeof(NVX_3D_UPLOAD_SPANS)+NVX_3D_MAX_UPLOAD_BYTES||cjOut||pvOut)
+            return 0;
+        code=IOCTL_NVX_3D_UPLOAD_SPANS;break;
+    case NVX_ESCAPE_3D_PRESENT_BATCH:
+        if(!pvIn||cjIn!=sizeof(NVX_3D_PRESENT_BATCH)||cjOut||pvOut) return 0;
+        code=IOCTL_NVX_3D_PRESENT_BATCH;break;
     case NVX_ESCAPE_3D_PRESENT_COPY:
         if(cjIn!=sizeof(NVX_3D_PRESENT_COPY)||!pvIn||cjOut||pvOut)
             return 0;

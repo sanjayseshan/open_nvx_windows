@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.320
+ * Driver Version: 3.0.0.324
  */
 
 #include "miniport.h"
@@ -1458,10 +1458,21 @@ static BOOLEAN Nvx3dHeapBounds(PNVX_DEVICE_EXTENSION engine,
 static PNVX_3D_USER_BUFFER_ENTRY Nvx3dFindBufferCounted(
     PNVX_DEVICE_EXTENSION engine,ULONG64 id,ULONG64 *slotScans)
 {
-    ULONG i;
+    ULONG i,bucket;
+    if(!engine||!id) return NULL;
+    bucket=(ULONG)(id%NVX_3D_USER_BUFFER_SLOTS);
+    i=engine->Nvx3dBufferSlots[bucket];
+    if(i&&i<=NVX_3D_USER_BUFFER_SLOTS) {
+        if(slotScans) (*slotScans)++;
+        if(engine->Nvx3dBuffers[i-1U].Id==id)
+            return &engine->Nvx3dBuffers[i-1U];
+    }
     for(i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
         if(slotScans) (*slotScans)++;
-        if(engine->Nvx3dBuffers[i].Id==id) return &engine->Nvx3dBuffers[i];
+        if(engine->Nvx3dBuffers[i].Id==id) {
+            engine->Nvx3dBufferSlots[bucket]=i+1U;
+            return &engine->Nvx3dBuffers[i];
+        }
     }
     return NULL;
 }
@@ -1525,6 +1536,179 @@ static VOID Nvx3dReapPendingBatches(PNVX_DEVICE_EXTENSION engine)
         for(i=0;i<freeCount;i++)
             (void)Nvx3dFreeBuffer(engine,freeIds[i],clientToken);
     }
+}
+
+static VOID Nvx3dReapPendingCopies(PNVX_DEVICE_EXTENSION engine)
+{
+    static volatile ULONG s_retiredCopies;
+    ULONG i;
+    if(!engine) return;
+    for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++) {
+        NVX_3D_PENDING_COPY saved;
+        BOOLEAN retired=FALSE;
+        /* Most rendering batches have no presentation-copy references. Avoid
+           taking the global buffer lock for every empty retirement slot. */
+        if(__sync_fetch_and_add(
+             &engine->Nvx3dPendingCopies[i].State,0U)!=2U)
+            continue;
+        if(!Nvx3dLockBuffers()) return;
+        if(engine->Nvx3dPendingCopies[i].State!=2U) {
+            Nvx3dUnlockBuffers();continue;
+        }
+        engine->Nvx3dPendingCopies[i].State=3U;
+        saved=engine->Nvx3dPendingCopies[i];
+        Nvx3dUnlockBuffers();
+        if(!NvxGspWaitCopyFence(engine,saved.CopySlot,saved.FenceValue,0U)) {
+            if(Nvx3dLockBuffers()) {
+                if(engine->Nvx3dPendingCopies[i].State==3U&&
+                   engine->Nvx3dPendingCopies[i].FenceValue==saved.FenceValue)
+                    engine->Nvx3dPendingCopies[i].State=2U;
+                Nvx3dUnlockBuffers();
+            }
+            continue;
+        }
+        if(!Nvx3dLockBuffers()) return;
+        if(engine->Nvx3dPendingCopies[i].State==3U&&
+           engine->Nvx3dPendingCopies[i].FenceValue==saved.FenceValue) {
+            PNVX_3D_USER_BUFFER_ENTRY entry=saved.BufferSlot<
+                NVX_3D_USER_BUFFER_SLOTS?
+                &engine->Nvx3dBuffers[saved.BufferSlot]:NULL;
+            if(entry&&entry->Id==saved.BufferId&&
+               entry->ClientToken==saved.ClientToken&&entry->CopyRefs) {
+                entry->CopyRefs--;
+                if(!entry->CopyRefs) {
+                    entry->CopyFence=0;
+                    entry->CopySlot=0;
+                }
+            }
+            engine->GspCopySlotFence[saved.CopySlot]=0;
+            VideoPortZeroMemory(&engine->Nvx3dPendingCopies[i],
+                                sizeof(engine->Nvx3dPendingCopies[i]));
+            retired=TRUE;
+        }
+        Nvx3dUnlockBuffers();
+        if(retired) {
+            ULONG count=__sync_add_and_fetch(&s_retiredCopies,1U);
+            if(count<=5U||count%10000U==0U) {
+                LogStr("NVX [COPY-ASYNC]: retired batch #");LogHex(count);
+                LogStr(" slot=");LogHex(saved.CopySlot);
+                LogStr(" fence=");LogHex(saved.FenceValue);LogStr("\n");
+            }
+        }
+    }
+}
+
+static BOOLEAN Nvx3dReservePendingCopy(PNVX_DEVICE_EXTENSION engine,
+    ULONG64 bufferId,ULONG64 clientToken,ULONG *pendingIndex,ULONG *copySlot)
+{
+    ULONG tries;
+    if(!engine||!bufferId||!clientToken||!pendingIndex||!copySlot)
+        return FALSE;
+    for(tries=0;tries<5000U;tries++) {
+        ULONG i,freePending=NVX_3D_MAX_INFLIGHT_BATCHES;
+        ULONG freeCopy=NVX_CE_ASYNC_COPY_SLOTS;
+        ULONG waitSlot=NVX_CE_ASYNC_COPY_SLOTS;
+        ULONG64 waitFence=0;
+        Nvx3dReapPendingCopies(engine);
+        if(!Nvx3dLockBuffers()) return FALSE;
+        for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++)
+            if(!engine->Nvx3dPendingCopies[i].State) {freePending=i;break;}
+        for(i=0;i<NVX_CE_ASYNC_COPY_SLOTS;i++)
+            if(!engine->GspCopySlotFence[i]) {freeCopy=i;break;}
+        if(freePending<NVX_3D_MAX_INFLIGHT_BATCHES&&
+           freeCopy<NVX_CE_ASYNC_COPY_SLOTS) {
+            PNVX_3D_USER_BUFFER_ENTRY entry=Nvx3dFindBuffer(engine,bufferId);
+            if(!entry||entry->ClientToken!=clientToken||entry->CopyRefs) {
+                Nvx3dUnlockBuffers();return FALSE;
+            }
+            engine->Nvx3dPendingCopies[freePending].State=1U;
+            engine->Nvx3dPendingCopies[freePending].CopySlot=freeCopy;
+            engine->Nvx3dPendingCopies[freePending].BufferSlot=
+                (ULONG)(entry-engine->Nvx3dBuffers);
+            engine->Nvx3dPendingCopies[freePending].BufferId=bufferId;
+            engine->Nvx3dPendingCopies[freePending].ClientToken=clientToken;
+            engine->GspCopySlotFence[freeCopy]=~0ULL;
+            *pendingIndex=freePending;*copySlot=freeCopy;
+            Nvx3dUnlockBuffers();return TRUE;
+        }
+        for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++) {
+            NVX_3D_PENDING_COPY *p=&engine->Nvx3dPendingCopies[i];
+            if(p->State==2U&&(!waitFence||p->FenceValue<waitFence)) {
+                waitFence=p->FenceValue;waitSlot=p->CopySlot;
+            }
+        }
+        Nvx3dUnlockBuffers();
+        if(waitFence) {
+            if(!NvxGspWaitCopyFence(engine,waitSlot,waitFence,5000U))
+                return FALSE;
+            Nvx3dReapPendingCopies(engine);
+        } else VideoPortStallExecution(1000U);
+    }
+    return FALSE;
+}
+
+static VOID Nvx3dCancelPendingCopy(PNVX_DEVICE_EXTENSION engine,
+                                   ULONG pendingIndex,ULONG copySlot)
+{
+    if(!engine||pendingIndex>=NVX_3D_MAX_INFLIGHT_BATCHES||
+       copySlot>=NVX_CE_ASYNC_COPY_SLOTS||!Nvx3dLockBuffers()) return;
+    if(engine->Nvx3dPendingCopies[pendingIndex].State==1U) {
+        VideoPortZeroMemory(&engine->Nvx3dPendingCopies[pendingIndex],
+                            sizeof(engine->Nvx3dPendingCopies[pendingIndex]));
+        engine->GspCopySlotFence[copySlot]=0;
+    }
+    Nvx3dUnlockBuffers();
+}
+
+static BOOLEAN Nvx3dWaitBufferCopy(PNVX_DEVICE_EXTENSION engine,
+                                    ULONG64 bufferId,ULONG64 clientToken)
+{
+    ULONG tries;
+    if(!engine||!bufferId||!clientToken) return FALSE;
+    /* Most draw/vertex BOs have no scanout-copy reference. Check the requested
+       BO first so ordinary batches skip the global retirement scan entirely. */
+    if(!Nvx3dLockBuffers()) return FALSE;
+    {
+        PNVX_3D_USER_BUFFER_ENTRY entry=Nvx3dFindBuffer(engine,bufferId);
+        if(!entry||entry->ClientToken!=clientToken) {
+            Nvx3dUnlockBuffers();return FALSE;
+        }
+        if(!entry->CopyRefs) {
+            Nvx3dUnlockBuffers();return TRUE;
+        }
+    }
+    Nvx3dUnlockBuffers();
+    for(tries=0;tries<NVX_3D_MAX_INFLIGHT_BATCHES;tries++) {
+        ULONG slot=0;ULONG64 fence=0;
+        Nvx3dReapPendingCopies(engine);
+        if(!Nvx3dLockBuffers()) return FALSE;
+        {
+            PNVX_3D_USER_BUFFER_ENTRY entry=Nvx3dFindBuffer(engine,bufferId);
+            if(!entry||entry->ClientToken!=clientToken) {
+                Nvx3dUnlockBuffers();return FALSE;
+            }
+            if(!entry->CopyRefs) {Nvx3dUnlockBuffers();return TRUE;}
+            slot=entry->CopySlot;fence=entry->CopyFence;
+        }
+        Nvx3dUnlockBuffers();
+        if(!fence||!NvxGspWaitCopyFence(engine,slot,fence,5000U))
+            return FALSE;
+    }
+    return FALSE;
+}
+
+static BOOLEAN Nvx3dWaitBatchCopies(PNVX_DEVICE_EXTENSION engine,
+    const VOID *batch,const NVX_3D_BATCH_HEADER *header)
+{
+    const NVX_3D_BUFFER_REFERENCE *refs;
+    ULONG i;
+    if(!engine||!batch||!header) return FALSE;
+    refs=(const NVX_3D_BUFFER_REFERENCE *)((const UCHAR *)batch+
+                                            sizeof(*header));
+    for(i=0;i<header->BufferReferenceCount;i++)
+        if(!Nvx3dWaitBufferCopy(engine,refs[i].BufferId,header->ClientToken))
+            return FALSE;
+    return TRUE;
 }
 
 static BOOLEAN Nvx3dReservePendingBatch(PNVX_DEVICE_EXTENSION engine,
@@ -2351,6 +2535,27 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
        !Nvx3dClientSessionActiveLocked(engine,clientToken)) {
         Nvx3dUnlockBuffers();return FALSE;
     }
+    if(entry->CopyRefs) {
+        ULONG copySlot=entry->CopySlot;
+        ULONG64 copyFence=entry->CopyFence;
+        if(entry->Busy) {Nvx3dUnlockBuffers();return FALSE;}
+        entry->Busy=TRUE;Nvx3dUnlockBuffers();
+        if(!copyFence||!NvxGspWaitCopyFence(engine,copySlot,copyFence,5000U)) {
+            if(Nvx3dLockBuffers()) {
+                entry=Nvx3dFindBuffer(engine,id);
+                if(entry&&entry->ClientToken==clientToken) entry->Busy=FALSE;
+                Nvx3dUnlockBuffers();
+            }
+            return FALSE;
+        }
+        Nvx3dReapPendingCopies(engine);
+        if(Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,id);
+            if(entry&&entry->ClientToken==clientToken) entry->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+        }
+        return Nvx3dFreeBuffer(engine,id,clientToken);
+    }
     if(entry->InFlightRefs) {
         ULONG64 lastFence=entry->LastFence;
         if(entry->Busy) {Nvx3dUnlockBuffers();return FALSE;}
@@ -2632,6 +2837,16 @@ static BOOLEAN Nvx3dOpenGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,
     Nvx3dUnlockBuffers();
     ok=NvxGspOpenClientChannel(engine,lease,backing,physical,
                               allocation.GpuVa,allocation.BufferId);
+    if(ok) {
+        NVX_GR_CLIENT_CHANNEL *opened=
+            NvxGspFindClientChannel(engine,lease->ClientToken);
+        if(opened) {
+            opened->ProcessId=(ULONG)(ULONG_PTR)PsGetCurrentProcessId();
+            LogStr("NVX [3D-SESSION]: graphics channel opened process_id=");
+            LogHex(opened->ProcessId);LogStr(" token=");
+            LogHex(lease->ClientToken);LogStr("\n");
+        }
+    }
     if(!ok) {
         if(NvxGspFindClientChannel(engine,lease->ClientToken))
             (void)Nvx3dCloseGraphicsClientLocked(engine,lease->ClientToken);
@@ -2684,6 +2899,8 @@ BOOLEAN NTAPI HwVidStartIO(
        RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_SUBMIT_BATCH &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_COPY &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_BATCH &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_UPLOAD_SPANS &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_UPLOAD_BUFFER &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_DOWNLOAD_BUFFER &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_WAIT_FENCE &&
@@ -3250,90 +3467,124 @@ BOOLEAN NTAPI HwVidStartIO(
         status = NO_ERROR;
         break;
 
-    case IOCTL_NVX_3D_PRESENT_COPY: {
+    case IOCTL_NVX_3D_PRESENT_COPY:
+    case IOCTL_NVX_3D_PRESENT_BATCH: {
         PNVX_DEVICE_EXTENSION engine=devExt->IsSecondaryDisplay?
             (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
-        NVX_3D_PRESENT_COPY request;
+        NVX_3D_PRESENT_COPY legacy;
+        const NVX_3D_PRESENT_COPY *copies;
+        ULONG count;
+        NVX_GPU_COPY_RECT rects[NVX_3D_MAX_COPY_RECTS];
         NVX_3D_USER_BUFFER_ENTRY saved;
         PNVX_3D_USER_BUFFER_ENTRY entry;
-        ULONG64 dstBase,surfaceBytes,sourceOffset,sourceSpan,destOffset,destSpan;
-        ULONG bytesPerLine,dstPitch;
-        BOOLEAN copied=FALSE;
+        ULONG64 dstBase,surfaceBytes;
+        ULONG dstPitch,i,pendingCopySlot=0,copySlot=0;
+        ULONG64 copyFence=0;
+        BOOLEAN valid=TRUE,copied,copyReserved;
         static ULONG s_presentCopyCount;
-        if(!RequestPacket->InputBuffer||
-           RequestPacket->InputBufferLength!=sizeof(request)||
-           RequestPacket->OutputBufferLength) {
+        if(!RequestPacket->InputBuffer||RequestPacket->OutputBufferLength) {
             status=ERROR_INVALID_PARAMETER;break;
         }
-        VideoPortMoveMemory(&request,RequestPacket->InputBuffer,sizeof(request));
+        if(RequestPacket->IoControlCode==IOCTL_NVX_3D_PRESENT_COPY) {
+            if(RequestPacket->InputBufferLength!=sizeof(NVX_3D_PRESENT_COPY)) {
+                status=ERROR_INVALID_PARAMETER;break;
+            }
+            VideoPortMoveMemory(&legacy,RequestPacket->InputBuffer,sizeof(legacy));
+            copies=&legacy;count=1;
+        } else {
+            const NVX_3D_PRESENT_BATCH *batch=RequestPacket->InputBuffer;
+            if(RequestPacket->InputBufferLength!=sizeof(*batch)) {
+                status=ERROR_INVALID_PARAMETER;break;
+            }
+            if(batch->Size!=sizeof(*batch)||batch->Version!=NVX_3D_ABI_VERSION||
+               !batch->Count||batch->Count>NVX_3D_MAX_COPY_RECTS||batch->Reserved) {
+                status=ERROR_INVALID_PARAMETER;break;
+            }
+            copies=batch->Copies;count=batch->Count;
+        }
+        /* XP dispatches the HDC escape to both extensions. Present once. */
         if(devExt->IsSecondaryDisplay) {
-            /* The same WGL HDC escape is dispatched to both XP display
-               extensions in this dual-view setup. Head zero owns window
-               presentation; acknowledging here prevents a second scanout
-               copy to the clone/secondary surface. */
-            status=NO_ERROR;statusBlock->Information=sizeof(request);break;
+            status=NO_ERROR;
+            statusBlock->Information=RequestPacket->InputBufferLength;break;
+        }
+        if(engine&&count&&copies&&copies[0].BufferId&&
+           !Nvx3dWaitBufferCopy(engine,copies[0].BufferId,
+                                copies[0].ClientToken)) {
+            status=ERROR_DEVICE_NOT_READY;break;
         }
         if(!engine||!engine->GspCopyVerified||engine->GspChannelFaulted||
-           devExt->CurrentModeIndex>=devExt->NumModes||
-           !Nvx3dLockBuffers()) {
+           devExt->CurrentModeIndex>=devExt->NumModes||!Nvx3dLockBuffers()) {
             status=ERROR_NOT_SUPPORTED;break;
         }
-        entry=Nvx3dFindBuffer(engine,request.BufferId);
+        Nvx3dReapPendingCopies(engine);
+        entry=Nvx3dFindBuffer(engine,copies[0].BufferId);
         if(!entry||entry->Busy||
-           entry->ClientToken!=request.ClientToken||
-           !(entry->Usage&NVX_3D_USAGE_GART_BUFFER)||
-           (entry->Usage&~NVX_3D_USAGE_GART_BUFFER)||entry->TileMode||
+           entry->ClientToken!=copies[0].ClientToken||
+           entry->Usage!=NVX_3D_USAGE_GART_BUFFER||entry->TileMode||
            entry->MemoryKind||!entry->SystemVirtual||!entry->GpuVa||
-           !Nvx3dClientAcceptsWorkLocked(engine,request.ClientToken)||
-           !Nvx3dValidatePresentCopy(&request,sizeof(request),entry->Bytes,
-              devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth,
-              devExt->Modes[devExt->CurrentModeIndex].VisScreenHeight)||
-           request.SourcePitch>0x01000000UL) {
+           !Nvx3dClientAcceptsWorkLocked(engine,entry->ClientToken)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
-        bytesPerLine=request.Width*4U;
         dstPitch=devExt->Modes[devExt->CurrentModeIndex].ScreenStride;
         surfaceBytes=(ULONG64)dstPitch*
             devExt->Modes[devExt->CurrentModeIndex].VisScreenHeight;
-        sourceOffset=(ULONG64)request.SourceY*request.SourcePitch+
-            (ULONG64)request.SourceX*4U;
-        sourceSpan=(ULONG64)(request.Height-1U)*request.SourcePitch+
-            bytesPerLine;
-        destOffset=(ULONG64)request.DestinationY*dstPitch+
-            (ULONG64)request.DestinationX*4U;
-        destSpan=(ULONG64)(request.Height-1U)*dstPitch+bytesPerLine;
-        if(dstPitch<(ULONG64)devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth*4U||
-           sourceSpan>0x01000000ULL||destSpan>0x01000000ULL||
-           destOffset>surfaceBytes||destSpan>surfaceBytes-destOffset||
-           entry->GpuVa>~0ULL-sourceOffset) {
+        dstBase=engine->GspVramGpuVa;
+        if(dstPitch<(ULONG64)devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth*4U)
+            valid=FALSE;
+        for(i=0;i<count&&valid;i++) {
+            const NVX_3D_PRESENT_COPY *r=&copies[i];
+            ULONG64 srcOffset,dstOffset,dstSpan;
+            if(r->BufferId!=entry->Id||r->ClientToken!=entry->ClientToken||
+               !Nvx3dValidatePresentCopy(r,sizeof(*r),entry->Bytes,
+                 devExt->Modes[devExt->CurrentModeIndex].VisScreenWidth,
+                 devExt->Modes[devExt->CurrentModeIndex].VisScreenHeight)||
+               r->SourcePitch>0x01000000UL) {valid=FALSE;break;}
+            srcOffset=(ULONG64)r->SourceY*r->SourcePitch+(ULONG64)r->SourceX*4U;
+            dstOffset=(ULONG64)r->DestinationY*dstPitch+(ULONG64)r->DestinationX*4U;
+            dstSpan=(ULONG64)(r->Height-1U)*dstPitch+r->Width*4U;
+            if(dstSpan>0x01000000ULL||dstOffset>surfaceBytes||
+               dstSpan>surfaceBytes-dstOffset||entry->GpuVa>~0ULL-srcOffset||
+               dstBase>~0ULL-dstOffset) {valid=FALSE;break;}
+            rects[i].SrcVa=entry->GpuVa+srcOffset;
+            rects[i].DstVa=dstBase+dstOffset;
+            rects[i].SrcPitch=r->SourcePitch;rects[i].DstPitch=dstPitch;
+            rects[i].BytesPerLine=r->Width*4U;rects[i].LineCount=r->Height;
+        }
+        if(!valid) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
         entry->Busy=TRUE;saved=*entry;
         Nvx3dUnlockBuffers();
-
-        dstBase=engine->GspVramGpuVa+
-            (devExt->IsSecondaryDisplay?0x2000000ULL:0ULL);
         NvxMdlFlushGartBacking(saved.SystemMdl,FALSE);
-        if(dstBase<=~0ULL-destOffset&&
-           saved.GpuVa<=~0ULL-sourceOffset)
-            copied=NvxGspSubmitCopy2D(engine,dstBase+destOffset,
-                saved.GpuVa+sourceOffset,request.SourcePitch,dstPitch,
-                bytesPerLine,request.Height);
+        copyReserved=Nvx3dReservePendingCopy(engine,saved.Id,saved.ClientToken,
+                                               &pendingCopySlot,&copySlot);
+        copied=copyReserved&&NvxGspSubmitCopyRectsAsync(engine,rects,count,
+                                                        copySlot,&copyFence);
         if(Nvx3dLockBuffers()) {
             entry=Nvx3dFindBuffer(engine,saved.Id);
-            if(entry&&entry->Busy&&entry->GpuVa==saved.GpuVa)
+            if(entry&&entry->Busy&&entry->GpuVa==saved.GpuVa) {
                 entry->Busy=FALSE;
+                if(copied) {
+                    NVX_3D_PENDING_COPY *pending=
+                        &engine->Nvx3dPendingCopies[pendingCopySlot];
+                    entry->CopyRefs++;
+                    entry->CopySlot=copySlot;
+                    entry->CopyFence=copyFence;
+                    pending->FenceValue=copyFence;
+                    __sync_synchronize();pending->State=2U;
+                }
+            }
             Nvx3dUnlockBuffers();
         }
+        if(copyReserved&&!copied)
+            Nvx3dCancelPendingCopy(engine,pendingCopySlot,copySlot);
         if(copied) {
-            status=NO_ERROR;statusBlock->Information=sizeof(request);
+            status=NO_ERROR;statusBlock->Information=RequestPacket->InputBufferLength;
             s_presentCopyCount++;
             if(s_presentCopyCount<=5||s_presentCopyCount%10000==0) {
-                LogStr("NVX [PRESENT]: GPU GART-to-scanout copy #");
-                LogHex(s_presentCopyCount);LogStr(" src=");LogHex(saved.GpuVa+sourceOffset);
-                LogStr(" dst=");LogHex(dstBase+destOffset);
-                LogStr(" bytesPerLine=");LogHex(bytesPerLine);
-                LogStr(" lines=");LogHex(request.Height);LogStr("\\n");
+                LogStr("NVX [PRESENT]: queued async GART-to-scanout batch #");
+                LogHex(s_presentCopyCount);LogStr(" rects=");LogHex(count);
+                LogStr(" src=");LogHex(saved.GpuVa);LogStr("\n");
             }
         } else status=ERROR_DEVICE_NOT_READY;
         break;
@@ -3542,6 +3793,8 @@ BOOLEAN NTAPI HwVidStartIO(
             caps->Features|=NVX_3D_FEATURE_NVC0_COPY_OBJECT;
         if(engine&&engine->GspGraphics2dObjectHandle)
             caps->Features|=NVX_3D_FEATURE_NVC0_2D_OBJECT;
+        if(engine&&engine->GspCopyVerified)
+            caps->Features|=NVX_3D_FEATURE_UPLOAD_SPANS|NVX_3D_FEATURE_PRESENT_BATCH;
         if(engine&&engine->GspGraphicsUserAllocReady&&
            engine->GspGraphicsChannelReady&&
            engine->GspGraphicsCommandVerified&&
@@ -3636,6 +3889,49 @@ BOOLEAN NTAPI HwVidStartIO(
         break;
     }
 
+    case IOCTL_NVX_3D_UPLOAD_SPANS: {
+        PNVX_DEVICE_EXTENSION engine=devExt->IsSecondaryDisplay?
+            (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
+        const NVX_3D_UPLOAD_SPANS *r=RequestPacket->InputBuffer;
+        PNVX_3D_USER_BUFFER_ENTRY entry;
+        NVX_3D_USER_BUFFER_ENTRY saved;
+        ULONG i,cursor=0;
+        if(!engine||RequestPacket->OutputBufferLength||
+           !Nvx3dValidateUploadSpans(r,RequestPacket->InputBufferLength,
+                                     NVX_3D_MAX_BUFFER_BYTES)) {
+            status=ERROR_INVALID_PARAMETER;break;
+        }
+        if(!Nvx3dWaitBufferCopy(engine,r->BufferId,r->ClientToken)) {
+            status=ERROR_DEVICE_NOT_READY;break;
+        }
+        if(!Nvx3dLockBuffers()) {status=ERROR_DEVICE_NOT_READY;break;}
+        entry=Nvx3dFindBuffer(engine,r->BufferId);
+        if(!entry||entry->Busy||entry->ClientToken!=r->ClientToken||
+           !Nvx3dClientAcceptsWorkLocked(engine,r->ClientToken)||
+           !Nvx3dValidateUploadSpans(r,RequestPacket->InputBufferLength,entry->Bytes)) {
+            Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
+        }
+        entry->Busy=TRUE;saved=*entry;
+        Nvx3dUnlockBuffers();
+        status=ERROR_DEVICE_NOT_READY;
+        if((saved.Usage&NVX_3D_USAGE_GART_BUFFER)&&saved.SystemVirtual) {
+            for(i=0;i<r->Count;i++) {
+                VideoPortMoveMemory((PUCHAR)saved.SystemVirtual+r->Spans[i].Offset,
+                                     (PUCHAR)(r+1)+cursor,r->Spans[i].Bytes);
+                cursor+=r->Spans[i].Bytes;
+            }
+            NvxMdlFlushGartBacking(saved.SystemMdl,FALSE);
+            __sync_synchronize();status=NO_ERROR;
+        } else if(NvxGspUploadSpans(engine,saved.GpuVa,r)) status=NO_ERROR;
+        if(status==NO_ERROR) statusBlock->Information=RequestPacket->InputBufferLength;
+        if(Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,saved.Id);
+            if(entry&&entry->GpuVa==saved.GpuVa) entry->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+        }
+        break;
+    }
+
     case IOCTL_NVX_3D_UPLOAD_BUFFER: {
         PNVX_DEVICE_EXTENSION engine=devExt->IsSecondaryDisplay?
             (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
@@ -3653,6 +3949,9 @@ BOOLEAN NTAPI HwVidStartIO(
            upload.Bytes>NVX_3D_MAX_UPLOAD_BYTES||
            inputBytes!=headerBytes+upload.Bytes) {
             status=ERROR_INVALID_PARAMETER;break;
+        }
+        if(!Nvx3dWaitBufferCopy(engine,upload.BufferId,upload.ClientToken)) {
+            status=ERROR_DEVICE_NOT_READY;break;
         }
         if(!Nvx3dLockBuffers()) {
             status=ERROR_DEVICE_NOT_READY;break;
@@ -4001,6 +4300,9 @@ validate_batch_done:
                                                    ownedOffset);
         VideoPortMoveMemory(copiedInput,RequestPacket->InputBuffer,
                             requiredBytes);
+        if(!engine||!Nvx3dWaitBatchCopies(engine,copiedInput,&header)) {
+            status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
+        }
         if(!engine||!Nvx3dReservePendingBatch(engine,&pendingSlot)) {
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
         }
@@ -4045,7 +4347,7 @@ validate_batch_done:
             ULONG j;
             for(j=0;j<pinnedCount;j++)
                 if(pinned[j]==entry) break;
-            if(j!=pinnedCount||!entry||entry->Busy||
+            if(j!=pinnedCount||!entry||entry->Busy||entry->CopyRefs||
                entry->ClientToken!=header.ClientToken) {
                 status=ERROR_INVALID_PARAMETER;
                 break;
@@ -4761,7 +5063,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.320 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 3.0.0.324 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

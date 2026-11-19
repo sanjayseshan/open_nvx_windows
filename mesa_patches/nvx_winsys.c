@@ -406,6 +406,35 @@ done:
 }
 
 int
+NvxWinsysUploadSpans(NVX_WINSYS_DEVICE *device,
+                     const NVX_3D_UPLOAD_SPANS *request,
+                     uint32_t allocated_bytes)
+{
+   uint32_t i, cursor=0;
+   uint32_t bytes;
+   const uint8_t *data;
+   if (!nvx_winsys_ready(device) || !request ||
+       request->ClientToken != device->ClientToken)
+      return 0;
+   bytes = sizeof(*request) + request->DataBytes;
+   if (!Nvx3dValidateUploadSpans(request, bytes, allocated_bytes))
+      return 0;
+   if (device->caps.Features & NVX_3D_FEATURE_UPLOAD_SPANS)
+      return device->escape(device->opaque, NVX_ESCAPE_3D_UPLOAD_SPANS,
+                            bytes, request, 0, NULL);
+   /* Preserve operation with miniports that predate the additive feature. */
+   data = (const uint8_t *)(request + 1);
+   for (i=0; i<request->Count; i++) {
+      if (!NvxWinsysUploadBuffer(device, request->BufferId, allocated_bytes,
+                                  request->Spans[i].Offset, data+cursor,
+                                  request->Spans[i].Bytes))
+         return 0;
+      cursor += request->Spans[i].Bytes;
+   }
+   return 1;
+}
+
+int
 NvxWinsysDownloadBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id,
                         uint32_t allocated_bytes, uint32_t offset,
                         void *data, uint32_t bytes)

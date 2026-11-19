@@ -163,6 +163,10 @@ extern volatile ULONG NvxGrUserSubmitBusy;
 #define GSP_UPLOAD_SIZE                0x00800000UL
 #define GSP_UPLOAD_GPU_VA              0x28000000ULL
 #define GSP_UPLOAD_MAX_BYTES           0x0000F000UL
+#define NVX_CE_ASYNC_COPY_SLOTS         14U
+#define NVX_CE_ASYNC_COPY_BASE          0x11000UL
+#define NVX_CE_ASYNC_COPY_STRIDE         0x1000UL
+#define NVX_CE_ASYNC_COPY_FENCE_OFFSET   0x0F00UL
 
 #pragma pack(push, 1)
 /* Libos Init Argument */
@@ -327,6 +331,7 @@ typedef struct _VIDEO_MODE_DEF {
  * are private. Hardware scheduling remains RM's responsibility. */
 typedef struct NVX_GR_CLIENT_CHANNEL {
     NvU64 ClientToken;
+    ULONG ProcessId;
     ULONG64 BackingBufferId, GpuVa;
     PVOID Virtual;
     PHYSICAL_ADDRESS Physical;
@@ -368,6 +373,9 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG Busy;
     ULONG InFlightRefs;
     ULONG64 LastFence;
+    ULONG CopyRefs;
+    ULONG CopySlot;
+    ULONG64 CopyFence;
     BOOLEAN PendingFree;
     ULONG GartFirstPage;
     ULONG GartPageCount;
@@ -389,6 +397,14 @@ typedef struct _NVX_3D_PENDING_BATCH {
     ULONG BufferSlots[NVX_3D_MAX_BATCH_BUFFERS];
     ULONG64 BufferIds[NVX_3D_MAX_BATCH_BUFFERS];
 } NVX_3D_PENDING_BATCH;
+typedef struct _NVX_3D_PENDING_COPY {
+    ULONG State; /* 0 free, 1 reserved, 2 queued, 3 being retired */
+    ULONG CopySlot;
+    ULONG BufferSlot;
+    ULONG64 BufferId;
+    ULONG64 ClientToken;
+    ULONG64 FenceValue;
+} NVX_3D_PENDING_COPY;
 
 typedef struct _NVX_DEVICE_EXTENSION {
     ULONG DeviceId;
@@ -540,7 +556,10 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG64 Nvx3dFenceSequence[NVX_3D_FENCE_TRACK_SLOTS];
     ULONG64 Nvx3dFenceOwner[NVX_3D_FENCE_TRACK_SLOTS];
     NVX_3D_PENDING_BATCH Nvx3dPendingBatches[NVX_3D_MAX_INFLIGHT_BATCHES];
+    NVX_3D_PENDING_COPY Nvx3dPendingCopies[NVX_3D_MAX_INFLIGHT_BATCHES];
+    ULONG64 GspCopySlotFence[NVX_CE_ASYNC_COPY_SLOTS];
     NVX_3D_CLIENT_SESSION_ENTRY Nvx3dClientSessions[NVX_3D_CLIENT_SESSION_SLOTS];
+    ULONG Nvx3dBufferSlots[NVX_3D_USER_BUFFER_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
     NVX_GART_HEAP GspGartHeap;
     PVOID GspVramPteVirtual;
@@ -597,6 +616,18 @@ VOID NvxGspWakeSecondaryDpSink(PVOID HwDeviceExtension);
 VOID NvxGspTrainSecondaryDpLink(PVOID HwDeviceExtension);
 BOOLEAN NvxGspDiscoverScanout(PVOID HwDeviceExtension,ULONG modeIndex);
 BOOLEAN NvxGspSubmitCopy(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG64 srcVa,ULONG bytes);
+typedef struct NVX_GPU_COPY_RECT {
+    ULONG64 DstVa, SrcVa;
+    ULONG SrcPitch, DstPitch, BytesPerLine, LineCount;
+} NVX_GPU_COPY_RECT;
+BOOLEAN NvxGspSubmitCopyRects(PVOID extension,const NVX_GPU_COPY_RECT *rects,
+                               ULONG count);
+BOOLEAN NvxGspSubmitCopyRectsAsync(PVOID extension,
+    const NVX_GPU_COPY_RECT *rects,ULONG count,ULONG slot,ULONG64 *fenceValue);
+BOOLEAN NvxGspWaitCopyFence(PVOID extension,ULONG slot,ULONG64 fenceValue,
+                            ULONG timeoutMs);
+BOOLEAN NvxGspUploadSpans(PVOID extension,ULONG64 dstVa,
+                          const NVX_3D_UPLOAD_SPANS *request);
 BOOLEAN NvxGspSubmitCopy2D(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG64 srcVa,
                            ULONG srcPitch,ULONG dstPitch,ULONG bytesPerLine,ULONG lineCount);
 /* Internal variants for callers that already own NvxGrUserSubmitBusy. */

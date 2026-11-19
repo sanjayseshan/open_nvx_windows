@@ -42,6 +42,10 @@ int NvxWinsysFreeBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id);
 int NvxWinsysUploadBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id,
                           uint32_t allocated_bytes, uint32_t offset,
                           const void *data, uint32_t bytes);
+/* Upload one packed set of disjoint dirty spans in a single escape. */
+int NvxWinsysUploadSpans(NVX_WINSYS_DEVICE *device,
+                         const NVX_3D_UPLOAD_SPANS *request,
+                         uint32_t allocated_bytes);
 int NvxWinsysDownloadBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id,
                             uint32_t allocated_bytes, uint32_t offset,
                             void *data, uint32_t bytes);

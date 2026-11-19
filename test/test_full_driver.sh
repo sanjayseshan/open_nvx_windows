@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.320"
+NVX_TEST_VERSION="3.0.0.324"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -239,13 +239,18 @@ finish() {
     echo
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
-        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
+        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt nvxmp.log test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
             case "$guest_log" in
                 3dmark05.log|3dmark_caps.log)
                     [ "$NVX_RUN_3DMARK" = "1" ] || continue ;;
             esac
             echo "==> Guest OpenGL trace: $guest_log"
             printf "\n[GUEST_LOG_BEGIN] %s\n" "$guest_log" >> "$NVX_RUN_LOG"
+            if [ "$guest_log" = "nvxmp.log" ]; then
+                guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/WINDOWS/$guest_log" \
+                    >> "$NVX_RUN_LOG" 2>/dev/null || true
+                continue
+            fi
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || \
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/test_accel/$guest_log" \
@@ -430,4 +435,14 @@ if [ "$NVX_RUN_3DMARK" = "1" ]; then
         echo "ERROR: guest benchmark suite did not complete successfully; see $NVX_RUN_LOG" >&2
         exit 1
     fi
+    if ! awk '
+        /\[3DMARK05_START\]/ { started=1 }
+        started && /\[NVX_GPU_FENCE_PROOF\] result=NVC0_GPU_FENCE_COMPLETED/ { proof=1 }
+        started && /\[3DMARK05_EXIT\]/ { exited=1; exit }
+        END { if (proof && exited) exit 0; exit 1 }
+    ' "$NVX_RUN_LOG"; then
+        echo "ERROR: 3DMark exited without a same-run NVC0 submission and completed hardware fence proof; see $NVX_RUN_LOG" >&2
+        exit 1
+    fi
+    echo "[3DMARK05_GPU_PROOF] PASS: NVC0 submissions completed on the GPU during the benchmark run" | tee -a "$NVX_RUN_LOG"
 fi

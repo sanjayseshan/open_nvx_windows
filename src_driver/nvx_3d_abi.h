@@ -118,6 +118,12 @@ Nvx3dDepthModeForOperation(uint32_t operation)
 #define NVX_ESCAPE_3D_CHANNEL_LEASE 0x800eU
 #define NVX_ESCAPE_3D_SUBMIT_BATCH  0x800fU
 #define NVX_ESCAPE_3D_PRESENT_COPY  0x8010U
+#define NVX_ESCAPE_3D_UPLOAD_SPANS  0x8011U
+#define NVX_ESCAPE_3D_PRESENT_BATCH 0x8012U
+#define NVX_3D_FEATURE_UPLOAD_SPANS 0x00002000U
+#define NVX_3D_FEATURE_PRESENT_BATCH 0x00004000U
+#define NVX_3D_MAX_COPY_RECTS 64U
+#define NVX_3D_MAX_UPLOAD_SPANS 64U
 #define NVX_3D_STATUS_SUCCESS            0U
 #define NVX_3D_STATUS_INVALID_PARAMETER 87U
 #define NVX_3D_STATUS_NOT_SUPPORTED     50U
@@ -872,6 +878,44 @@ typedef struct NVX_3D_UPLOAD_BUFFER {
     uint64_t ClientToken;
 } NVX_3D_UPLOAD_BUFFER;
 
+/* Sorted, disjoint destination spans; concatenated payload follows the fixed
+ * header. Never widen spans across unchanged, potentially GPU-owned bytes. */
+typedef struct NVX_3D_UPLOAD_SPAN {
+    uint32_t Offset;
+    uint32_t Bytes;
+} NVX_3D_UPLOAD_SPAN;
+
+typedef struct NVX_3D_UPLOAD_SPANS {
+    uint32_t Size;
+    uint32_t Version;
+    uint64_t BufferId;
+    uint64_t ClientToken;
+    uint32_t Count;
+    uint32_t DataBytes;
+    NVX_3D_UPLOAD_SPAN Spans[NVX_3D_MAX_UPLOAD_SPANS];
+} NVX_3D_UPLOAD_SPANS;
+
+static inline int
+Nvx3dValidateUploadSpans(const NVX_3D_UPLOAD_SPANS *r,
+                         uint32_t inputBytes, uint32_t allocatedBytes)
+{
+    uint32_t i, total=0, end=0;
+    if(!r || inputBytes<sizeof(*r) || r->Size!=sizeof(*r) ||
+       r->Version!=NVX_3D_ABI_VERSION || !r->BufferId || !r->ClientToken ||
+       !r->Count || r->Count>NVX_3D_MAX_UPLOAD_SPANS || !r->DataBytes ||
+       r->DataBytes>NVX_3D_MAX_UPLOAD_BYTES ||
+       inputBytes!=sizeof(*r)+r->DataBytes) return 0;
+    for(i=0;i<r->Count;i++) {
+        const NVX_3D_UPLOAD_SPAN *span=&r->Spans[i];
+        if(!span->Bytes || (span->Offset&3U) || (span->Bytes&3U) ||
+           span->Offset<end || span->Offset>allocatedBytes ||
+           span->Bytes>allocatedBytes-span->Offset ||
+           span->Bytes>r->DataBytes-total) return 0;
+        total+=span->Bytes;end=span->Offset+span->Bytes;
+    }
+    return total==r->DataBytes;
+}
+
 /* Download one bounded chunk through the CE to miniport staging memory.
  * Offsets and lengths are dword aligned; BO mapping can combine requests. */
 typedef struct NVX_3D_DOWNLOAD_BUFFER {
@@ -930,6 +974,31 @@ Nvx3dValidatePresentCopy(const NVX_3D_PRESENT_COPY *request,
     if (srcOffset > allocatedBytes || srcSpan > allocatedBytes - srcOffset ||
         srcSpan > 0x01000000ULL)
         return 0;
+    return 1;
+}
+
+/* Bounded array, validated in full before submitting any rectangle. */
+typedef struct NVX_3D_PRESENT_BATCH {
+    uint32_t Size;
+    uint32_t Version;
+    uint32_t Count;
+    uint32_t Reserved;
+    NVX_3D_PRESENT_COPY Copies[NVX_3D_MAX_COPY_RECTS];
+} NVX_3D_PRESENT_BATCH;
+
+static inline int
+Nvx3dValidatePresentBatch(const NVX_3D_PRESENT_BATCH *r,uint32_t inputBytes,
+                          uint32_t allocatedBytes,uint32_t width,uint32_t height)
+{
+    uint32_t i;
+    if(!r||inputBytes!=sizeof(*r)||r->Size!=sizeof(*r)||
+       r->Version!=NVX_3D_ABI_VERSION||!r->Count||
+       r->Count>NVX_3D_MAX_COPY_RECTS||r->Reserved) return 0;
+    for(i=0;i<r->Count;i++)
+        if(r->Copies[i].BufferId!=r->Copies[0].BufferId||
+           r->Copies[i].ClientToken!=r->Copies[0].ClientToken||
+           !Nvx3dValidatePresentCopy(&r->Copies[i],sizeof(r->Copies[i]),
+                                     allocatedBytes,width,height)) return 0;
     return 1;
 }
 

@@ -1,32 +1,26 @@
-# Windows XP x64 OpenGL handoff
+# Handoff — 2026-11-18
 
-Updated November 18, 2026. Current candidate: **3.0.0.320**. The RTX 3070 runs the NV170 hardware OpenGL path. Cube is about 59.8–59.9 FPS; gears about 53.0–54.5 FPS. The .320 BO-flush/address-lookup optimization builds and boots, but did not produce a measurable gears improvement. 3DMark05 still fails.
+## Status
+- 3.0.0.324 VFIO run completed successfully; VM is shut down.
+- Async GART-to-scanout copies queued and retired through CE semaphore fences.
+- Cube: 59.5 FPS; gears: 57.2–58.2 FPS. The 3.0.0.323 regression was about 3.5 FPS.
+- Full guest suite reported `[TEST_COMPLETE] Status: PASS`; native NVC0 draws completed fences and readback. This run did not launch 3DMark.
 
-## Latest hardware run
+## Fix in 3.0.0.324
+- Root cause was per-draw retirement overhead: each referenced BO scanned all 32 pending-copy slots and took the global buffer lock even when the BO had no pending presentation copy.
+- Added a BO-level `CopyRefs` fast path and an atomic slot-state check before locking. Async presentation remains enabled.
 
-- Log: `test_logs/v3.0.0.320-20261118-182553.log`.
-- VRAM aperture reported by the driver is 8,352,301,056 bytes (~7.78 GiB); this is aperture capacity, not a measurement of currently free VRAM. The log does not show an allocation failure before the 3DMark fault.
-- A NVC0 fence timed out with observed value zero. OpenRM then reported Shader Program Header errors and a graphics channel RC fault; 3DMark exited with `0xC0000005`. The later `miptree BO allocation failed` follows the fault and may be fallout from the quarantined channel, not evidence that the card ran out of VRAM.
-- The WGL presentation bridge copies visible rectangles through `ExtEscape`; the miniport waits for a CE completion fence. This is synchronous work and can add frame latency, but the current guest log has no `PRESENT_TIMING` measurements, so it is not proven to explain the 3DMark rate. The benchmark’s command/shader fault is the clearest observed failure.
-- Gears/cube/D3D9 remain hardware-rendered in the smoke tests. The full test runner exited nonzero because 3DMark failed; this is not a clean full-suite pass.
+## GPU proof
+- Per-client NVC0 stats include process ID, submitted batches, completed batches, and completed fence. `[NVX_GPU_FENCE_PROOF]` is emitted only after actual GPU submission and fence completion.
+- `test/test_full_driver.sh` requires that marker between 3DMark start/exit markers for a 3DMark GPU-proof pass.
+- 3DMark proof is still pending; no benchmark was launched in the successful `.324` run.
 
-## Changes in .320
-
-- `mesa_patches/nvx_nouveau_bo.c`: range flush now compares/uploads only the requested BO span. The common batch flush still publishes other dirty spans.
-- `mesa_patches/nvx_xf86drm.c`: use the validated address cache for repeated BufferId resolution and increase cache slots from 32 to 128.
-- Version bumped to 3.0.0.320 in the miniport, INF and test script.
-- Host/unit/mock checks and x64/x86 Mesa/driver builds passed; VFIO boot and smoke tests passed. FPS impact is neutral within run variation.
-
-## Next work
-
-1. Capture the failed batch and shader BO contents at the async fence timeout; compare shader program header uploads/addresses with upstream NVC0 behavior. Do not increase VRAM limits based only on the post-fault miptree error.
-2. Enable/preserve `PRESENT_TIMING` output and measure clip-copy/fence wait separately from draw/submit time. If it is significant, use an asynchronous or page-flip-style present only with explicit source-buffer lifetime fencing.
-3. Re-run 3DMark after addressing the shader-header/channel fault. Keep the Wine submodule pinned unless an isolated WineD3D A/B demonstrates a benefit.
+## Next
+- Run `.325` with `NVX_RUN_3DMARK=1` to validate real benchmark NVC0 submissions/fence completion and check 3DMark exit/status.
+- Inspect for `[NVX_GPU_FENCE_PROOF]` between benchmark markers, `GL_RENDERER NV170`, pushbuf rejection, and any GPU/MMU faults.
 
 ## Relevant files
-
-- `mesa_patches/nvx_nouveau_bo.c`, `mesa_patches/nvx_xf86drm.c`: BO shadow flush and Nouveau DRM/pushbuf shims.
-- `mesa_patches/nvx_wgl_bridge.c`: WGL presentation copy and timing instrumentation.
-- `src_driver/nvx_gsp.c`, `src_driver/nvxmp.c`, `src_driver/nvx_ce.c`: graphics submission/fences, channel fault handling and CE copy.
-- `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c`, `nvc0_context.c`: upstream shader and NVC0 submission reference.
-- `test/test_full_driver.sh`: full build and VFIO hardware test.
+- Async/retirement: `src_driver/nvx_ce.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`
+- NVC0 proof: `src_driver/nvx_gsp.c`, `test/test_full_driver.sh`
+- Driver/package versions: `src_driver/nvxmp.c`, `dist_full/nvx.inf`
+- Latest run: `test_logs/v3.0.0.324-20261118-193149.log`

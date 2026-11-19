@@ -228,9 +228,8 @@ static VOID NvxGspUnlockEngine(VOID)
     __sync_lock_release(&NvxGspEngineBusy);
 }
 
-static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG64 srcVa,
-                                        ULONG srcPitch,ULONG dstPitch,
-                                        ULONG bytesPerLine,ULONG lineCount)
+static BOOLEAN NvxGspSubmitCopyRectsUnlocked(PVOID HwDeviceExtension,
+    const NVX_GPU_COPY_RECT *rects,ULONG count)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
     PUCHAR scratch;
@@ -238,17 +237,28 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
     volatile ULONG *fence;
     PULONG push;
     volatile ULONG64 *fifo;
-    ULONG slot,n=0,fenceVal;
+    ULONG n=0,fenceVal,i;
+    ULONG64 dstVa,srcVa;
+    ULONG srcPitch,dstPitch,bytesPerLine,lineCount;
     ULONG64 srcSpan,dstSpan;
     ULONG64 va,pushVa;
 
     if(!dev||!dev->GspInitialized||!dev->GspCopyVerified||dev->GspChannelFaulted) return FALSE;
-    if(!bytesPerLine||bytesPerLine>0x1000000||!lineCount||
-       srcPitch<bytesPerLine||dstPitch<bytesPerLine||
-       (bytesPerLine&3)||(srcPitch&3)||(dstPitch&3)) return FALSE;
-    srcSpan=(ULONG64)(lineCount-1)*srcPitch+bytesPerLine;
-    dstSpan=(ULONG64)(lineCount-1)*dstPitch+bytesPerLine;
-    if(srcSpan>0x1000000||dstSpan>0x1000000) return FALSE;
+    if(!rects||!count||count>NVX_3D_MAX_COPY_RECTS) return FALSE;
+    /* Validate every descriptor before queueing the first operation. */
+    for(i=0;i<count;i++) {
+        const NVX_GPU_COPY_RECT *r=&rects[i];
+        if(!r->BytesPerLine||r->BytesPerLine>0x1000000||!r->LineCount||
+           r->SrcPitch<r->BytesPerLine||r->DstPitch<r->BytesPerLine||
+           (r->BytesPerLine&3)||(r->SrcPitch&3)||(r->DstPitch&3)) return FALSE;
+        srcSpan=(ULONG64)(r->LineCount-1)*r->SrcPitch+r->BytesPerLine;
+        dstSpan=(ULONG64)(r->LineCount-1)*r->DstPitch+r->BytesPerLine;
+        if(srcSpan>0x1000000||dstSpan>0x1000000||
+           r->SrcVa>~0ULL-srcSpan||r->DstVa>~0ULL-dstSpan) return FALSE;
+    }
+    dstVa=rects[0].DstVa;srcVa=rects[0].SrcVa;
+    srcPitch=rects[0].SrcPitch;dstPitch=rects[0].DstPitch;
+    bytesPerLine=rects[0].BytesPerLine;lineCount=rects[0].LineCount;
 
     scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     userd=(volatile ULONG *)(scratch+0x3200);
@@ -256,22 +266,25 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
     fifo=(volatile ULONG64 *)scratch;
     va=dev->GspScratchGpuVa;
 
-    slot=dev->GspGPPut%16;
-    push=(PULONG)(scratch+0x10000+slot*0x100);
-    pushVa=va+0x10000+slot*0x100;
+    /* All CE callers hold scratch and engine ownership until completion.
+       Use the full existing 4 KiB push region for up to 64 copies. */
+    pushVa=0x10000+(count==1U?(dev->GspGPPut%16)*0x100:0U);
+    push=(PULONG)(scratch+pushVa);
+    pushVa+=va;
     fenceVal=dev->GspNextFence++;
     if(!fenceVal) fenceVal=dev->GspNextFence++;
 
     push[n++]=0x20018000;push[n++]=0xc7b5; /* SET_OBJECT AMPERE_DMA_COPY_B */
-    push[n++]=0x20048100; /* OFFSET_IN/OUT_UPPER/LOWER */
-    push[n++]=(ULONG)(srcVa>>32);push[n++]=(ULONG)srcVa;
-    push[n++]=(ULONG)(dstVa>>32);push[n++]=(ULONG)dstVa;
-    push[n++]=0x20048104; /* PITCH_IN/OUT, LINE_LENGTH, LINE_COUNT */
-    push[n++]=srcPitch;push[n++]=dstPitch;push[n++]=bytesPerLine;push[n++]=lineCount;
-    /* Enable MULTI_LINE_ENABLE: LINE_COUNT and the configured pitches are
-       ignored by the CE when this bit is clear, silently copying only the
-       first 256-byte row. */
-    push[n++]=0x200180c0;push[n++]=0x04000386; /* pitch->pitch, multi-line */
+    for(i=0;i<count;i++) {
+        const NVX_GPU_COPY_RECT *r=&rects[i];
+        push[n++]=0x20048100;
+        push[n++]=(ULONG)(r->SrcVa>>32);push[n++]=(ULONG)r->SrcVa;
+        push[n++]=(ULONG)(r->DstVa>>32);push[n++]=(ULONG)r->DstVa;
+        push[n++]=0x20048104;
+        push[n++]=r->SrcPitch;push[n++]=r->DstPitch;
+        push[n++]=r->BytesPerLine;push[n++]=r->LineCount;
+        push[n++]=0x200180c0;push[n++]=0x04000386;
+    }
     push[n++]=0x20038090; /* SET_SEMAPHORE_A/B/PAYLOAD */
     push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);push[n++]=fenceVal;
     push[n++]=0x200180c0;push[n++]=0x0400000c; /* flushed release */
@@ -373,6 +386,135 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
         }
     }
     dev->GspChannelFaulted=TRUE;
+    return FALSE;
+}
+
+static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID extension,ULONG64 dstVa,
+    ULONG64 srcVa,ULONG srcPitch,ULONG dstPitch,ULONG bytesPerLine,ULONG lines)
+{
+    NVX_GPU_COPY_RECT rect={dstVa,srcVa,srcPitch,dstPitch,bytesPerLine,lines};
+    return NvxGspSubmitCopyRectsUnlocked(extension,&rect,1U);
+}
+
+BOOLEAN NvxGspSubmitCopyRects(PVOID extension,const NVX_GPU_COPY_RECT *rects,
+                               ULONG count)
+{
+    BOOLEAN result;
+    if(!NvxGspLockUserScratch()) return FALSE;
+    if(!NvxGspLockEngine()) {
+        __sync_lock_release(&NvxGrUserSubmitBusy);return FALSE;
+    }
+    result=NvxGspSubmitCopyRectsUnlocked(extension,rects,count);
+    NvxGspUnlockEngine();
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return result;
+}
+
+/* Presentation copies use private push/fence slots and return after the GPU
+ * kick.  The caller pins the source BO until NvxGspWaitCopyFence observes the
+ * slot semaphore.  A slot is reserved by the miniport before entering here. */
+BOOLEAN NvxGspSubmitCopyRectsAsync(PVOID extension,
+    const NVX_GPU_COPY_RECT *rects,ULONG count,ULONG slot,ULONG64 *fenceValue)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)extension;
+    PUCHAR scratch;
+    volatile ULONG *userd,*fence;
+    volatile ULONG64 *fifo;
+    PULONG push;
+    ULONG n=0,i,fv;
+    ULONG64 va,pushVa;
+    if(!dev||!rects||!count||count>NVX_3D_MAX_COPY_RECTS||
+       slot>=NVX_CE_ASYNC_COPY_SLOTS||!fenceValue||
+       dev->GspCopySlotFence[slot]!=~0ULL||
+       dev->GspDmaLength<GSP_SCRATCH_OFFSET+NVX_CE_ASYNC_COPY_BASE+
+           (slot+1U)*NVX_CE_ASYNC_COPY_STRIDE||
+       (2U+count*12U+7U)>NVX_CE_ASYNC_COPY_FENCE_OFFSET/sizeof(ULONG)||
+       !dev->GspInitialized||!dev->GspCopyVerified||dev->GspChannelFaulted)
+        return FALSE;
+    if(!NvxGspLockEngine()) return FALSE;
+    /* Validate the complete list before writing or publishing any commands. */
+    for(i=0;i<count;i++) {
+        const NVX_GPU_COPY_RECT *r=&rects[i];
+        ULONG64 srcSpan,dstSpan;
+        if(!r->BytesPerLine||r->BytesPerLine>0x1000000||!r->LineCount||
+           r->SrcPitch<r->BytesPerLine||r->DstPitch<r->BytesPerLine||
+           (r->BytesPerLine&3)||(r->SrcPitch&3)||(r->DstPitch&3)) {
+            NvxGspUnlockEngine();return FALSE;
+        }
+        srcSpan=(ULONG64)(r->LineCount-1U)*r->SrcPitch+r->BytesPerLine;
+        dstSpan=(ULONG64)(r->LineCount-1U)*r->DstPitch+r->BytesPerLine;
+        if(srcSpan>0x1000000||dstSpan>0x1000000||
+           r->SrcVa>~0ULL-srcSpan||r->DstVa>~0ULL-dstSpan) {
+            NvxGspUnlockEngine();return FALSE;
+        }
+    }
+    scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
+    userd=(volatile ULONG *)(scratch+0x3200);
+    fifo=(volatile ULONG64 *)scratch;
+    push=(PULONG)(scratch+NVX_CE_ASYNC_COPY_BASE+
+                  slot*NVX_CE_ASYNC_COPY_STRIDE);
+    fence=(volatile ULONG *)(scratch+NVX_CE_ASYNC_COPY_BASE+
+                  slot*NVX_CE_ASYNC_COPY_STRIDE+
+                  NVX_CE_ASYNC_COPY_FENCE_OFFSET);
+    va=dev->GspScratchGpuVa;
+    pushVa=va+NVX_CE_ASYNC_COPY_BASE+slot*NVX_CE_ASYNC_COPY_STRIDE;
+    fv=dev->GspNextFence++;
+    if(!fv) fv=dev->GspNextFence++;
+    fence[0]=0;
+    push[n++]=0x20018000;push[n++]=0xc7b5;
+    for(i=0;i<count;i++) {
+        const NVX_GPU_COPY_RECT *r=&rects[i];
+        push[n++]=0x20048100;
+        push[n++]=(ULONG)(r->SrcVa>>32);push[n++]=(ULONG)r->SrcVa;
+        push[n++]=(ULONG)(r->DstVa>>32);push[n++]=(ULONG)r->DstVa;
+        push[n++]=0x20048104;
+        push[n++]=r->SrcPitch;push[n++]=r->DstPitch;
+        push[n++]=r->BytesPerLine;push[n++]=r->LineCount;
+        push[n++]=0x200180c0;push[n++]=0x04000386;
+    }
+    push[n++]=0x20038090;
+    push[n++]=(ULONG)((va+NVX_CE_ASYNC_COPY_BASE+
+                     slot*NVX_CE_ASYNC_COPY_STRIDE+
+                     NVX_CE_ASYNC_COPY_FENCE_OFFSET)>>32);
+    push[n++]=(ULONG)(va+NVX_CE_ASYNC_COPY_BASE+
+                    slot*NVX_CE_ASYNC_COPY_STRIDE+
+                    NVX_CE_ASYNC_COPY_FENCE_OFFSET);
+    push[n++]=fv;
+    push[n++]=0x200180c0;push[n++]=0x0400000c;
+    fifo[dev->GspGPPut%1024]=(pushVa&0xfffffffcULL)|
+        (((pushVa>>32)&0xffULL)<<32)|((ULONG64)n<<42);
+    __sync_synchronize();
+    dev->GspGPPut=(dev->GspGPPut+1U)%1024U;
+    userd[0x8c/4]=dev->GspGPPut;
+    __sync_synchronize();
+    if(dev->Bar0Length>=0x30094)
+        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                0x30090),dev->GspSubmitToken);
+    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                dev->GspRunlistBase+0x90),1);
+    dev->GspCopySlotFence[slot]=fv;
+    *fenceValue=fv;
+    NvxGspUnlockEngine();
+    return TRUE;
+}
+
+BOOLEAN NvxGspWaitCopyFence(PVOID extension,ULONG slot,ULONG64 fenceValue,
+                            ULONG timeoutMs)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)extension;
+    volatile ULONG *fence;
+    ULONG elapsed,limit;
+    if(!dev||!dev->GspDmaVirtual||slot>=NVX_CE_ASYNC_COPY_SLOTS||
+       !fenceValue||timeoutMs>30000U) return FALSE;
+    fence=(volatile ULONG *)((PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+
+        NVX_CE_ASYNC_COPY_BASE+slot*NVX_CE_ASYNC_COPY_STRIDE+
+        NVX_CE_ASYNC_COPY_FENCE_OFFSET);
+    limit=timeoutMs*100U;
+    for(elapsed=0;elapsed<=limit;elapsed++) {
+        if(fence[0]>=(ULONG)fenceValue) {__sync_synchronize();return TRUE;}
+        if(timeoutMs) VideoPortStallExecution(10U);
+        else break;
+    }
     return FALSE;
 }
 
@@ -764,3 +906,44 @@ BOOLEAN NvxGspUpload(PVOID extension,ULONG64 dstVa,const void *src,ULONG bytes)
     return result;
 }
 
+
+/* Stage disjoint VRAM writes together and release one fence after all copies.
+ * The caller has already validated ownership and bounds for the whole BO. */
+BOOLEAN NvxGspUploadSpans(PVOID extension,ULONG64 dstVa,
+                          const NVX_3D_UPLOAD_SPANS *request)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)extension;
+    NVX_GPU_COPY_RECT rects[NVX_3D_MAX_UPLOAD_SPANS];
+    ULONG i,cursor=0;
+    BOOLEAN result;
+    if(!dev||!request||!dev->GspDmaVirtual||!request->DataBytes||
+       request->DataBytes>GSP_UPLOAD_MAX_BYTES||
+       !Nvx3dValidateUploadSpans(request,sizeof(*request)+request->DataBytes,
+                                 NVX_3D_MAX_BUFFER_BYTES)) return FALSE;
+    for(i=0;i<request->Count;i++) {
+        const NVX_3D_UPLOAD_SPAN *span=&request->Spans[i];
+        ULONG64 target=dstVa+span->Offset;
+        if(target<dstVa||
+           NvxMmuCheckRange(dev->GspVramGpuVa,dev->GspVramMapBytes,
+                             target,span->Bytes)!=NVX_MMU_OK||
+           !dev->GspFbLayoutValid||target-dev->GspVramGpuVa>dev->GspFbFreeLimit||
+           span->Bytes-1>dev->GspFbFreeLimit-(target-dev->GspVramGpuVa))
+            return FALSE;
+        rects[i].DstVa=target;
+        rects[i].SrcVa=GSP_UPLOAD_GPU_VA+cursor;
+        rects[i].SrcPitch=rects[i].DstPitch=rects[i].BytesPerLine=span->Bytes;
+        rects[i].LineCount=1U;
+        cursor+=span->Bytes;
+    }
+    if(!NvxGspLockUserScratch()) return FALSE;
+    if(!NvxGspLockEngine()) {
+        __sync_lock_release(&NvxGrUserSubmitBusy);return FALSE;
+    }
+    VideoPortMoveMemory((PUCHAR)dev->GspDmaVirtual+GSP_UPLOAD_OFFSET,
+                        (PVOID)(request+1),request->DataBytes);
+    __sync_synchronize();
+    result=NvxGspSubmitCopyRectsUnlocked(dev,rects,request->Count);
+    NvxGspUnlockEngine();
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return result;
+}

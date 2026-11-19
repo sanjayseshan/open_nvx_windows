@@ -514,6 +514,10 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       return 0;
    }
 
+   NVX_3D_PRESENT_BATCH batch;
+   memset(&batch,0,sizeof(batch));
+   batch.Size=sizeof(batch);
+   batch.Version=NVX_3D_ABI_VERSION;
    copy_start = nvx_wgl_present_timer();
    visible_rect_count = region_data->rdh.nCount;
    if (region_data->rdh.iType == RDH_RECTANGLES &&
@@ -556,13 +560,25 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
          request.DestinationY = (uint32_t)top;
          request.Width = (uint32_t)(right - left);
          request.Height = (uint32_t)(bottom - top);
-         if (!ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
-                        (LPCSTR)&request, 0, NULL)) {
-            NVX_PRESENT_COPY_FAIL("ExtEscape rejected copy");
-            result = 0;
-            break;
+         batch.Copies[batch.Count++]=request;
+      }
+      if (batch.Count) {
+         if (nvx_bridge_winsys.caps.Features & NVX_3D_FEATURE_PRESENT_BATCH) {
+            result=ExtEscape(hdc,NVX_ESCAPE_3D_PRESENT_BATCH,sizeof(batch),
+                              (LPCSTR)&batch,0,NULL)!=0;
+            if (result) copied_regions=batch.Count;
+         } else {
+            for (i=0; i<batch.Count; i++) {
+               if (!ExtEscape(hdc,NVX_ESCAPE_3D_PRESENT_COPY,
+                              sizeof(batch.Copies[i]),
+                              (LPCSTR)&batch.Copies[i],0,NULL)) {
+                  result=0;
+                  break;
+               }
+               copied_regions++;
+            }
          }
-         copied_regions++;
+         if (!result) NVX_PRESENT_COPY_FAIL("ExtEscape rejected copy batch");
       }
       if (!copied_regions)
          result = 0;

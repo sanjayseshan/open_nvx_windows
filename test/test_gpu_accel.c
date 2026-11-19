@@ -3645,6 +3645,31 @@ static int TestNvxBufferRoundTrip(HDC hdc,uint32_t usage,const char *name)
                   (LPCSTR)&upload,0,NULL))
         goto done;
 
+    /* Exercise the maximum sparse descriptor count on both real heaps.
+       Read back the gaps too, so a widened/clobbering copy fails this test. */
+    {
+        struct {
+            NVX_3D_UPLOAD_SPANS header;
+            uint32_t data[NVX_3D_MAX_UPLOAD_SPANS];
+        } sparse={0};
+        sparse.header.Size=sizeof(sparse.header);
+        sparse.header.Version=NVX_3D_ABI_VERSION;
+        sparse.header.BufferId=allocated.BufferId;
+        sparse.header.ClientToken=allocated.ClientToken;
+        sparse.header.Count=NVX_3D_MAX_UPLOAD_SPANS;
+        sparse.header.DataBytes=sizeof(sparse.data);
+        for(i=0;i<NVX_3D_MAX_UPLOAD_SPANS;i++) {
+            sparse.header.Spans[i].Offset=offset+i*8U;
+            sparse.header.Spans[i].Bytes=4;
+            sparse.data[i]=0xabc00000U+i;
+        }
+        if(!ExtEscape(hdc,NVX_ESCAPE_3D_UPLOAD_SPANS,sizeof(sparse),
+                      (LPCSTR)&sparse,0,NULL)) goto done;
+        for(i=0;i<NVX_3D_MAX_UPLOAD_SPANS;i++) upload.data[i*2]=sparse.data[i];
+        LogMsg("[NVX_%s_SPARSE_UPLOAD] submitted spans=%u bytes=%u\n",
+               name,sparse.header.Count,sparse.header.DataBytes);
+    }
+
     download.Size=sizeof(download);
     download.Version=NVX_3D_ABI_VERSION;
     download.BufferId=allocated.BufferId;

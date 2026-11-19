@@ -435,6 +435,47 @@ int main(void)
     uint32_t nvc0Color=0;
     uint32_t information=99;
 
+    {
+        NVX_3D_UPLOAD_SPANS r={0};
+        NVX_3D_PRESENT_BATCH batch={0};
+        uint32_t bytes=sizeof(r)+8U;
+        assert(sizeof(r)==544);
+        assert(sizeof(batch)==3600);
+        r.Size=sizeof(r);r.Version=NVX_3D_ABI_VERSION;
+        r.BufferId=r.ClientToken=1;r.Count=2;r.DataBytes=8;
+        r.Spans[0].Offset=0;r.Spans[0].Bytes=4;
+        r.Spans[1].Offset=4092;r.Spans[1].Bytes=4;
+        assert(Nvx3dValidateUploadSpans(&r,bytes,4096));
+        assert(!Nvx3dValidateUploadSpans(&r,bytes-1,4096));
+        assert(!Nvx3dValidateUploadSpans(&r,bytes,4092));
+        r.Spans[1].Offset=0;
+        assert(!Nvx3dValidateUploadSpans(&r,bytes,4096));
+        r.Spans[1].Offset=2;
+        assert(!Nvx3dValidateUploadSpans(&r,bytes,4096));
+        r.Spans[1].Offset=4092;r.DataBytes=4;
+        assert(!Nvx3dValidateUploadSpans(&r,sizeof(r)+4,4096));
+        r.DataBytes=8;r.Count=65;
+        assert(!Nvx3dValidateUploadSpans(&r,bytes,4096));
+        r.Count=0;
+        assert(!Nvx3dValidateUploadSpans(&r,bytes,4096));
+        batch.Size=sizeof(batch);batch.Version=NVX_3D_ABI_VERSION;
+        batch.Count=2;
+        batch.Copies[0].Size=sizeof(batch.Copies[0]);
+        batch.Copies[0].Version=NVX_3D_ABI_VERSION;
+        batch.Copies[0].BufferId=batch.Copies[0].ClientToken=1;
+        batch.Copies[0].SourcePitch=256;
+        batch.Copies[0].Width=batch.Copies[0].Height=16;
+        batch.Copies[1]=batch.Copies[0];
+        batch.Copies[1].DestinationX=16;
+        assert(Nvx3dValidatePresentBatch(&batch,sizeof(batch),4096,64,64));
+        batch.Copies[1].ClientToken=2;
+        assert(!Nvx3dValidatePresentBatch(&batch,sizeof(batch),4096,64,64));
+        batch.Copies[1].ClientToken=1;batch.Copies[1].DestinationX=63;
+        assert(!Nvx3dValidatePresentBatch(&batch,sizeof(batch),4096,64,64));
+        batch.Count=65;
+        assert(!Nvx3dValidatePresentBatch(&batch,sizeof(batch),4096,64,64));
+    }
+
     assert(sizeof(NVX_3D_QUERY_CAPS)==56);
     assert(Nvx3dPackPciLocation(0x2aU,0xabU)==
            (NVX_3D_PCI_LOCATION_VALID|0xab2aU));
