@@ -38,4 +38,4 @@ ab6cac63440b195b56a2f8474f7811ac6c70dfc366a98d7655afd15d6cb53d0d  /home/sanjay/t
 f34e7be1579cfc41e1219cc6e09bf5c0338a8013450189d68c7ce0a378996ae0  /home/sanjay/temp/xddm/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 08864c32c84e37acdef2f4713e50dc8bb32a00664716142c56db95cc37fd1c0d  /home/sanjay/temp/xddm/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
 721a124b3f2932692f063876ded21dc12372e7ecf0bcd801a5898f893c13bb33  /home/sanjay/temp/xddm/mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
-d877a670e025d47f634ac47d8c6acd5cf7f5f341590a9d3f115d9b54b26f2c19  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
+3730d597692755804bb2bdfc8b3fa6aa9d1d3cc44b301eeb16aaf2e957b121c2  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll

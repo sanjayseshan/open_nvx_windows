@@ -5,7 +5,7 @@
 
 #include "../src_driver/nvx_3d_abi.h"
 
-#define NVX_WINSYS_BATCH_PUSH_SLOTS 1024U
+#define NVX_WINSYS_BATCH_PUSH_SLOTS 2048U
 
 typedef int (*NVX_WINSYS_ESCAPE)(void *opaque, uint32_t escape,
                                  uint32_t input_bytes, const void *input,
