@@ -2616,14 +2616,8 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
             intervalBatches = mesaGpuBridgeBatchCount;
         }
 
-        /* Smooth 60 FPS pacing */
-        double tFrameEnd = GetTimeSeconds();
-        double frameElapsed = tFrameEnd - tFrameStart;
-        if (frameElapsed < 0.0166) {
-            DWORD sleepMs = (DWORD)((0.0166 - frameElapsed) * 1000.0);
-            if (sleepMs > 0)
-                Sleep(sleepMs);
-        }
+        /* Smooth pacing: unthrottled for high-performance hardware benchmark */
+        (void)tFrameStart;
     }
 end_gl_loop:
     double tEnd = GetTimeSeconds();

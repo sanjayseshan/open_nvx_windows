@@ -4585,6 +4585,26 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
     } else if(dev->Nvx3dCompletedFence>=fenceValue) {
         return TRUE;
     }
+    /* Timeout zero is a completion query (e.g. CPU_PREP_NOWAIT).
+       Check hardware fence directly once and return immediately without stalling. */
+    if(!timeoutMs) {
+        if(ownerChannel) {
+            volatile ULONG *fence=(volatile ULONG *)
+                ((PUCHAR)ownerChannel->Virtual+0x5000+
+                 fenceSlot*sizeof(ULONG));
+            if(fence[0]>=(ULONG)fenceValue) {
+                __sync_synchronize();
+                if(ownerChannel->CompletedFence<fenceValue) {
+                    ownerChannel->CompletedFence=fenceValue;
+                    ownerChannel->CompletedBatches++;
+                }
+                if(dev->Nvx3dCompletedFence<fenceValue)
+                    dev->Nvx3dCompletedFence=fenceValue;
+                return TRUE;
+            }
+        }
+        return dev->Nvx3dCompletedFence>=fenceValue;
+    }
     while(elapsed<=timeoutMs) {
         if(ownerChannel) {
             volatile ULONG *fence=(volatile ULONG *)
@@ -4610,10 +4630,22 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
             if(dev->Nvx3dCompletedFence>=fenceValue) return TRUE;
         }
         if(dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued) return FALSE;
-        /* Timeout zero is a completion query, used by GEM CPU_PREP_NOWAIT.
-           Never stall the calling thread after its final readiness check. */
         if(elapsed>=timeoutMs) break;
-        VideoPortStallExecution(1000);elapsed++;waitPolls++;
+        if(waitPolls<200) {
+            /* Sub-millisecond spin: fast CPU pause spin to signal quick GPU completions without ACPI timer VM-exits */
+            for (int p = 0; p < 100; p++) {
+                __asm__ __volatile__("pause");
+            }
+        } else if(waitPolls<280) {
+            /* Fast backoff: pause spin before falling back to full millisecond stalls */
+            for (int p = 0; p < 500; p++) {
+                __asm__ __volatile__("pause");
+            }
+        } else {
+            VideoPortStallExecution(1000);
+            elapsed++;
+        }
+        waitPolls++;
         if(ownerChannel) {
             ownerChannel->PerfFenceWaitPolls++;
             if(ownerChannel->PerfFenceWaitMaxPolls<waitPolls)

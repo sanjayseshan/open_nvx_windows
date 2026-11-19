@@ -75,7 +75,7 @@ qemu-system-x86_64 \
     -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
     -smp 4 \
     -vga none \
-    -net none \
+    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:3389-:3389 -device rtl8139,netdev=net0,addr=03.0 \
     -device vfio-pci,host=01:00.0,multifunction=on,x-vga=on,addr=02.0 \
     -device vfio-pci,host=01:00.1,addr=02.1 \
     -drive file="$ROOT_DIR/winxp_x64.qcow2",format=qcow2,if=ide \

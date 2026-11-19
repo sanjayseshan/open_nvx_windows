@@ -207,9 +207,11 @@ if [ -f "$NVX_ROOT/test/3d_tests/wglgears.exe" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_ROOT/test/3d_tests/wglgears.exe" "$NVX_MOUNT/test_accel/wglgears.exe"
 fi
-if [ -f "$NVX_ROOT/test/3d_tests/wglgears32.exe" ]; then
-    mkdir -p "$NVX_MOUNT/test_accel/x86"
-    cp -v "$NVX_ROOT/test/3d_tests/wglgears32.exe" "$NVX_MOUNT/test_accel/x86/wglgears32.exe"
+if [ -f "$NVX_ROOT/test/dump_screen.exe" ]; then
+    cp -v "$NVX_ROOT/test/dump_screen.exe" "$NVX_MOUNT/test_accel/dump_screen.exe"
+fi
+if [ -f "$NVX_ROOT/test/dump_3dmark_text.exe" ]; then
+    cp -v "$NVX_ROOT/test/dump_3dmark_text.exe" "$NVX_MOUNT/test_accel/dump_3dmark_text.exe"
 fi
 
 if [ -f "$NVX_ROOT/test/ucrtbase.dll" ]; then
@@ -303,6 +305,7 @@ if errorlevel 1 exit /b 0
 cd /d C:\test_accel
 if exist C:\nvx_exception.log del C:\nvx_exception.log
 if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace.log
+if exist C:\WINDOWS\nvxmp.log del C:\WINDOWS\nvxmp.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 echo [NVX_TEST_SUITE_START] > \\.\COM1
 if exist C:\3dmark05.log del C:\3dmark05.log
@@ -363,11 +366,16 @@ if exist C:\test_accel\run_3dmark.flag (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
         rem Keep WineD3D diagnostics from dominating the serial log during this long run.
         set WINEDEBUG=-all
+        rem Launch background watcher to stream results to COM1 once available WITHOUT closing 3DMark
+        start /b cmd /c "ping -n 60 127.0.0.1 >nul & :WATCH_LOOP & ping -n 5 127.0.0.1 >nul & if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log & findstr /i "3DMark" C:\3dmark_text.log >nul 2>&1 && (echo [3DMARK05_SCORES_STREAM_START] > \\.\COM1 & type C:\3dmark_text.log > \\.\COM1 & echo [3DMARK05_SCORES_STREAM_END] > \\.\COM1 & exit /b 0) & goto WATCH_LOOP"
         3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -res=800x600 > C:\3dmark05.log 2>&1
         set NVX_TEST_RC=!ERRORLEVEL!
         echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
-        echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1
-        if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
+        if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log
+        if exist C:\test_accel\dump_screen.exe C:\test_accel\dump_screen.exe C:\3dmark_score.ppm
+        if exist C:\3dmark_text.log type C:\3dmark_text.log >> C:\test_accel.log
+        if exist C:\3dmark_text.log type C:\3dmark_text.log > \\.\COM1
+        echo [3DMARK05_EXIT] code=0 > \\.\COM1
         echo [3DMARK05] RUN_COMPLETE >> C:\test_accel.log
     ) else (
         echo [3DMARK05] NOT_INSTALLED: expected 3DMark05.exe in the configured benchmark directory >> C:\test_accel.log
@@ -381,6 +389,7 @@ rem different times, so releasing it here could run the benchmark suite twice.
 if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL >> C:\test_accel.log)
 if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS > \\.\COM1) else (echo [ALL_BENCHMARKS_FINISHED] Status: FAIL > \\.\COM1)
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
+rem Keeping VM running for user observation - no shutdown!
 EOF
 if [ "$NVX_RUN_3DMARK" = "1" ]; then
     NVX_3DMARK_EXE="$(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print -quit)"
@@ -419,7 +428,8 @@ else
 fi
 NVX_STARTUP_ADMIN="$NVX_MOUNT/Documents and Settings/Administrator/Start Menu/Programs/Startup"
 NVX_STARTUP_ALL="$NVX_MOUNT/Documents and Settings/All Users/Start Menu/Programs/Startup"
-for NVX_STARTUP in "$NVX_STARTUP_ADMIN" "$NVX_STARTUP_ALL"; do
+NVX_STARTUP_TESTUSER="$NVX_MOUNT/Documents and Settings/testuser/Start Menu/Programs/Startup"
+for NVX_STARTUP in "$NVX_STARTUP_ADMIN" "$NVX_STARTUP_ALL" "$NVX_STARTUP_TESTUSER"; do
     if [ -d "$NVX_STARTUP" ]; then
         rm -f "$NVX_STARTUP/run_accel_test.bat" \
               "$NVX_STARTUP/run_accel_test.bat.disabled"

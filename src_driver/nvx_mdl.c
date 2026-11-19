@@ -56,6 +56,22 @@ void NvxMdlFreeGartBacking(void *mdlHandle, void *systemVirtual)
     ExFreePool(mdl);
 }
 
+void *NvxMdlMapUser(void *mdlHandle)
+{
+    PMDL mdl = (PMDL)mdlHandle;
+    if (!mdl)
+        return NULL;
+    return MmMapLockedPagesSpecifyCache(mdl, UserMode, MmWriteCombined,
+                                        NULL, FALSE, NormalPagePriority);
+}
+
+void NvxMdlUnmapUser(void *mdlHandle, void *userVirtual)
+{
+    PMDL mdl = (PMDL)mdlHandle;
+    if (mdl && userVirtual)
+        MmUnmapLockedPages(userVirtual, mdl);
+}
+
 void NvxMdlFlushGartBacking(void *mdlHandle, int deviceWrites)
 {
     /* KeFlushIoBuffers is a documented no-op on the driver's x86/x64

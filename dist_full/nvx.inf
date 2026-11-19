@@ -9,7 +9,7 @@ Signature   = "$CHICAGO$"
 Provider    = %NVIDIA%
 ClassGUID   = {4D36E968-E325-11CE-BFC1-08002BE10318}
 Class       = Display
-DriverVer   = 11/18/2026, 3.0.0.329
+DriverVer   = 11/19/2026, 3.0.0.332
 
 [DestinationDirs]
 DefaultDestDir      = 11

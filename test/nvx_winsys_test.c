@@ -412,10 +412,17 @@ main(void)
 
    assert(NvxWinsysWaitFence(&device, 42, 1000));
    assert(mock.waited_fence == 42);
+   assert(device.CompletedFence == 42);
+   /* Fast-path: fence <= CompletedFence returns immediately without kernel escape */
    assert(NvxWinsysWaitFence(&device, 42, 0));
+   assert(mock.waited_timeout == 1000);
+   /* Waiting on higher fence triggers escape */
+   assert(NvxWinsysWaitFence(&device, 43, 0));
+   assert(mock.waited_fence == 43);
    assert(mock.waited_timeout == 0);
    mock.fail_wait = 1;
-   assert(!NvxWinsysWaitFence(&device, 42, 0));
+   assert(!NvxWinsysWaitFence(&device, 44, 0));
+   assert(mock.waited_fence == 44);
    assert(mock.waited_timeout == 0);
    mock.fail_wait = 0;
    assert(NvxWinsysFreeBuffer(&device, result.BufferId));
@@ -581,8 +588,9 @@ main(void)
       mapped[2] = 0x3C;
       mock.event_count = 0;
       assert(NvxNouveauBoFlush(&bo));
-      assert(mock.event_count == 2 && mock.events[0] == MOCK_EVENT_WAIT &&
-             mock.events[1] == MOCK_EVENT_UPLOAD);
+      /* bo->last_fence was 77, which was already completed in the earlier wait,
+       * so NvxWinsysWaitFence hits the fast-path without generating a kernel WAIT event. */
+      assert(mock.event_count == 1 && mock.events[0] == MOCK_EVENT_UPLOAD);
       assert(find_buffer(&mock, bo.allocation.BufferId)->storage[2] == 0x3C);
       assert(bo.map_count == 1 && bo.shadow == mapped);
       /* Simulate a render-target write by the GPU while Mesa keeps its CPU
@@ -643,6 +651,7 @@ main(void)
          assert(mapped[192] == 0xD8 && mapped[256] == 0xE9);
          assert(NvxNouveauBoFlush(&bo));
          assert(backing->storage[192] == 0xD8 && backing->storage[256] == 0xE9);
+         assert(NvxNouveauBoMarkUsed(&bo, 82));
       }
       assert(NvxNouveauBoUnmap(&bo));
 
@@ -705,8 +714,8 @@ main(void)
       assert(second_storage->storage[0] == 0x72);
       assert(first_storage->bytes == 4096 && second_storage->bytes == 8192);
 
-      assert(NvxNouveauBoMarkUsed(&first, 80));
-      assert(NvxNouveauBoMarkUsed(&second, 81));
+      assert(NvxNouveauBoMarkUsed(&first, 83));
+      assert(NvxNouveauBoMarkUsed(&second, 84));
       mock.event_count = 0;
       assert(NvxNouveauBoDestroy(&first));
       assert(mock.event_count == 2 &&

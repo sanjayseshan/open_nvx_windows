@@ -349,6 +349,36 @@ NvxWinsysFreeBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id)
                          sizeof(request), &request, 0, NULL);
 }
 
+void *
+NvxWinsysMapBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id)
+{
+   NVX_3D_MAP_BUFFER request;
+   NVX_3D_MAP_BUFFER result;
+
+   if (!nvx_winsys_ready(device) || !buffer_id)
+      return NULL;
+   if (!(device->caps.Features & NVX_3D_FEATURE_DIRECT_MAP))
+      return NULL;
+
+   memset(&request, 0, sizeof(request));
+   request.Size = sizeof(request);
+   request.Version = NVX_3D_ABI_VERSION;
+   request.BufferId = buffer_id;
+   request.ClientToken = device->ClientToken;
+   memset(&result, 0, sizeof(result));
+
+   if (!device->escape(device->opaque, NVX_ESCAPE_3D_MAP_BUFFER,
+                       sizeof(request), &request,
+                       sizeof(result), &result))
+      return NULL;
+
+   if (result.Size != sizeof(result) || result.Version != NVX_3D_ABI_VERSION ||
+       result.BufferId != buffer_id || !result.UserVirtualAddress)
+      return NULL;
+
+   return (void *)(uintptr_t)result.UserVirtualAddress;
+}
+
 int
 NvxWinsysUploadBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id,
                       uint32_t allocated_bytes, uint32_t offset,
@@ -486,18 +516,25 @@ NvxWinsysWaitFence(NVX_WINSYS_DEVICE *device, uint64_t fence_value,
 
    if (!nvx_winsys_ready(device) || !fence_value || timeout_ms > 30000U)
       return 0;
+   if (fence_value <= device->CompletedFence)
+      return 1;
    memset(&request, 0, sizeof(request));
    request.Size = sizeof(request);
    request.Version = NVX_3D_ABI_VERSION;
    request.FenceValue = fence_value;
    request.TimeoutMs = timeout_ms;
    memset(&result, 0, sizeof(result));
-   return device->escape(device->opaque, NVX_ESCAPE_3D_WAIT,
-                         sizeof(request), &request, sizeof(result), &result) &&
-          result.Size == sizeof(result) &&
-          result.Version == NVX_3D_ABI_VERSION &&
-          result.Status == NVX_3D_STATUS_SUCCESS &&
-          result.FenceValue == fence_value;
+   if (device->escape(device->opaque, NVX_ESCAPE_3D_WAIT,
+                      sizeof(request), &request, sizeof(result), &result) &&
+       result.Size == sizeof(result) &&
+       result.Version == NVX_3D_ABI_VERSION &&
+       result.Status == NVX_3D_STATUS_SUCCESS &&
+       result.FenceValue == fence_value) {
+      if (fence_value > device->CompletedFence)
+         device->CompletedFence = fence_value;
+      return 1;
+   }
+   return 0;
 }
 
 int
@@ -554,7 +591,7 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
       allocation.Size = sizeof(allocation);
       allocation.Version = NVX_3D_ABI_VERSION;
       allocation.Usage = NVX_3D_USAGE_GART_BUFFER;
-      allocation.Bytes = 20U * 1024U;
+      allocation.Bytes = 68U * 1024U;
       allocation.ClientToken = device->ClientToken;
       if (!NvxWinsysAllocBuffer(device, &allocation, &allocation_result))
          return 0;
@@ -565,15 +602,19 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
        * GPU. Keep it allocated and never overwrite/recycle it this session. */
       return 0;
    } else if (device->NouveauBatchLastFence[slot_idx]) {
-      ring_wait_start = NVX_PROFILE_TIMER();
       if (!NvxWinsysWaitFence(device,
                               device->NouveauBatchLastFence[slot_idx],
-                              5000U)) {
-         /* Never overwrite a pushbuffer BO while the GPU may still be reading
-          * it. A timed-out prior submission must stop this submission path. */
-         return 0;
+                              0U)) {
+         ring_wait_start = NVX_PROFILE_TIMER();
+         if (!NvxWinsysWaitFence(device,
+                                 device->NouveauBatchLastFence[slot_idx],
+                                 5000U)) {
+            /* Never overwrite a pushbuffer BO while the GPU may still be reading
+             * it. A timed-out prior submission must stop this submission path. */
+            return 0;
+         }
+         ring_wait_us = NVX_PROFILE_ELAPSED(ring_wait_start);
       }
-      ring_wait_us = NVX_PROFILE_ELAPSED(ring_wait_start);
    }
    memcpy(&header, batch, sizeof(header));
    if (header.BufferReferenceCount >= NVX_3D_MAX_BATCH_BUFFERS ||
@@ -621,6 +662,8 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
    device->NouveauBatchLastFence[slot_idx] = result.FenceValue;
    device->NouveauBatchPushIndex = (slot_idx + 1U) %
                                   NVX_WINSYS_BATCH_PUSH_SLOTS;
+   if (result.CompletedFence > device->CompletedFence)
+      device->CompletedFence = result.CompletedFence;
    *fence_value = result.FenceValue;
    NVX_RECORD_WINSYS_PROFILE(NVX_PROFILE_ELAPSED(profile_start),
                              ring_wait_us, escape_us);

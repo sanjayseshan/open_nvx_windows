@@ -8,7 +8,7 @@
 /* Fixed-width ABI shared by XP x64/x86 clients and the miniport.  GPU VAs are
  * always 64-bit; no kernel pointers or RM handles cross this boundary. */
 #define NVX_3D_ABI_VERSION 22U
-#define NVX_3D_MAX_PUSH_DWORDS 4096U
+#define NVX_3D_MAX_PUSH_DWORDS 16384U
 #define NVX_3D_MAX_BATCH_RELOCATIONS 256U
 /* 3DMark05 pushbufs in the .271 hardware trace carry 94 BO entries. Leave
  * room for XP bridge-discovered direct-address BOs and its staging BO. */
@@ -120,8 +120,10 @@ Nvx3dDepthModeForOperation(uint32_t operation)
 #define NVX_ESCAPE_3D_PRESENT_COPY  0x8010U
 #define NVX_ESCAPE_3D_UPLOAD_SPANS  0x8011U
 #define NVX_ESCAPE_3D_PRESENT_BATCH 0x8012U
+#define NVX_ESCAPE_3D_MAP_BUFFER    0x8013U
 #define NVX_3D_FEATURE_UPLOAD_SPANS 0x00002000U
 #define NVX_3D_FEATURE_PRESENT_BATCH 0x00004000U
+#define NVX_3D_FEATURE_DIRECT_MAP   0x00008000U
 #define NVX_3D_MAX_COPY_RECTS 64U
 #define NVX_3D_MAX_UPLOAD_SPANS 64U
 #define NVX_3D_STATUS_SUCCESS            0U
@@ -395,6 +397,7 @@ typedef struct NVX_3D_BATCH_RESULT {
     uint32_t Size;
     uint32_t Version;
     uint64_t FenceValue;
+    uint64_t CompletedFence;
 } NVX_3D_BATCH_RESULT;
 
 static inline int
@@ -1345,6 +1348,22 @@ Nvx3dRequiredSubmitBytes(uint32_t operation)
        operation==NVX_3D_SUBMIT_DRAW_TRIANGLES)
         return NVX_3D_TRIANGLE_TARGET_BYTES;
     return 4096U;
+}
+
+typedef struct NVX_3D_MAP_BUFFER {
+    uint32_t Size;
+    uint32_t Version;
+    uint64_t BufferId;
+    uint64_t ClientToken;
+    uint64_t UserVirtualAddress;
+} NVX_3D_MAP_BUFFER;
+
+static inline int
+Nvx3dValidateMap(const NVX_3D_MAP_BUFFER *request)
+{
+    return request && request->Size==sizeof(*request) &&
+        request->Version==NVX_3D_ABI_VERSION && request->BufferId &&
+        request->ClientToken;
 }
 
 static inline int

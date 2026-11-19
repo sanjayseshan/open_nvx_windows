@@ -5,7 +5,7 @@
 
 #include "../src_driver/nvx_3d_abi.h"
 
-#define NVX_WINSYS_BATCH_PUSH_SLOTS 32U
+#define NVX_WINSYS_BATCH_PUSH_SLOTS 1024U
 
 typedef int (*NVX_WINSYS_ESCAPE)(void *opaque, uint32_t escape,
                                  uint32_t input_bytes, const void *input,
@@ -27,6 +27,7 @@ typedef struct NVX_WINSYS_DEVICE {
    uint32_t NouveauBatchPushIndex;
    NVX_3D_NVC0_OBJECT_BINDING NouveauObjectBindings[5];
    uint32_t NouveauObjectBindingCount;
+   uint64_t CompletedFence;
 } NVX_WINSYS_DEVICE;
 
 int NvxWinsysInit(NVX_WINSYS_DEVICE *device, NVX_WINSYS_ESCAPE escape,
@@ -39,6 +40,7 @@ int NvxWinsysAllocBuffer(NVX_WINSYS_DEVICE *device,
                          const NVX_3D_ALLOC_BUFFER *request,
                          NVX_3D_ALLOC_BUFFER *result);
 int NvxWinsysFreeBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id);
+void *NvxWinsysMapBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id);
 int NvxWinsysUploadBuffer(NVX_WINSYS_DEVICE *device, uint64_t buffer_id,
                           uint32_t allocated_bytes, uint32_t offset,
                           const void *data, uint32_t bytes);

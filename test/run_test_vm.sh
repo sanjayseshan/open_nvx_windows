@@ -14,6 +14,6 @@ qemu-system-x86_64 \
     -drive file=winxp_x64.qcow2,format=qcow2,media=disk,if=ide,index=0 \
     -drive file=nvx_driver_full.iso,media=cdrom,if=ide,index=1 \
     -boot c \
-    -net nic,model=rtl8139 -net user \
+    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:3389-:3389 -device rtl8139,netdev=net0 \
     -serial stdio \
     -qmp unix:/tmp/qmp-sock,server,nowait

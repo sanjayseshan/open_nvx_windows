@@ -7,6 +7,8 @@
 int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdl,
                               void **systemVirtual, void **pfnArray);
 void NvxMdlFreeGartBacking(void *mdl, void *systemVirtual);
+void *NvxMdlMapUser(void *mdl);
+void NvxMdlUnmapUser(void *mdl, void *userVirtual);
 void NvxMdlFlushGartBacking(void *mdl, int deviceWrites);
 
 #endif

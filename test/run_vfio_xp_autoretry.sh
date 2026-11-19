@@ -56,7 +56,11 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
         echo "==> Driver activity confirmed (PID $VM_PID). Monitoring session..."
 
         # Monitor loop for test completion or timeout, then soft powerdown
-        TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-240}"
+        if [ "${NVX_RUN_3DMARK:-0}" = "1" ]; then
+            TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-1200}"
+        else
+            TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-240}"
+        fi
         for s in $(seq 1 "$TEST_TIMEOUT"); do
             sleep 1
             if ! kill -0 "$VM_PID" 2>/dev/null; then
@@ -68,7 +72,19 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
                 echo "sendkey ret" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
             fi
 
+            # When 3DMark is running, periodically send ret to dismiss splash/modal prompts
+            if grep -q "\[3DMARK05_START\]" "$NVX_RUN_LOG" 2>/dev/null && \
+               ! grep -q "\[3DMARK05_EXIT\]" "$NVX_RUN_LOG" 2>/dev/null; then
+                if [ $((s % 4)) -eq 0 ]; then
+                    echo "sendkey ret" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
+                fi
+            fi
+
             if grep -Eq "ALL_BENCHMARKS_FINISHED|\\[NVX_3D_RAPID_RESULT\\]" "$NVX_RUN_LOG" 2>/dev/null; then
+                if [ "${NVX_KEEP_RUNNING:-0}" = "1" ]; then
+                    echo "==> Benchmarks completed. NVX_KEEP_RUNNING=1: Keeping VM alive for RDP/observation..."
+                    while true; do sleep 60; done
+                fi
                 if grep -Fq "[NVX_3D_RAPID_RESULT]" "$NVX_RUN_LOG" 2>/dev/null; then
                     echo "==> Focused 3D test completed. Sending soft ACPI powerdown..."
                 else

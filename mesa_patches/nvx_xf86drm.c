@@ -150,6 +150,12 @@ static uint32_t nvx_drm_prep_call_trace_count;
 static uint32_t nvx_drm_shadow_flush_trace_count;
 static uint32_t nvx_drm_vertex_upload_trace_count;
 #define NVX_DRM_VERTEX_DUMP_LIMIT 16U
+#ifndef NVX_XP_GPU_READBACK_TRACE
+/* Shader/vertex dumps are useful when diagnosing rendering correctness, but
+ * they force CPU readbacks and fence waits on Mesa's hot pushbuf path. Keep
+ * the production path asynchronous; define this only in a diagnostic build. */
+#define NVX_XP_GPU_READBACK_TRACE 0
+#endif
 static uint64_t nvx_drm_vertex_dump_addresses[NVX_DRM_VERTEX_DUMP_LIMIT];
 static uint32_t nvx_drm_vertex_dump_count;
 #define NVX_DRM_SHADER_DUMP_LIMIT 16U
@@ -880,7 +886,8 @@ nvx_drm_submit_pushbuf(int fd,
    }
 
 #if defined(_WIN32) || defined(_WIN64)
-   if (shader_dump_count < NVX_DRM_SHADER_DUMP_LIMIT) {
+   if (NVX_XP_GPU_READBACK_TRACE &&
+       shader_dump_count < NVX_DRM_SHADER_DUMP_LIMIT) {
       shader_dump_count = nvx_drm_capture_shader_addresses_locked(device,
           batch + sizeof(header) +
              (size_t)NVX_3D_MAX_BATCH_BUFFERS * sizeof(references[0]),
@@ -946,7 +953,8 @@ nvx_drm_submit_pushbuf(int fd,
          if (flush_ok) {
             flushed_shadow_count++;
 #if defined(_WIN32) || defined(_WIN64)
-            if (!device->shader_triangle_input_readback_scheduled &&
+            if (NVX_XP_GPU_READBACK_TRACE &&
+                !device->shader_triangle_input_readback_scheduled &&
                 vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT &&
                 offset <= slot->bo.allocation.Bytes &&
                 12U * sizeof(uint32_t) <=
@@ -968,7 +976,7 @@ nvx_drm_submit_pushbuf(int fd,
       }
       /* Nouveau's map access flags govern waits, not CPU write permission.
        * Its access=0 paths write through cached shared mappings as well. */
-      if (!slot->bo.map_count)
+      if (!slot->bo.map_count || !slot->bo.dirty)
          continue;
       if (!NvxNouveauBoFlush(&slot->bo))
          goto done;
@@ -982,7 +990,8 @@ nvx_drm_submit_pushbuf(int fd,
       }
    }
 #if defined(_WIN32) || defined(_WIN64)
-   while (nvx_drm_vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT &&
+   while (NVX_XP_GPU_READBACK_TRACE &&
+          nvx_drm_vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT &&
           vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT) {
       struct nvx_drm_vertex_dump *dump =
          &vertex_dumps[vertex_dump_count];
@@ -1086,7 +1095,7 @@ nvx_drm_submit_pushbuf(int fd,
    profile_translate_start = nvx_wgl_present_timer();
 
 #if defined(_WIN32) || defined(_WIN64)
-   {
+   if (NVX_XP_GPU_READBACK_TRACE) {
       uint32_t dump_index;
       for (dump_index = 0; dump_index < vertex_dump_count; dump_index++) {
          struct nvx_drm_vertex_dump *dump = &vertex_dumps[dump_index];
@@ -1166,6 +1175,8 @@ nvx_drm_submit_pushbuf(int fd,
              winsys.NouveauBatchLastFence,
              sizeof(winsys.NouveauBatchLastFence));
       device->device.NouveauBatchPushIndex = winsys.NouveauBatchPushIndex;
+      if (winsys.CompletedFence > device->device.CompletedFence)
+         device->device.CompletedFence = winsys.CompletedFence;
       device->nouveau_submit_busy = 0;
    }
    submit_busy_owned = 0;
@@ -1194,7 +1205,7 @@ nvx_drm_submit_pushbuf(int fd,
       nvx_drm_lock_release();
    }
 #if defined(_WIN32) || defined(_WIN64)
-   if (valid && fence_value) {
+   if (NVX_XP_GPU_READBACK_TRACE && valid && fence_value) {
       uint32_t dump_index;
       int has_forced_dump = 0;
       int completed = 0;
@@ -1218,7 +1229,8 @@ nvx_drm_submit_pushbuf(int fd,
             dump->bytes / sizeof(uint32_t), result);
       }
    }
-   if (valid && fence_value && shader_dump_count) {
+   if (NVX_XP_GPU_READBACK_TRACE && valid && fence_value &&
+       shader_dump_count) {
       uint32_t dump_index;
       int completed = NvxWinsysWaitFence(&winsys, fence_value, 5000U);
       for (dump_index = 0; dump_index < shader_dump_count; dump_index++) {
@@ -1852,8 +1864,10 @@ nvx_drm_pushbuf_nop(int fd, struct drm_nouveau_gem_pushbuf *request,
    struct nvx_drm_device_slot *device;
 
    if (!request || size != sizeof(*request))
-      return nvx_drm_unsupported_operation(
-         NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
+   {
+      errno = EINVAL;
+      return -EINVAL;
+   }
 
    if (request->nr_push || request->nr_buffers || request->nr_relocs ||
        request->buffers || request->relocs || request->push ||
@@ -1951,16 +1965,24 @@ nvx_drm_pushbuf_nop(int fd, struct drm_nouveau_gem_pushbuf *request,
           request->nr_buffers > NVX_3D_MAX_BATCH_BUFFERS ||
           request->nr_relocs > NVX_3D_MAX_BATCH_RELOCATIONS ||
           !request->buffers || !request->push ||
-          (request->nr_relocs && !request->relocs))
-         return nvx_drm_unsupported_operation(
-            NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
+          (request->nr_relocs && !request->relocs)) {
+         NvxWglRecordNouveauPushbufItem(21U, 1U, request->nr_push,
+            request->nr_buffers, request->nr_relocs,
+            (request->buffers != 0), (request->push != 0),
+            (request->relocs != 0));
+         errno = EINVAL;
+         return -EINVAL;
+      }
       if (nvx_drm_submit_pushbuf(fd, request)) {
          NvxWglRecordNouveauPushbuf(request->channel, request->nr_push,
                                     request->nr_buffers, request->nr_relocs);
          return 0;
       }
+      /* drmCommandWriteRead follows libdrm's negative-errno contract. Mesa
+       * formats this result with strerror(-ret); returning -1 here made every
+       * pushbuf failure look like EPERM regardless of the actual cause. */
       errno = EIO;
-      return -1;
+      return -EIO;
 #else
       return nvx_drm_unsupported_operation(
          NVX_XF86DRM_UNSUPPORTED_WRITE_READ, DRM_NOUVEAU_GEM_PUSHBUF);
@@ -1974,7 +1996,7 @@ nvx_drm_pushbuf_nop(int fd, struct drm_nouveau_gem_pushbuf *request,
        request->channel != device->device.NouveauChannelHandle) {
       nvx_drm_lock_release();
       errno = device ? EINVAL : ENODEV;
-      return -1;
+      return device ? -EINVAL : -ENODEV;
    }
 
    request->suffix0 = 0;
@@ -2494,6 +2516,32 @@ NvxXf86DrmWaitBufferFence(int fd, uint32_t handle)
    return completed;
 }
 
+/* Fast-path check: determine whether a buffer actually has an inflight fence
+ * or unrefreshed shadow before incurring pushbuf kicks or kernel fence waits. */
+int
+NvxXf86DrmBufferNeedsWait(int fd, uint32_t handle, uint32_t access)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int needs_wait = 0;
+
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   if (slot && device) {
+      uint64_t last_fence = slot->bo.last_fence;
+      if (last_fence && last_fence > device->device.CompletedFence) {
+         needs_wait = 1;
+      } else if ((access & 1U /* NOUVEAU_BO_RD */) &&
+                 slot->bo.shadow && slot->bo.map_count &&
+                 slot->bo.shadow_fence < last_fence) {
+         needs_wait = 1;
+      }
+   }
+   nvx_drm_lock_release();
+   return needs_wait;
+}
+
 /* The NVC0 screen polls its persistently mapped query/fence BO without a
  * CPU_PREP ioctl. Linux reads coherent mapped memory directly; XP uses a
  * shadow, so refresh only after the associated miniport batch fence signals.
@@ -2603,6 +2651,60 @@ NvxXf86DrmFlushBuffer(int fd, uint32_t handle)
    if (!result)
       errno = found ? EIO : ENOENT;
    return result ? 0 : -1;
+}
+
+int
+NvxXf86DrmFlushBufferRange(int fd, uint32_t handle, uint64_t offset, uint64_t bytes)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int result = 0;
+   int found;
+
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   found = slot != NULL;
+   if (slot)
+      result = NvxNouveauBoFlushRange(&slot->bo, offset, bytes);
+   nvx_drm_lock_release();
+   if (!result)
+      errno = found ? EIO : ENOENT;
+   return result ? 0 : -1;
+}
+
+int
+NvxXf86DrmMarkBufferDirtyRange(int fd, uint32_t handle, uint64_t offset, uint64_t bytes)
+{
+   struct nvx_drm_device_slot *device;
+   struct nvx_drm_bo_slot *slot;
+   int found;
+
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   slot = nvx_drm_find_bo_locked(device, handle);
+   found = slot != NULL;
+   if (slot && slot->bo.map_count) {
+      uint32_t end = (uint32_t)(offset + bytes);
+      if (end > slot->bo.allocation.Bytes)
+         end = slot->bo.allocation.Bytes;
+      if (!slot->bo.dirty) {
+         slot->bo.dirty = 1;
+         slot->bo.dirty_offset = (uint32_t)offset;
+         slot->bo.dirty_end = end;
+      } else {
+         if ((uint32_t)offset < slot->bo.dirty_offset)
+            slot->bo.dirty_offset = (uint32_t)offset;
+         if (end > slot->bo.dirty_end)
+            slot->bo.dirty_end = end;
+      }
+   }
+   nvx_drm_lock_release();
+   if (!found) {
+      errno = ENOENT;
+      return -1;
+   }
+   return 0;
 }
 
 drmVersionPtr

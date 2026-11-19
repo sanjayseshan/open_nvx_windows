@@ -23,7 +23,7 @@ d15626440facf89ec5e97bb767a13f2bffaea8e18412a1aac871606a9edf999a  /home/sanjay/t
 c36a2a345315340610ad38adc0decdd920ba674e34e567627379ac0d34e087d0  /home/sanjay/temp/xddm/mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch
 8aa29fdb84429ab45f787bafe8fd1f75b1c3b889da0f32994cb7b185bcf58ffd  /home/sanjay/temp/xddm/mesa_patches/0023-nouveau-xp-wgl-gart-targets.patch
 34275f60c141369560225f9486b0ece9c489908602905c6074640fcb972bd750  /home/sanjay/temp/xddm/mesa_patches/0024-nouveau-xp-linear-kind-tiled-depth.patch
-33e3b78a7246863e6357fb4793b26da69684f5418a373db97825fe76a176d8c3  /home/sanjay/temp/xddm/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch
+52b5f6cd0557bb1a2cd2113c4462ed4b722ab7a6e5cc356fe4a6d825dc77a931  /home/sanjay/temp/xddm/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch
 3f7d3c9e46706bba4092fb365eafcc1ef496cec6b51a3cff06f7caa8151c91ce  /home/sanjay/temp/xddm/mesa_patches/0026-nouveau-xp-render-target-trace.patch
 c8bd0dcceed48efd01569d0688fa8ea95702fc70caca3efe7058026493491a10  /home/sanjay/temp/xddm/mesa_patches/0027-mesa-begin-end-staging-trace.patch
 24956680af4f444a1a446815d8d10056ac1a72dba6d72b16c813d90f539cc159  /home/sanjay/temp/xddm/mesa_patches/0028-nouveau-xp-widen-cached-bo-map.patch
@@ -37,4 +37,5 @@ ab6cac63440b195b56a2f8474f7811ac6c70dfc366a98d7655afd15d6cb53d0d  /home/sanjay/t
 44d9bc8621391ae550ba3eac7d0adc1b5e5ef42ce38b19303348795d219dcd4a  /home/sanjay/temp/xddm/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
 f34e7be1579cfc41e1219cc6e09bf5c0338a8013450189d68c7ce0a378996ae0  /home/sanjay/temp/xddm/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 08864c32c84e37acdef2f4713e50dc8bb32a00664716142c56db95cc37fd1c0d  /home/sanjay/temp/xddm/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
-6743f098a7cf2a1ae3dacac5daf1159edcc028e8cc3af1679ea80d93c71403d0  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+721a124b3f2932692f063876ded21dc12372e7ecf0bcd801a5898f893c13bb33  /home/sanjay/temp/xddm/mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
+eae8eb1e9c237cda1f28f01129e91cfd6461d56d55a97d9192cbee809acec75c  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

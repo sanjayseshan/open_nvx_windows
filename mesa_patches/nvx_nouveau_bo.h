@@ -20,6 +20,10 @@ typedef struct NVX_NOUVEAU_BO {
    uint32_t map_access;
    uint32_t map_count;
    uint32_t contents_valid;
+   uint32_t direct_mapped;
+   uint32_t dirty;
+   uint32_t dirty_offset;
+   uint32_t dirty_end;
 } NVX_NOUVEAU_BO;
 
 /* User-mode description of one NVC0 address relocation. The kernel batch ABI
