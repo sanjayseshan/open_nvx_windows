@@ -107,6 +107,11 @@ static volatile LONG nvx_profile_winsys_us;
 static volatile LONG nvx_profile_swaps;
 static volatile LONG nvx_profile_frame_interval_us;
 static volatile LONG nvx_profile_present_us;
+static volatile LONG nvx_profile_shadow_scan_kb;
+static volatile LONG nvx_profile_shadow_upload_kb;
+static volatile LONG nvx_profile_shadow_upload_calls;
+static volatile LONG nvx_profile_shadow_flushes;
+static volatile LONG nvx_profile_last_log_tick;
 static uint64_t nvx_profile_last_present_start;
 static volatile LONG nvx_bridge_nvc0_clear_count;
 static volatile LONG nvx_bridge_last_primitive;
@@ -141,7 +146,11 @@ void NvxWglRecordNouveauKickStages(uint32_t flush_us, uint32_t validate_us);
 void NvxWglRecordNouveauWinsysProfile(uint32_t total_us, uint32_t ring_wait_us,
                                       uint32_t escape_us);
 void NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us);
+void NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
+                                      uint32_t uploaded_bytes,
+                                      uint32_t upload_calls);
 static void nvx_wgl_log_performance_profile(void);
+static void nvx_wgl_maybe_log_performance_profile(void);
 void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                     uint32_t a, uint32_t b, uint32_t c,
                                     uint32_t d, uint32_t e, uint32_t f);
@@ -460,6 +469,7 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
          InterlockedExchange(&last_present_duration_us, 0));
    }
    nvx_profile_last_present_start = present_start;
+   nvx_wgl_maybe_log_performance_profile();
 
 #define NVX_PRESENT_COPY_FAIL(_stage) do { \
    static volatile LONG _count; \
@@ -874,6 +884,20 @@ NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us)
    InterlockedExchangeAdd(&nvx_profile_translate_us, (LONG)elapsed_us);
 }
 
+void
+NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
+                                 uint32_t uploaded_bytes,
+                                 uint32_t upload_calls)
+{
+   InterlockedExchangeAdd(&nvx_profile_shadow_scan_kb,
+      (LONG)((scanned_bytes + 1023U) / 1024U));
+   InterlockedExchangeAdd(&nvx_profile_shadow_upload_kb,
+      (LONG)((uploaded_bytes + 1023U) / 1024U));
+   InterlockedExchangeAdd(&nvx_profile_shadow_upload_calls,
+                          (LONG)upload_calls);
+   InterlockedIncrement(&nvx_profile_shadow_flushes);
+}
+
 static void
 nvx_wgl_log_performance_profile(void)
 {
@@ -896,6 +920,11 @@ nvx_wgl_log_performance_profile(void)
    LONG swaps = InterlockedExchange(&nvx_profile_swaps, 0);
    LONG frame_us = InterlockedExchange(&nvx_profile_frame_interval_us, 0);
    LONG present_us = InterlockedExchange(&nvx_profile_present_us, 0);
+   LONG shadow_scan_kb = InterlockedExchange(&nvx_profile_shadow_scan_kb, 0);
+   LONG shadow_upload_kb = InterlockedExchange(&nvx_profile_shadow_upload_kb, 0);
+   LONG shadow_upload_calls = InterlockedExchange(
+      &nvx_profile_shadow_upload_calls, 0);
+   LONG shadow_flushes = InterlockedExchange(&nvx_profile_shadow_flushes, 0);
 
    if (batches) {
       wsprintfA(message,
@@ -934,6 +963,29 @@ nvx_wgl_log_performance_profile(void)
             winsys_us - ring_wait_us - escape_us : 0L);
       nvx_bridge_nouveau_trace(message);
    }
+   if (shadow_flushes) {
+      wsprintfA(message,
+         "NOUVEAU_SHADOW_PROFILE flushes=%ld scanned_kb=%ld uploaded_kb=%ld upload_calls=%ld",
+         shadow_flushes, shadow_scan_kb, shadow_upload_kb,
+         shadow_upload_calls);
+      nvx_bridge_nouveau_trace(message);
+   }
+}
+
+/* Emit aggregate counters every ten seconds while an app is active. The
+ * summary is intentionally sampled from the present path so it stays quiet
+ * during hot pushbuf submission and never logs once per frame. */
+static void
+nvx_wgl_maybe_log_performance_profile(void)
+{
+   LONG now = (LONG)GetTickCount();
+   LONG last = InterlockedCompareExchange(&nvx_profile_last_log_tick,
+                                           now, 0);
+   if (!last || (DWORD)((DWORD)now - (DWORD)last) < 10000U)
+      return;
+   if (InterlockedCompareExchange(&nvx_profile_last_log_tick, now, last) ==
+       last)
+      nvx_wgl_log_performance_profile();
 }
 
 void

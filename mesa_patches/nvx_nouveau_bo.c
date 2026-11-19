@@ -8,6 +8,9 @@
 void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                    uint32_t a, uint32_t b, uint32_t c,
                                    uint32_t d, uint32_t e, uint32_t f);
+void NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
+                                      uint32_t uploaded_bytes,
+                                      uint32_t upload_calls);
 static uint32_t nvx_bo_readmap_trace_count;
 
 #endif
@@ -309,9 +312,12 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
 
 /* Publish one packet, then advance the baseline only for acknowledged bytes. */
 static int
-nvx_nouveau_bo_publish_spans(NVX_NOUVEAU_BO *bo, NVX_3D_UPLOAD_SPANS *r)
+nvx_nouveau_bo_publish_spans(NVX_NOUVEAU_BO *bo, NVX_3D_UPLOAD_SPANS *r,
+                             uint32_t *uploaded_bytes,
+                             uint32_t *upload_calls)
 {
    uint32_t i, cursor=0;
+   uint32_t bytes = r->DataBytes;
    const uint8_t *data=(const uint8_t *)(r+1);
    if (!NvxWinsysUploadSpans(bo->device, r, bo->allocation.Bytes))
       return 0;
@@ -320,10 +326,23 @@ nvx_nouveau_bo_publish_spans(NVX_NOUVEAU_BO *bo, NVX_3D_UPLOAD_SPANS *r)
              r->Spans[i].Bytes);
       cursor+=r->Spans[i].Bytes;
    }
+   if (uploaded_bytes)
+      *uploaded_bytes += bytes;
+   if (upload_calls)
+      (*upload_calls)++;
    bo->contents_valid=1;
    r->Count=0;
    r->DataBytes=0;
    return 1;
+}
+
+static int
+nvx_nouveau_bo_bytes_equal(const uint8_t *a, const uint8_t *b,
+                           uint32_t bytes, uint32_t *scanned_bytes)
+{
+   if (scanned_bytes)
+      *scanned_bytes += bytes;
+   return memcmp(a, b, bytes) == 0;
 }
 
 static int
@@ -332,6 +351,7 @@ nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
 {
    NVX_3D_UPLOAD_SPANS *r=NULL;
    int waited=0, ok=0;
+   uint32_t scanned_bytes=0, uploaded_bytes=0, upload_calls=0;
    if (!bo || !bo->references)
       return 0;
    if (!bo->map_count)
@@ -342,15 +362,21 @@ nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
    while (offset<end) {
       uint32_t start=offset, bytes;
       if (bo->shadow_base_valid && !(offset&4095U) &&
-          end-offset>=4096U &&
-          !memcmp(bo->shadow+offset, bo->shadow_base+offset, 4096U)) {
-         offset+=4096U;
-         continue;
+          end-offset>=4096U) {
+         if (nvx_nouveau_bo_bytes_equal(bo->shadow+offset,
+                                        bo->shadow_base+offset, 4096U,
+                                        &scanned_bytes)) {
+            offset+=4096U;
+            continue;
+         }
       }
-      if (bo->shadow_base_valid &&
-          !memcmp(bo->shadow+offset, bo->shadow_base+offset, 4U)) {
-         offset+=4U;
-         continue;
+      if (bo->shadow_base_valid) {
+         if (nvx_nouveau_bo_bytes_equal(bo->shadow+offset,
+                                       bo->shadow_base+offset, 4U,
+                                       &scanned_bytes)) {
+            offset+=4U;
+            continue;
+         }
       }
       if (!r) {
          r=(NVX_3D_UPLOAD_SPANS *)malloc(sizeof(*r)+NVX_3D_MAX_UPLOAD_BYTES);
@@ -366,7 +392,9 @@ nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
       } while (offset<end &&
                offset-start<NVX_3D_MAX_UPLOAD_BYTES-r->DataBytes &&
                (!bo->shadow_base_valid ||
-                memcmp(bo->shadow+offset, bo->shadow_base+offset, 4U)));
+                !nvx_nouveau_bo_bytes_equal(bo->shadow+offset,
+                                            bo->shadow_base+offset, 4U,
+                                            &scanned_bytes)));
       bytes=offset-start;
       r->Spans[r->Count].Offset=start;
       r->Spans[r->Count++].Bytes=bytes;
@@ -378,14 +406,22 @@ nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
       waited=1;
       if (r->Count==NVX_3D_MAX_UPLOAD_SPANS ||
           r->DataBytes==NVX_3D_MAX_UPLOAD_BYTES)
-         if (!nvx_nouveau_bo_publish_spans(bo,r)) goto done;
+         if (!nvx_nouveau_bo_publish_spans(bo,r,&uploaded_bytes,
+                                           &upload_calls)) goto done;
    }
-   if (r && r->Count && !nvx_nouveau_bo_publish_spans(bo,r)) goto done;
+   if (r && r->Count &&
+       !nvx_nouveau_bo_publish_spans(bo,r,&uploaded_bytes,&upload_calls))
+      goto done;
    if (r) bo->shadow_base_valid=1U;
    /* Untouched GPU-written bytes still require an actual readback. */
    ok=1;
 done:
    free(r);
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+   NvxWglRecordNouveauShadowProfile(scanned_bytes, uploaded_bytes,
+                                    upload_calls);
+#endif
    return ok;
 }
 

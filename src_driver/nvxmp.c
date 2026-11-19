@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.324
+ * Driver Version: 3.0.0.328
  */
 
 #include "miniport.h"
@@ -18,6 +18,13 @@
  * client token during XP channel bring-up diagnostics. */
 extern HANDLE NTAPI PsGetCurrentProcessId(VOID);
 extern ULONG NTAPI RtlRandomEx(PULONG Seed);
+
+static __inline ULONG64 Nvx3dReadTsc(VOID)
+{
+    ULONG low,high;
+    __asm__ __volatile__("rdtsc" : "=a"(low), "=d"(high));
+    return ((ULONG64)high<<32)|low;
+}
 
 /* NT kernel file APIs used by the optional boot diagnostic log. */
 typedef struct _NVX_OBJECT_ATTRIBUTES {
@@ -4259,7 +4266,7 @@ validate_batch_done:
         ULONG ownedCount=0,pinnedCount=0,i,ownedOffset,ownedBytes;
         ULONG pendingSlot=0;
         ULONG64 scratchBytes;
-        ULONG64 lookupSlotScans=0;
+        ULONG64 lookupSlotScans=0,lookupStartTsc;
         ULONG64 fenceValue;
         BOOLEAN submitted=FALSE,clientReserved=FALSE,batchSlotReserved=FALSE;
         NVX_GR_CLIENT_CHANNEL *channel=NULL;
@@ -4315,28 +4322,38 @@ validate_batch_done:
            !channel||!channel->Ready||channel->Faulted||channel->Submitting||
            !engine->GspGraphicsUserAllocReady||
            engine->GspGraphicsDeviceFaulted||engine->GspMmuFaultQueued) {
-            LogStr("NVX [NVC0-BATCH]: reject channel/session owner=");
-            LogHex(channel?channel->Channel:0);
-            LogStr(" token=");LogHex(header.ClientToken);
-            LogStr(" userAlloc=");LogHex(engine?engine->GspGraphicsUserAllocReady:0);
-            LogStr(" ready=");LogHex(channel?channel->Ready:0);
-            LogStr(" clientFault=");LogHex(channel?channel->Faulted:0);
-            LogStr(" deviceFault=");LogHex(engine->GspGraphicsDeviceFaulted);
-            LogStr(" mmu=");LogHex(engine?engine->GspMmuFaultQueued:0);
-            LogStr("\n");
+            BOOLEAN logReject=TRUE;
+            if(channel&&channel->Faulted) {
+                logReject=!channel->FaultRejectLogged;
+                channel->FaultRejectLogged=TRUE;
+            }
+            if(logReject) {
+                LogStr("NVX [NVC0-BATCH]: reject channel/session owner=");
+                LogHex(channel?channel->Channel:0);
+                LogStr(" token=");LogHex(header.ClientToken);
+                LogStr(" userAlloc=");LogHex(engine?engine->GspGraphicsUserAllocReady:0);
+                LogStr(" ready=");LogHex(channel?channel->Ready:0);
+                LogStr(" clientFault=");LogHex(channel?channel->Faulted:0);
+                LogStr(" deviceFault=");LogHex(engine->GspGraphicsDeviceFaulted);
+                LogStr(" mmu=");LogHex(engine?engine->GspMmuFaultQueued:0);
+                LogStr("\n");
+            }
             Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;
             goto submit_batch_done;
         }
         channel->Submitting=TRUE;clientReserved=TRUE;
+        lookupStartTsc=Nvx3dReadTsc();
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
                 header.ClientToken,ownedAllocations,&ownedCount,
                 referencedEntries,&lookupSlotScans)) {
+            channel->PerfBufferLookupCycles+=Nvx3dReadTsc()-lookupStartTsc;
             LogStr("NVX [NVC0-BATCH]: reject buffer ownership dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;
             goto submit_batch_done;
         }
+        channel->PerfBufferLookupCycles+=Nvx3dReadTsc()-lookupStartTsc;
         channel->PerfSubmitLookupSlots+=lookupSlotScans;
         /* Pin the entries resolved above before dropping the lock. Retaining
          * these pointers avoids a second 2048-slot ID scan per reference and
@@ -4419,6 +4436,7 @@ validate_batch_done:
             for(i=0;i<pinnedCount;i++)
                 NvxMdlFlushGartBacking(pinned[i]->SystemMdl,FALSE);
             submitted=NvxGspSubmitNvc0Batch(engine,header.ClientToken,dwords,header.DwordCount,
+                ownedAllocations,ownedCount,
                 pushEntry->SystemVirtual,pushEntry->GpuVa,pushEntry->Bytes,
                 &fenceValue);
             if(!submitted) {
@@ -5063,7 +5081,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 3.0.0.324 (open-gpu-kernel-modules unified v2)\n");
+        LogStr(" NVX Video Miniport Driver 3.0.0.328 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

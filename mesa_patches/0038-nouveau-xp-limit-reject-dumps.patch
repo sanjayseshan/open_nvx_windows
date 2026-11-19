@@ -1,0 +1,21 @@
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau.c b/src/gallium/winsys/nouveau/drm/nouveau.c
+--- a/src/gallium/winsys/nouveau/drm/nouveau.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau.c
+@@ -1161,1 +1161,2 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
+    int ret = 0, i;
++   static uint32_t rejected_pushbuf_count;
+@@ -1195,5 +1196,12 @@
+       if (ret) {
+-         err("kernel rejected pushbuf: %s\n", strerror(-ret));
+-         pushbuf_dump(dev, krec, krec_id++, channel);
++         rejected_pushbuf_count++;
++         if (rejected_pushbuf_count <= 4U) {
++            err("kernel rejected pushbuf: %s\n", strerror(-ret));
++            pushbuf_dump(dev, krec, krec_id++, channel);
++         } else if (!(rejected_pushbuf_count &
++                      (rejected_pushbuf_count - 1U))) {
++            err("kernel rejected pushbuf %u times; suppressing repeated dumps\n",
++                rejected_pushbuf_count);
++         }
+          break;
+       }

@@ -326,6 +326,16 @@ typedef struct _VIDEO_MODE_DEF {
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
 #define NVX_3D_FENCE_TRACK_SLOTS 256U
 #define NVX_3D_MAX_INFLIGHT_BATCHES 32U
+#define NVX_NVC0_CAPTURE_BATCH_SLOTS 4U
+#define NVX_NVC0_CAPTURE_DWORDS 512U
+typedef struct _NVX_NVC0_BATCH_CAPTURE {
+    ULONG64 FenceValue, PushGpuVa;
+    ULONG DwordCount, CapturedDwords, ReferenceCount;
+    ULONG64 BufferIds[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG64 BufferGpuVas[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG64 BufferBytes[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG Dwords[NVX_NVC0_CAPTURE_DWORDS];
+} NVX_NVC0_BATCH_CAPTURE;
 /* RM resources belong to a client, never to the currently submitting app.
  * GPU VAs are disjoint in the validated shared aperture; contexts and queues
  * are private. Hardware scheduling remains RM's responsibility. */
@@ -340,12 +350,17 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG SubmitToken, RunlistBase, Put, HardwareChannelId;
     ULONG DrawTraceCount, CompletedBatches;
     ULONG64 PerfSubmitCount, PerfDwordCount, PerfSubmitLookupSlots;
+    ULONG64 PerfSubmitCycles, PerfSubmitMaxCycles, PerfBufferLookupCycles;
     ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
+    ULONG64 PerfFenceWaitCalls, PerfLastPerfReport;
     ULONG64 PerfFenceFastPolls;
     ULONG64 PerfSubmitLockPolls, PerfDoorbellRetries;
-    BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;
+    ULONG Nvc0CaptureHead, Nvc0CaptureCount;
+    BOOLEAN Ready, Faulted, FaultRejectLogged, FaultCaptureLogged;
+    BOOLEAN Promoted, Scheduled, Submitting;
     BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated, HardwareIdAllocated;
     ULONG64 LastFence, CompletedFence;
+    NVX_NVC0_BATCH_CAPTURE Nvc0Captures[NVX_NVC0_CAPTURE_BATCH_SLOTS];
 } NVX_GR_CLIENT_CHANNEL;
 #define NVX_GR_CLIENT_USERD_OFFSET 0xb400U
 #define NVX_GR_CLIENT_CONTEXT_OFFSET 0x200000U
@@ -660,6 +675,7 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG64 fenceValue);
 BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG dwordCount,
+    const NVX_3D_ALLOC_BUFFER *allocations,ULONG allocationCount,
     PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 *completedFence);
 VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken);
 BOOLEAN NvxGspSubmitUserColorTargetTriangles(PVOID HwDeviceExtension,

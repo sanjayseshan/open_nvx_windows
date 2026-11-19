@@ -1,26 +1,26 @@
 # Handoff — 2026-11-18
 
-## Status
-- 3.0.0.324 VFIO run completed successfully; VM is shut down.
-- Async GART-to-scanout copies queued and retired through CE semaphore fences.
-- Cube: 59.5 FPS; gears: 57.2–58.2 FPS. The 3.0.0.323 regression was about 3.5 FPS.
-- Full guest suite reported `[TEST_COMPLETE] Status: PASS`; native NVC0 draws completed fences and readback. This run did not launch 3DMark.
+## Current status: version 3.0.0.328
+- Real RTX 3070 VFIO run completed; VM is shut down.
+- Driver, Mesa ICD, host/mock suite, and guest 2D/3D checks built and ran. Basic OpenGL cube reached 59.5 FPS; WGL gears reached 61.2 FPS in one run (a later run measured 54 FPS). D3D9 sample reached 61.9 FPS.
+- 3DMark05 started through the hardware Nouveau/NVC0 path (`GL_RENDERER NV170`) and submitted about 234,717 batches. It did not complete: the GPU stopped retiring the final fence and RM reported shader program header errors followed by a graphics channel RC fault.
+- This is a reproduced GPU command/shader fault, not evidence of VRAM exhaustion. The timeout log reported no MMU fault.
 
-## Fix in 3.0.0.324
-- Root cause was per-draw retirement overhead: each referenced BO scanned all 32 pending-copy slots and took the global buffer lock even when the BO had no pending presentation copy.
-- Added a BO-level `CopyRefs` fast path and an atomic slot-state check before locking. Async presentation remains enabled.
+## 3DMark fault evidence
+- Last per-client sample: 234,717 submitted / 234,689 completed batches; 28 outstanding. The fence wait counters accumulated about 82 seconds across the run; the final wait hit the 5-second timeout.
+- Timed-out global fence: `0x3E2DB`, channel `0x61000405`.
+- RM then reported Shader Program Header errors 1, 2, 9, 11, and 18, ESR `0x405840=0xa2040a06`, `0x405848=0x80000000`, and channel RC fault (`engine=1`, `chid=0xA`, `type=0xD`). Subsequent pushbuf rejects are post-fault.
+- `.328` keeps the last four accepted NVC0 batches with referenced BO IDs/addresses/sizes and command excerpts. Large batches are truncated to the first and last 256 dwords, so the capture does not yet retain the full shader/program payload; exact offending method/state is not identified.
+- 3DMark stdout/stderr did not provide a trustworthy FPS result. The guest was doing substantial work, but the current counters alone do not establish the main performance bottleneck.
 
-## GPU proof
-- Per-client NVC0 stats include process ID, submitted batches, completed batches, and completed fence. `[NVX_GPU_FENCE_PROOF]` is emitted only after actual GPU submission and fence completion.
-- `test/test_full_driver.sh` requires that marker between 3DMark start/exit markers for a 3DMark GPU-proof pass.
-- 3DMark proof is still pending; no benchmark was launched in the successful `.324` run.
+## Next work
+1. Improve the fault capture to preserve the complete offending batch or safely capture shader/program BO contents and decoded method packets for the timed-out fence.
+2. Compare the captured program/header setup and submission ordering with Nouveau upstream, then fix the first concrete mismatch.
+3. Rerun one 3DMark test with serial logging and the existing Enter-key automation; verify fence retirement and absence of RM graphics exceptions before judging performance.
 
-## Next
-- Run `.325` with `NVX_RUN_3DMARK=1` to validate real benchmark NVC0 submissions/fence completion and check 3DMark exit/status.
-- Inspect for `[NVX_GPU_FENCE_PROOF]` between benchmark markers, `GL_RENDERER NV170`, pushbuf rejection, and any GPU/MMU faults.
-
-## Relevant files
-- Async/retirement: `src_driver/nvx_ce.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`
-- NVC0 proof: `src_driver/nvx_gsp.c`, `test/test_full_driver.sh`
-- Driver/package versions: `src_driver/nvxmp.c`, `dist_full/nvx.inf`
-- Latest run: `test_logs/v3.0.0.324-20261118-193149.log`
+## Relevant files and latest artifacts
+- Submission/fence capture and counters: `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`
+- Mesa BO/WGL fixes and diagnostic patch: `mesa_patches/nvx_nouveau_bo.c`, `mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch`, `test/apply_mesa_xp_patches.sh`
+- Versioned full test: `test/test_full_driver.sh`, `dist_full/nvx.inf`
+- Full serial run: `test_logs/v3.0.0.328-20261118-204435.log`
+- 3DMark output: `test_logs/v3.0.0.328-20261118-204435-3dmark05.log`
