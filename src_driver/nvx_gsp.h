@@ -574,6 +574,11 @@ typedef struct _NVX_DEVICE_EXTENSION {
     NVX_3D_PENDING_COPY Nvx3dPendingCopies[NVX_3D_MAX_INFLIGHT_BATCHES];
     ULONG64 GspCopySlotFence[NVX_CE_ASYNC_COPY_SLOTS];
     NVX_3D_CLIENT_SESSION_ENTRY Nvx3dClientSessions[NVX_3D_CLIENT_SESSION_SLOTS];
+    /* Preserve the newest oversized command batch in full for a later GR
+       fault dump. Small batches are already complete in each channel ring. */
+    ULONG64 Nvx3dFullCaptureClientToken, Nvx3dFullCaptureFence;
+    ULONG Nvx3dFullCaptureDwordCount;
+    ULONG Nvx3dFullCaptureDwords[NVX_3D_MAX_PUSH_DWORDS];
     ULONG Nvx3dBufferSlots[NVX_3D_USER_BUFFER_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
     NVX_GART_HEAP GspGartHeap;

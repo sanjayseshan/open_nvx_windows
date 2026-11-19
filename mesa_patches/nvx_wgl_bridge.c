@@ -852,6 +852,11 @@ NvxWglRecordNouveauProfile(uint32_t total_us, uint32_t prepare_us,
    InterlockedExchangeAdd(&nvx_profile_submit_us, (LONG)submit_us);
    InterlockedExchangeAdd(&nvx_profile_tail_us, (LONG)tail_us);
    InterlockedExchangeAdd(&nvx_profile_dwords, (LONG)dwords);
+   /* D3D9/WineD3D may not enter the custom WGL present callback that
+    * normally emits the periodic profile. Submission is a reliable shared
+    * point for both OpenGL and WineD3D, and the logger itself is rate limited
+    * to one report per ten seconds. */
+   nvx_wgl_maybe_log_performance_profile();
 }
 
 void

@@ -1,26 +1,25 @@
 # Handoff — 2026-11-18
 
-## Current status: version 3.0.0.328
-- Real RTX 3070 VFIO run completed; VM is shut down.
-- Driver, Mesa ICD, host/mock suite, and guest 2D/3D checks built and ran. Basic OpenGL cube reached 59.5 FPS; WGL gears reached 61.2 FPS in one run (a later run measured 54 FPS). D3D9 sample reached 61.9 FPS.
-- 3DMark05 started through the hardware Nouveau/NVC0 path (`GL_RENDERER NV170`) and submitted about 234,717 batches. It did not complete: the GPU stopped retiring the final fence and RM reported shader program header errors followed by a graphics channel RC fault.
-- This is a reproduced GPU command/shader fault, not evidence of VRAM exhaustion. The timeout log reported no MMU fault.
+## Current status: version 3.0.0.329
+- VM is off. Host/mock checks passed and the `.329` package booted on RTX 3070 VFIO.
+- Baseline hardware rendering passed: WGL gears 53.5–57.3 FPS, cube 59.4 FPS, D3D9 sample 57.6–61.2 FPS.
+- 3DMark05 started and drove the NVC0 channel, but this run did not complete: no `[3DMARK05_EXIT]` marker and the collected `3dmark05.log` is empty. This is not proof of a benchmark crash.
+- No `NVC0-FENCE` timeout, RM RC fault, or MMU fault was recorded during the captured workload. The VM shutdown itself therefore has no logged GPU-fault signature.
 
-## 3DMark fault evidence
-- Last per-client sample: 234,717 submitted / 234,689 completed batches; 28 outstanding. The fence wait counters accumulated about 82 seconds across the run; the final wait hit the 5-second timeout.
-- Timed-out global fence: `0x3E2DB`, channel `0x61000405`.
-- RM then reported Shader Program Header errors 1, 2, 9, 11, and 18, ESR `0x405840=0xa2040a06`, `0x405848=0x80000000`, and channel RC fault (`engine=1`, `chid=0xA`, `type=0xD`). Subsequent pushbuf rejects are post-fault.
-- `.328` keeps the last four accepted NVC0 batches with referenced BO IDs/addresses/sizes and command excerpts. Large batches are truncated to the first and last 256 dwords, so the capture does not yet retain the full shader/program payload; exact offending method/state is not identified.
-- 3DMark stdout/stderr did not provide a trustworthy FPS result. The guest was doing substantial work, but the current counters alone do not establish the main performance bottleneck.
+## 3DMark performance and failure evidence
+- Latest kernel sample: 212,992 submitted / 212,983 completed batches (9 outstanding), 37,504,871 dwords, 3,414,425 BO lookup-slot scans, 531,465 fence-wait calls, and 64,132 one-millisecond wait polls. This is a heavy stream of small submissions; most batches retire promptly, with only a small queue lag.
+- User reported about 3 FPS. Kernel counters alone do not prove whether CPU submission, shader/GPU execution, or synchronization dominates.
+- The extracted Nouveau trace has repeated `kernel rejected pushbuf: Operation not permitted` messages and one `NVC0: miptree BO allocation failed`. These are concrete errors to trace; they may explain retries or lost work, but the current log does not link them to a GPU crash.
+- The planned userland `NOUVEAU_*_PROFILE` summaries were not emitted, so timing is still missing for translation, winsys/ring wait, miniport escape, and shadow uploads. Keep this profiling gap open.
 
-## Next work
-1. Improve the fault capture to preserve the complete offending batch or safely capture shader/program BO contents and decoded method packets for the timed-out fence.
-2. Compare the captured program/header setup and submission ordering with Nouveau upstream, then fix the first concrete mismatch.
-3. Rerun one 3DMark test with serial logging and the existing Enter-key automation; verify fence retirement and absence of RM graphics exceptions before judging performance.
+## Next steps
+1. Fix/verify the userland profile emission and test-run completion markers so a long 3DMark run yields timing summaries and a useful exit status.
+2. Trace the first rejected pushbuffer through Mesa's batch references/validation and the miniport rejection path; correlate BO access flags and the reported allocation failure before changing synchronization.
+3. Run one bounded 3DMark test with serial capture long enough to finish or capture a real failure. Compare submission profiles with completed frame/FPS data; optimize only the measured dominant stage.
 
-## Relevant files and latest artifacts
-- Submission/fence capture and counters: `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`
-- Mesa BO/WGL fixes and diagnostic patch: `mesa_patches/nvx_nouveau_bo.c`, `mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch`, `test/apply_mesa_xp_patches.sh`
-- Versioned full test: `test/test_full_driver.sh`, `dist_full/nvx.inf`
-- Full serial run: `test_logs/v3.0.0.328-20261118-204435.log`
-- 3DMark output: `test_logs/v3.0.0.328-20261118-204435-3dmark05.log`
+## Relevant files and artifacts
+- Current serial run: `test_logs/v3.0.0.329-20261118-211640.log` (`vm_serial.log` symlink).
+- Empty benchmark output: `test_logs/v3.0.0.329-20261118-211640-3dmark05.log`.
+- Driver submission/fence counters and fault captures: `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`.
+- Mesa profile hooks and pushbuf transport: `mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/nvx_xf86drm.c`, `mesa_patches/nvx_winsys.c`, `mesa_patches/0035-nouveau-xp-submission-profile.patch`.
+- Test orchestration/collection: `test/test_full_driver.sh`, `test/run_vfio_xp_autoretry.sh`, `test/update_disk_driver_user.sh`.

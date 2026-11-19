@@ -37,4 +37,4 @@ ab6cac63440b195b56a2f8474f7811ac6c70dfc366a98d7655afd15d6cb53d0d  /home/sanjay/t
 44d9bc8621391ae550ba3eac7d0adc1b5e5ef42ce38b19303348795d219dcd4a  /home/sanjay/temp/xddm/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
 f34e7be1579cfc41e1219cc6e09bf5c0338a8013450189d68c7ce0a378996ae0  /home/sanjay/temp/xddm/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 08864c32c84e37acdef2f4713e50dc8bb32a00664716142c56db95cc37fd1c0d  /home/sanjay/temp/xddm/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
-6273b199e4417b2d47432efcff18fa82025bdafdefb4b6d435e4badb2839a39a  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+6743f098a7cf2a1ae3dacac5daf1159edcc028e8cc3af1679ea80d93c71403d0  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

@@ -47,16 +47,18 @@ static __inline ULONG64 NvxGspReadTsc(VOID)
     return ((ULONG64)high<<32)|low;
 }
 
-static VOID NvxGspCaptureNvc0Batch(NVX_GR_CLIENT_CHANNEL *channel,
+static VOID NvxGspCaptureNvc0Batch(PNVX_DEVICE_EXTENSION dev,
+    NVX_GR_CLIENT_CHANNEL *channel,
     const ULONG *dwords,ULONG dwordCount,
     const NVX_3D_ALLOC_BUFFER *allocations,ULONG allocationCount,
     ULONG64 pushGpuVa,ULONG64 fenceValue)
 {
     NVX_NVC0_BATCH_CAPTURE *capture;
     ULONG i,firstCount,lastCount;
-    if(!channel||!dwords||!dwordCount) return;
+    if(!dev||!channel||!dwords||!dwordCount) return;
     capture=&channel->Nvc0Captures[channel->Nvc0CaptureHead];
-    VideoPortZeroMemory(capture,sizeof(*capture));
+    /* The ring is overwritten incrementally. Clear only active metadata;
+       the payload is bounded by CapturedDwords at fault-log time. */
     capture->FenceValue=fenceValue;
     capture->PushGpuVa=pushGpuVa;
     capture->DwordCount=dwordCount;
@@ -80,6 +82,16 @@ static VOID NvxGspCaptureNvc0Batch(NVX_GR_CLIENT_CHANNEL *channel,
                             firstCount*sizeof(ULONG));
         VideoPortMoveMemory(capture->Dwords+firstCount,
             (PVOID)(dwords+dwordCount-lastCount),lastCount*sizeof(ULONG));
+        /* Retain the complete newest oversized batch once per device. This
+           adds a copy only for batches larger than the preview and avoids
+           multiplying a 16-KiB capture array across every client session. */
+        if(dwordCount<=NVX_3D_MAX_PUSH_DWORDS) {
+            dev->Nvx3dFullCaptureClientToken=channel->ClientToken;
+            dev->Nvx3dFullCaptureFence=fenceValue;
+            dev->Nvx3dFullCaptureDwordCount=dwordCount;
+            VideoPortMoveMemory(dev->Nvx3dFullCaptureDwords,(PVOID)dwords,
+                                dwordCount*sizeof(ULONG));
+        }
     }
     channel->Nvc0CaptureHead=(channel->Nvc0CaptureHead+1U)%
                             NVX_NVC0_CAPTURE_BATCH_SLOTS;
@@ -97,10 +109,11 @@ static VOID NvxGspLogCaptureDword(ULONG value)
     LogStr(text);LogStr(" ");
 }
 
-static VOID NvxGspLogNvc0FaultCapture(NVX_GR_CLIENT_CHANNEL *channel)
+static VOID NvxGspLogNvc0FaultCapture(PNVX_DEVICE_EXTENSION dev,
+                                      NVX_GR_CLIENT_CHANNEL *channel)
 {
-    ULONG i,j,index;
-    if(!channel||channel->FaultCaptureLogged) return;
+    ULONG i,j,index,fullCaptureRelevant=0;
+    if(!dev||!channel||channel->FaultCaptureLogged) return;
     channel->FaultCaptureLogged=TRUE;
     LogStr("NVX [NVC0-FAULT-CAPTURE]: token=");LogHex(channel->ClientToken);
     LogStr(" batches=");LogHex(channel->Nvc0CaptureCount);LogStr("\n");
@@ -125,6 +138,23 @@ static VOID NvxGspLogNvc0FaultCapture(NVX_GR_CLIENT_CHANNEL *channel)
             if(j%8U==0U) LogStr("  ");
             NvxGspLogCaptureDword(capture->Dwords[j]);
             if(j%8U==7U||j+1U==capture->CapturedDwords) LogStr("\n");
+        }
+        if(capture->FenceValue==dev->Nvx3dFullCaptureFence&&
+           capture->FenceValue&&
+           dev->Nvx3dFullCaptureClientToken==channel->ClientToken)
+            fullCaptureRelevant=1U;
+    }
+    if(fullCaptureRelevant&&
+       dev->Nvx3dFullCaptureDwordCount<=NVX_3D_MAX_PUSH_DWORDS) {
+        LogStr("NVX [NVC0-FAULT-FULL-DWORDS]: fence=");
+        LogHex(dev->Nvx3dFullCaptureFence);
+        LogStr(" count=");LogHex(dev->Nvx3dFullCaptureDwordCount);
+        LogStr("\n");
+        for(j=0;j<dev->Nvx3dFullCaptureDwordCount;j++) {
+            if(j%8U==0U) LogStr("  ");
+            NvxGspLogCaptureDword(dev->Nvx3dFullCaptureDwords[j]);
+            if(j%8U==7U||j+1U==dev->Nvx3dFullCaptureDwordCount)
+                LogStr("\n");
         }
     }
 }
@@ -4146,7 +4176,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     *completedFence=fenceValue;
 
     submitStartTsc=NvxGspReadTsc();
-    NvxGspCaptureNvc0Batch(channel,nvc0Dwords,dwordCount,allocations,
+    NvxGspCaptureNvc0Batch(dev,channel,nvc0Dwords,dwordCount,allocations,
                            allocationCount,pushGpuVa,fenceValue);
 
     scratch=(PUCHAR)channel->Virtual;
@@ -4598,7 +4628,7 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
         LogStr(" observed=");
         LogHex(((volatile ULONG *)((PUCHAR)ownerChannel->Virtual+0x5000+
             fenceSlot*sizeof(ULONG)))[0]);LogStr("\n");
-        NvxGspLogNvc0FaultCapture(ownerChannel);
+        NvxGspLogNvc0FaultCapture(dev,ownerChannel);
         NvxGspLogPbdmaFault(dev);
     }
     return FALSE;
