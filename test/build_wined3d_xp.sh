@@ -27,9 +27,13 @@ fi
 for nvx_arch in x64 x86; do
     nvx_target=i686-w64-mingw32
     nvx_options=()
+    nvx_opt_flags="-O3 -fomit-frame-pointer -fcommon -DUSE_WIN32_OPENGL -D_WIN32_WINNT=0x0502 -DWINVER=0x0502"
     if [ "$nvx_arch" = x64 ]; then
         nvx_target=x86_64-w64-mingw32
         nvx_options=(--enable-win64)
+        nvx_opt_flags="$nvx_opt_flags -march=x86-64"
+    else
+        nvx_opt_flags="$nvx_opt_flags -march=pentium4 -msse2 -mfpmath=sse"
     fi
     mkdir -p "$NVX_WINE_BUILD/$nvx_arch"
     (
@@ -37,7 +41,7 @@ for nvx_arch in x64 x86; do
         # Wine 1.7 predates GCC's -fno-common default.
         ../source/configure --host="$nvx_target" "${nvx_options[@]}" \
             --with-wine-tools="$NVX_WINE_BUILD/host-tools" --without-x --without-freetype \
-            CFLAGS="-O2 -fcommon -DUSE_WIN32_OPENGL -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 $NVX_WINE_DIAG_CFLAGS"
+            CFLAGS="$nvx_opt_flags $NVX_WINE_DIAG_CFLAGS"
         make -j"$NVX_WINE_JOBS" dlls/wined3d dlls/d3d9 dlls/d3d8 dlls/ddraw
     )
     mkdir -p "$NVX_ROOT/test/wined3d_xp/$nvx_arch"

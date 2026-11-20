@@ -72,7 +72,7 @@ echo "------------------------------------------------------------------"
 qemu-system-x86_64 \
     -enable-kvm \
     -m "$NVX_VM_MEMORY_MB" \
-    -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
+    -cpu host,invtsc=on,+tsc-deadline,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic \
     -smp 4 \
     -vga none \
     -netdev user,id=net0,hostfwd=tcp:0.0.0.0:3389-:3389 -device rtl8139,netdev=net0,addr=03.0 \

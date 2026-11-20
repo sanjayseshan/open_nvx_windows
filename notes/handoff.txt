@@ -1,33 +1,33 @@
-# Handoff — 2026-11-19/20
+# Handoff — 2026-11-19
 
-## Current status
+## Status
 
-- Target: Windows XP x64 on RTX 3070 / GA104 (`NV170`), using the native Mesa Nouveau/NVC0 path and OpenRM-backed miniport submission.
-- Latest user-saved 3DMark05 result: **695 marks**, CPU score **14180**; GT1 **12.407 FPS**, GT2 **0.135 FPS**, GT3 **12.827 FPS**. The saved artifact is [test_logs/user-test4-695.3dr](../test_logs/user-test4-695.3dr), extracted from `Documents and Settings/testuser/My Documents/test4.3dr`.
-- Version **3.0.0.334** built and passed the full non-3DMark VFIO suite. The guest shut down cleanly. Serial log: [test_logs/v3.0.0.334-20261119-195009.log](../test_logs/v3.0.0.334-20261119-195009.log).
-- 3DMark-independent rates remain healthy: WGL gears **51.7 FPS (x86)** and **55.3 FPS (x64)**; OpenGL cube **62.9–63.8 FPS**; D3D9 smoke test **61.6–61.7 FPS**. Renderer reports `NV170`, and GPU submission/fence/readback checks pass.
+- Windows XP x64 / RTX 3070 GA104 (`NV170`) is using the hardware Nouveau/NVC0 path. In .334 smoke tests, gears reached about 49–54 FPS, the cube 63 FPS, and D3D9 smoke 62–63 FPS.
+- User's saved 3DMark05 result remains 695 marks: GT1 12.41 FPS, GT2 0.135 FPS, GT3 12.83 FPS. Artifact: [user-test4-695.3dr](../test_logs/user-test4-695.3dr).
+- The .334 full test with 3DMark enabled launched the benchmark and generated live NVC0 samples, but no 3DMark exit/score marker was captured. It is not a completed benchmark result. Log: [v3.0.0.334-20261119-200133.log](../test_logs/v3.0.0.334-20261119-200133.log). Its final screen capture shows the XP desktop and launcher console, not a completed score.
+- At capture, QEMU used about 1.25 host cores. The benchmark client had submitted about 2.4 million batches with zero submission failures. Miniport packet-copy cycles were a small fraction of total submit accounting; this does not look like a BO-copy or VRAM-capacity limit.
 
-## Changes in 3.0.0.334
+## Likely performance leads
 
-- Added per-submit stage timing counters for ioctl total, packet copy, pending-copy wait, validation, submission, and BO lookup. Routine verbose hot-path tracing is disabled for the run.
-- Added one cumulative `[NVC0-PERF-SAMPLE]` line every 4096 submitted batches. This lets a long-running app report driver costs before context teardown, with no per-submit logging.
-- Bumped package/driver version to 3.0.0.334.
+- QEMU register snapshots repeatedly caught active guest CPUs 1 and 3 at `RIP=fffff8000081043a`, `CPL=0`, with `RDX=0x608`. The preceding instruction is `inl %dx,%eax`, consistent with reading QEMU's emulated ACPI PM timer. This is a concrete lead for expensive high-resolution timer queries/VM exits, but the snapshot has no caller stack and does not prove which process is polling it.
+- The pinned Wine submodule is Wine 1.7.55 (`a786dca`). Its `wined3d_cs_create()` chooses `wined3d_cs_st_ops`; command handlers execute synchronously on the caller. This build does not have a CSMT worker-thread implementation or a `csmt` setting. That can serialize D3D state translation and GL submission, and is a separate likely contributor.
+- Neither lead is confirmed as the sole cause. GT2 has an unusually large workload, and the short smoke tests do not reproduce its D3D shader/draw pattern.
 
-The .334 WGL run exercised the new live sample. For the x64 gears process, the sample arrived at 4096 batches; final totals were 7973 batches and about 334 million TSC cycles across all submit IOCTLs (about 42 thousand cycles per batch). The x86 run was similar. These short tests do not show kernel submission as the source of 3DMark's multi-second frames; user-mode WineD3D/Mesa work or a workload-specific synchronization/readback path remains more likely, but the current 3DMark trace is needed to prove which.
+## Current test state
 
-## Evidence and limits
+- `vm_serial.log` currently points to `test_logs/xp_v2_20261119-201423.log`, with a separate VFIO auto-retry/QEMU session active at the time of this update. Do not overwrite its log or modify the guest image while it runs.
+- The .334 test log has no 3DMark completion or score marker. No code changes were made from this investigation.
 
-- A separate .333 automated run passed the smoke tests but its 3DMark process did not exit before the runner timeout; no new benchmark result or final client counters came from that run. The saved 695-mark `test4.3dr` is the valid user result.
-- The .334 run intentionally omitted 3DMark (`NVX_RUN_3DMARK=0`) and validates the instrumentation and regression baseline only. It does not resolve or profile the slow GT2.
-- The .333 long-run host sample showed QEMU around 100–126% CPU (about 1.0–1.26 core equivalents) while the automated 3DMark process failed to finish. This supports a CPU-bound phase but does not identify whether WineD3D, Mesa, or synchronization is responsible.
-- Startup reports one firmware assertion counter in both .333 and .334 runs. Treat this as an existing diagnostic, not proof of an MMU fault. No submission failure appeared in the .334 smoke path.
+## Next steps
 
-## Next action
-
-Run 3DMark05 on 3.0.0.334 and retain the serial log. Compare its periodic `[NVC0-PERF-SAMPLE]` deltas and host per-thread QEMU CPU samples against the 695-mark file. If submission/validation cycles stay near the short-test baseline while GT2 remains at 0.1 FPS, profile the 32-bit WineD3D/Mesa CPU path and synchronization/readbacks rather than spending more time optimizing the miniport batch copy.
+1. Preserve the active VFIO session's log and obtain its 3DMark outcome.
+2. Resolve the observed kernel RIP against the XP x64 HAL/kernel symbols, then measure guest `QueryPerformanceCounter` cost and call frequency. Compare a controlled VM clock-source configuration if the PM-timer path is confirmed hot.
+3. Build or select a WineD3D revision with CSMT, retain XP compatibility, and A/B GT1/GT2/GT3 with the same guest, driver, resolution, and settings.
+4. Compare per-test NVC0 batch/fence metrics; optimize whichever stage grows during GT2 rather than making another speculative miniport change.
 
 ## Relevant files
 
-- Miniport metrics/submission: [src_driver/nvxmp.c](../src_driver/nvxmp.c), [src_driver/nvx_gsp.c](../src_driver/nvx_gsp.c), [src_driver/nvx_gsp.h](../src_driver/nvx_gsp.h)
-- Build/run version and switches: [test/test_full_driver.sh](../test/test_full_driver.sh), [dist_full/nvx.inf](../dist_full/nvx.inf)
-- Existing winsys/BO optimizations: [mesa_patches/nvx_xf86drm.c](../mesa_patches/nvx_xf86drm.c), [mesa_patches/nvx_nouveau_bo.c](../mesa_patches/nvx_nouveau_bo.c)
+- Wine revision/build: [test/build_wined3d_xp.sh](../test/build_wined3d_xp.sh), [wine/dlls/wined3d/cs.c](../wine/dlls/wined3d/cs.c)
+- Guest test automation: [test/update_disk_driver_user.sh](../test/update_disk_driver_user.sh), [test/test_full_driver.sh](../test/test_full_driver.sh), [test/run_vfio_xp_autoretry.sh](../test/run_vfio_xp_autoretry.sh)
+- Submit metrics: [src_driver/nvxmp.c](../src_driver/nvxmp.c), [src_driver/nvx_gsp.c](../src_driver/nvx_gsp.c)
+- Current .334 benchmark log: [v3.0.0.334-20261119-200133.log](../test_logs/v3.0.0.334-20261119-200133.log)

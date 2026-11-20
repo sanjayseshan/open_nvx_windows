@@ -450,7 +450,7 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
    NVX_3D_ALLOC_BUFFER allocation;
    POINT origin;
    RECT clip;
-   HRGN visible;
+   HRGN visible = NULL;
    DWORD region_bytes, copied_regions = 0;
    DWORD visible_rect_count = 0;
    RGNDATA *region_data = NULL;
@@ -498,6 +498,45 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
        GetClipBox(hdc, &clip) == ERROR || !GetDCOrgEx(hdc, &origin))
       { NVX_PRESENT_COPY_FAIL("buffer/clip validation failed"); NVX_PRESENT_COPY_RETURN(0); }
 
+   NVX_3D_PRESENT_BATCH batch;
+   memset(&batch, 0, sizeof(batch));
+   batch.Size = sizeof(batch);
+   batch.Version = NVX_3D_ABI_VERSION;
+   copy_start = nvx_wgl_present_timer();
+
+   /* Fast path: for unclipped or fullscreen rects, avoid GDI region allocations */
+   if (clip.left == 0 && clip.top == 0 &&
+       (uint32_t)(clip.right - clip.left) == width &&
+       (uint32_t)(clip.bottom - clip.top) == height) {
+      NVX_3D_PRESENT_COPY request;
+      memset(&request, 0, sizeof(request));
+      request.Size = sizeof(request);
+      request.Version = NVX_3D_ABI_VERSION;
+      request.BufferId = allocation.BufferId;
+      request.ClientToken = allocation.ClientToken;
+      request.SourceX = 0;
+      request.SourceY = 0;
+      request.SourcePitch = stride;
+      request.DestinationX = (uint32_t)origin.x;
+      request.DestinationY = (uint32_t)origin.y;
+      request.Width = width;
+      request.Height = height;
+      batch.Copies[batch.Count++] = request;
+      visible_rect_count = 1;
+
+      if (nvx_bridge_winsys.caps.Features & NVX_3D_FEATURE_PRESENT_BATCH) {
+         result = ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_BATCH, sizeof(batch),
+                            (LPCSTR)&batch, 0, NULL) != 0;
+         if (result) copied_regions = 1;
+      } else {
+         result = ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
+                            (LPCSTR)&request, 0, NULL) != 0;
+         if (result) copied_regions = 1;
+      }
+      if (!result) NVX_PRESENT_COPY_FAIL("ExtEscape fast path rejected");
+      goto report_timing;
+   }
+
    visible = CreateRectRgn(0, 0, 0, 0);
    if (!visible) {
       NVX_PRESENT_COPY_FAIL("CreateRectRgn failed");
@@ -524,11 +563,6 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       return 0;
    }
 
-   NVX_3D_PRESENT_BATCH batch;
-   memset(&batch,0,sizeof(batch));
-   batch.Size=sizeof(batch);
-   batch.Version=NVX_3D_ABI_VERSION;
-   copy_start = nvx_wgl_present_timer();
    visible_rect_count = region_data->rdh.nCount;
    if (region_data->rdh.iType == RDH_RECTANGLES &&
        region_data->rdh.nCount && region_data->rdh.nCount <= 64U) {
@@ -597,8 +631,11 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
    } else {
       NVX_PRESENT_COPY_FAIL("region data was not bounded rectangles");
    }
-   GlobalFree(region_data);
-   DeleteObject(visible);
+   if (region_data)
+      GlobalFree(region_data);
+   if (visible)
+      DeleteObject(visible);
+report_timing:
    if ((InterlockedIncrement(&timing_sample_count) % 30) == 1) {
       char timing[160];
       wsprintfA(timing,
@@ -621,25 +658,49 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
 uint64_t
 nvx_wgl_present_timer(void)
 {
-   LARGE_INTEGER counter;
-   QueryPerformanceCounter(&counter);
-   return (uint64_t)counter.QuadPart;
+#if defined(_MSC_VER)
+   return __rdtsc();
+#elif defined(__GNUC__) || defined(__clang__)
+   return __builtin_ia32_rdtsc();
+#else
+   uint32_t lo, hi;
+   __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
+   return ((uint64_t)hi << 32) | lo;
+#endif
 }
 
 uint32_t
 nvx_wgl_present_elapsed_us(uint64_t start)
 {
-   static LARGE_INTEGER frequency;
-   LARGE_INTEGER now;
-   uint64_t ticks;
-   if (!frequency.QuadPart)
-      QueryPerformanceFrequency(&frequency);
-   QueryPerformanceCounter(&now);
-   if (!frequency.QuadPart || (uint64_t)now.QuadPart < start)
+   static uint64_t tsc_freq_khz;
+   uint64_t now, ticks;
+   if (!start)
       return 0;
-   ticks = (uint64_t)now.QuadPart - start;
-   return (uint32_t)((ticks * 1000000ULL) /
-                     (uint64_t)frequency.QuadPart);
+
+   now = nvx_wgl_present_timer();
+   if (now < start)
+      return 0;
+   ticks = now - start;
+
+   if (!tsc_freq_khz) {
+      LARGE_INTEGER qpc_freq, qpc_start, qpc_now;
+      uint64_t tsc_start, tsc_now;
+      QueryPerformanceFrequency(&qpc_freq);
+      QueryPerformanceCounter(&qpc_start);
+      tsc_start = nvx_wgl_present_timer();
+      Sleep(2);
+      QueryPerformanceCounter(&qpc_now);
+      tsc_now = nvx_wgl_present_timer();
+      if (qpc_now.QuadPart > qpc_start.QuadPart && qpc_freq.QuadPart > 0) {
+         double elapsed_sec = (double)(qpc_now.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart;
+         if (elapsed_sec > 0.0)
+            tsc_freq_khz = (uint64_t)((tsc_now - tsc_start) / (elapsed_sec * 1000.0));
+      }
+      if (tsc_freq_khz < 100000ULL || tsc_freq_khz > 10000000ULL)
+         tsc_freq_khz = 2500000ULL; /* Fallback: 2.5 GHz */
+   }
+
+   return (uint32_t)((ticks * 1000ULL) / tsc_freq_khz);
 }
 
 void

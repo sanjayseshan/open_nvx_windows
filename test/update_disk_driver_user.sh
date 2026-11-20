@@ -362,6 +362,12 @@ if exist C:\test_accel\x86\test_gpu_accel32.exe (
 if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
     echo [3DMARK05_START] > \\.\COM1
+    rem WineD3D performance settings to minimize CPU sync overhead
+    reg add "HKCU\Software\Wine\Direct3D" /v StrictDrawOrdering /t REG_SZ /d disabled /f >nul 2>&1
+    reg add "HKCU\Software\Wine\Direct3D" /v AlwaysOffscreen /t REG_SZ /d enabled /f >nul 2>&1
+    reg add "HKCU\Software\Wine\Direct3D" /v CheckFloatConstants /t REG_SZ /d disabled /f >nul 2>&1
+    reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelVS /t REG_DWORD /d 3 /f >nul 2>&1
+    reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelPS /t REG_DWORD /d 3 /f >nul 2>&1
     if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
         rem Keep WineD3D diagnostics from dominating the serial log during this long run.
