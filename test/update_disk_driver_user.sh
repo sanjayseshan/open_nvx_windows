@@ -368,6 +368,7 @@ if exist C:\test_accel\run_3dmark.flag (
     reg add "HKCU\Software\Wine\Direct3D" /v CheckFloatConstants /t REG_SZ /d disabled /f >nul 2>&1
     reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelVS /t REG_DWORD /d 3 /f >nul 2>&1
     reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelPS /t REG_DWORD /d 3 /f >nul 2>&1
+    reg add "HKCU\Software\Wine\Direct3D" /v csmt /t REG_DWORD /d 1 /f >nul 2>&1
     if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
         rem Keep WineD3D diagnostics from dominating the serial log during this long run.

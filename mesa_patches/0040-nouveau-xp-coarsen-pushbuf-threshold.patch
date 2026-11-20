@@ -1,0 +1,13 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+index 5e6488d..769e54a 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c
+@@ -817,7 +817,7 @@ nvc0_screen_create(struct nouveau_device *dev)
+     * TODO: could this be higher on Fermi?
+     */
+    if (dev->chipset >= 0xe0)
+-      screen->base.transfer_pushbuf_threshold = 1024;
++      screen->base.transfer_pushbuf_threshold = 8192;
+ 
+    screen->base.vidmem_bindings |= PIPE_BIND_CONSTANT_BUFFER |
+       PIPE_BIND_SHADER_BUFFER |

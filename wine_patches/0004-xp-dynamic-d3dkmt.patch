@@ -1,0 +1,63 @@
+--- dlls/wined3d/texture.c.orig
++++ dlls/wined3d/texture.c
+@@ -1181,6 +1181,8 @@
+     unsigned int sub_resource_idx;
+     struct wined3d_device *device;
+     NTSTATUS status;
++    static NTSTATUS (WINAPI *pD3DKMTCreateDCFromMemory)(D3DKMT_CREATEDCFROMMEMORY *);
++    static BOOL pD3DKMTCreateDCFromMemory_resolved = FALSE;
+ 
+     TRACE("surface %p.\n", surface);
+ 
+@@ -1215,7 +1217,17 @@
+     desc.hDeviceDc = CreateCompatibleDC(NULL);
+     desc.pColorTable = NULL;
+ 
+-    status = D3DKMTCreateDCFromMemory(&desc);
++    if (!pD3DKMTCreateDCFromMemory_resolved)
++    {
++        HMODULE hGdi = GetModuleHandleA("gdi32.dll");
++        if (hGdi)
++            pD3DKMTCreateDCFromMemory = (void *)GetProcAddress(hGdi, "D3DKMTCreateDCFromMemory");
++        pD3DKMTCreateDCFromMemory_resolved = TRUE;
++    }
++    if (pD3DKMTCreateDCFromMemory)
++        status = pD3DKMTCreateDCFromMemory(&desc);
++    else
++        status = 0xC0000002; /* STATUS_NOT_IMPLEMENTED */
+     DeleteDC(desc.hDeviceDc);
+     if (status)
+     {
+@@ -1241,6 +1253,8 @@
+     unsigned int sub_resource_idx;
+     struct wined3d_device *device;
+     NTSTATUS status;
++    static NTSTATUS (WINAPI *pD3DKMTDestroyDCFromMemory)(const D3DKMT_DESTROYDCFROMMEMORY *);
++    static BOOL pD3DKMTDestroyDCFromMemory_resolved = FALSE;
+ 
+     texture = surface->container;
+     sub_resource_idx = surface_get_sub_resource_idx(surface);
+@@ -1254,7 +1268,22 @@
+ 
+     destroy_desc.hDc = surface->dc;
+     destroy_desc.hBitmap = surface->bitmap;
+-    if ((status = D3DKMTDestroyDCFromMemory(&destroy_desc)))
++    if (!pD3DKMTDestroyDCFromMemory_resolved)
++    {
++        HMODULE hGdi = GetModuleHandleA("gdi32.dll");
++        if (hGdi)
++            pD3DKMTDestroyDCFromMemory = (void *)GetProcAddress(hGdi, "D3DKMTDestroyDCFromMemory");
++        pD3DKMTDestroyDCFromMemory_resolved = TRUE;
++    }
++    if (pD3DKMTDestroyDCFromMemory)
++        status = pD3DKMTDestroyDCFromMemory(&destroy_desc);
++    else
++    {
++        DeleteObject(destroy_desc.hBitmap);
++        DeleteDC(destroy_desc.hDc);
++        status = 0;
++    }
++    if (status)
+         ERR("Failed to destroy dc, status %#x.\n", status);
+     surface->dc = NULL;
+     surface->bitmap = NULL;
