@@ -1,25 +1,33 @@
-# Handoff — 2026-11-18
+# Handoff — 2026-11-19/20
 
-## Current status: version 3.0.0.329
-- VM is off. Host/mock checks passed and the `.329` package booted on RTX 3070 VFIO.
-- Baseline hardware rendering passed: WGL gears 53.5–57.3 FPS, cube 59.4 FPS, D3D9 sample 57.6–61.2 FPS.
-- 3DMark05 started and drove the NVC0 channel, but this run did not complete: no `[3DMARK05_EXIT]` marker and the collected `3dmark05.log` is empty. This is not proof of a benchmark crash.
-- No `NVC0-FENCE` timeout, RM RC fault, or MMU fault was recorded during the captured workload. The VM shutdown itself therefore has no logged GPU-fault signature.
+## Current status
 
-## 3DMark performance and failure evidence
-- Latest kernel sample: 212,992 submitted / 212,983 completed batches (9 outstanding), 37,504,871 dwords, 3,414,425 BO lookup-slot scans, 531,465 fence-wait calls, and 64,132 one-millisecond wait polls. This is a heavy stream of small submissions; most batches retire promptly, with only a small queue lag.
-- User reported about 3 FPS. Kernel counters alone do not prove whether CPU submission, shader/GPU execution, or synchronization dominates.
-- The extracted Nouveau trace has repeated `kernel rejected pushbuf: Operation not permitted` messages and one `NVC0: miptree BO allocation failed`. These are concrete errors to trace; they may explain retries or lost work, but the current log does not link them to a GPU crash.
-- The planned userland `NOUVEAU_*_PROFILE` summaries were not emitted, so timing is still missing for translation, winsys/ring wait, miniport escape, and shadow uploads. Keep this profiling gap open.
+- Target: Windows XP x64 on RTX 3070 / GA104 (`NV170`), using the native Mesa Nouveau/NVC0 path and OpenRM-backed miniport submission.
+- Latest user-saved 3DMark05 result: **695 marks**, CPU score **14180**; GT1 **12.407 FPS**, GT2 **0.135 FPS**, GT3 **12.827 FPS**. The saved artifact is [test_logs/user-test4-695.3dr](../test_logs/user-test4-695.3dr), extracted from `Documents and Settings/testuser/My Documents/test4.3dr`.
+- Version **3.0.0.334** built and passed the full non-3DMark VFIO suite. The guest shut down cleanly. Serial log: [test_logs/v3.0.0.334-20261119-195009.log](../test_logs/v3.0.0.334-20261119-195009.log).
+- 3DMark-independent rates remain healthy: WGL gears **51.7 FPS (x86)** and **55.3 FPS (x64)**; OpenGL cube **62.9–63.8 FPS**; D3D9 smoke test **61.6–61.7 FPS**. Renderer reports `NV170`, and GPU submission/fence/readback checks pass.
 
-## Next steps
-1. Fix/verify the userland profile emission and test-run completion markers so a long 3DMark run yields timing summaries and a useful exit status.
-2. Trace the first rejected pushbuffer through Mesa's batch references/validation and the miniport rejection path; correlate BO access flags and the reported allocation failure before changing synchronization.
-3. Run one bounded 3DMark test with serial capture long enough to finish or capture a real failure. Compare submission profiles with completed frame/FPS data; optimize only the measured dominant stage.
+## Changes in 3.0.0.334
 
-## Relevant files and artifacts
-- Current serial run: `test_logs/v3.0.0.329-20261118-211640.log` (`vm_serial.log` symlink).
-- Empty benchmark output: `test_logs/v3.0.0.329-20261118-211640-3dmark05.log`.
-- Driver submission/fence counters and fault captures: `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`, `src_driver/nvxmp.c`.
-- Mesa profile hooks and pushbuf transport: `mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/nvx_xf86drm.c`, `mesa_patches/nvx_winsys.c`, `mesa_patches/0035-nouveau-xp-submission-profile.patch`.
-- Test orchestration/collection: `test/test_full_driver.sh`, `test/run_vfio_xp_autoretry.sh`, `test/update_disk_driver_user.sh`.
+- Added per-submit stage timing counters for ioctl total, packet copy, pending-copy wait, validation, submission, and BO lookup. Routine verbose hot-path tracing is disabled for the run.
+- Added one cumulative `[NVC0-PERF-SAMPLE]` line every 4096 submitted batches. This lets a long-running app report driver costs before context teardown, with no per-submit logging.
+- Bumped package/driver version to 3.0.0.334.
+
+The .334 WGL run exercised the new live sample. For the x64 gears process, the sample arrived at 4096 batches; final totals were 7973 batches and about 334 million TSC cycles across all submit IOCTLs (about 42 thousand cycles per batch). The x86 run was similar. These short tests do not show kernel submission as the source of 3DMark's multi-second frames; user-mode WineD3D/Mesa work or a workload-specific synchronization/readback path remains more likely, but the current 3DMark trace is needed to prove which.
+
+## Evidence and limits
+
+- A separate .333 automated run passed the smoke tests but its 3DMark process did not exit before the runner timeout; no new benchmark result or final client counters came from that run. The saved 695-mark `test4.3dr` is the valid user result.
+- The .334 run intentionally omitted 3DMark (`NVX_RUN_3DMARK=0`) and validates the instrumentation and regression baseline only. It does not resolve or profile the slow GT2.
+- The .333 long-run host sample showed QEMU around 100–126% CPU (about 1.0–1.26 core equivalents) while the automated 3DMark process failed to finish. This supports a CPU-bound phase but does not identify whether WineD3D, Mesa, or synchronization is responsible.
+- Startup reports one firmware assertion counter in both .333 and .334 runs. Treat this as an existing diagnostic, not proof of an MMU fault. No submission failure appeared in the .334 smoke path.
+
+## Next action
+
+Run 3DMark05 on 3.0.0.334 and retain the serial log. Compare its periodic `[NVC0-PERF-SAMPLE]` deltas and host per-thread QEMU CPU samples against the 695-mark file. If submission/validation cycles stay near the short-test baseline while GT2 remains at 0.1 FPS, profile the 32-bit WineD3D/Mesa CPU path and synchronization/readbacks rather than spending more time optimizing the miniport batch copy.
+
+## Relevant files
+
+- Miniport metrics/submission: [src_driver/nvxmp.c](../src_driver/nvxmp.c), [src_driver/nvx_gsp.c](../src_driver/nvx_gsp.c), [src_driver/nvx_gsp.h](../src_driver/nvx_gsp.h)
+- Build/run version and switches: [test/test_full_driver.sh](../test/test_full_driver.sh), [dist_full/nvx.inf](../dist_full/nvx.inf)
+- Existing winsys/BO optimizations: [mesa_patches/nvx_xf86drm.c](../mesa_patches/nvx_xf86drm.c), [mesa_patches/nvx_nouveau_bo.c](../mesa_patches/nvx_nouveau_bo.c)

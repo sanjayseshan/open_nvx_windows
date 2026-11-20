@@ -351,8 +351,13 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG DrawTraceCount, CompletedBatches;
     ULONG64 PerfSubmitCount, PerfDwordCount, PerfSubmitLookupSlots;
     ULONG64 PerfSubmitCycles, PerfSubmitMaxCycles, PerfBufferLookupCycles;
+    ULONG64 PerfSubmitIoctlCount, PerfSubmitIoctlCycles;
+    ULONG64 PerfSubmitIoctlMaxCycles, PerfSubmitFailures;
+    ULONG64 PerfBatchCopyCycles, PerfBatchPendingCycles;
+    ULONG64 PerfBatchValidationCycles;
+    ULONG64 PerfLastPerfReport;
     ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
-    ULONG64 PerfFenceWaitCalls, PerfLastPerfReport;
+    ULONG64 PerfFenceWaitCalls;
     ULONG64 PerfFenceFastPolls;
     ULONG64 PerfSubmitLockPolls, PerfDoorbellRetries;
     ULONG Nvc0CaptureHead, Nvc0CaptureCount;
@@ -582,6 +587,8 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG Nvx3dFullCaptureDwords[NVX_3D_MAX_PUSH_DWORDS];
     ULONG Nvx3dBufferSlots[NVX_3D_USER_BUFFER_SLOTS];
     NVX_3D_USER_BUFFER_ENTRY Nvx3dBuffers[NVX_3D_USER_BUFFER_SLOTS];
+    PVOID BatchScratchBuffer;
+    ULONG BatchScratchBytes;
     NVX_GART_HEAP GspGartHeap;
     PVOID GspVramPteVirtual;
     PHYSICAL_ADDRESS GspVramPtePhysical;
@@ -684,6 +691,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     const NVX_3D_ALLOC_BUFFER *allocations,ULONG allocationCount,
     PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 *completedFence);
 VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken);
+VOID NvxGspLogClientPerfSample(PVOID HwDeviceExtension,ULONG64 clientToken);
 BOOLEAN NvxGspSubmitUserColorTargetTriangles(PVOID HwDeviceExtension,
     ULONG64 dstVa,ULONG width,ULONG height,ULONG tileMode,ULONG64 vertexVa,
     ULONG vertexCount,ULONG color,ULONG64 fenceValue,BOOLEAN verifyFullTarget);

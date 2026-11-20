@@ -16,22 +16,28 @@ static uint32_t nvx_bo_readmap_trace_count;
 #endif
 
 #define NVX_4K_GART_BO_POOL_CAPACITY 256
+#define NVX_VRAM_BO_POOL_CAPACITY 256
 
 typedef struct {
    NVX_WINSYS_DEVICE *device;
    NVX_3D_ALLOC_BUFFER allocation;
-} NVX_POOLED_GART_BO;
+} NVX_POOLED_BO;
 
-static NVX_POOLED_GART_BO s_nvx_gart_pool_4k[NVX_4K_GART_BO_POOL_CAPACITY];
+static NVX_POOLED_BO s_nvx_gart_pool_4k[NVX_4K_GART_BO_POOL_CAPACITY];
 static uint32_t s_nvx_gart_pool_4k_count = 0;
-static NVX_POOLED_GART_BO s_nvx_gart_pool_64k[NVX_4K_GART_BO_POOL_CAPACITY];
+static NVX_POOLED_BO s_nvx_gart_pool_64k[NVX_4K_GART_BO_POOL_CAPACITY];
 static uint32_t s_nvx_gart_pool_64k_count = 0;
-static int s_nvx_gart_pool_enabled = 0;
+
+/* VRAM BO recycling pool for textures and surfaces */
+static NVX_POOLED_BO s_nvx_vram_pool[NVX_VRAM_BO_POOL_CAPACITY];
+static uint32_t s_nvx_vram_pool_count = 0;
+
+static int s_nvx_bo_pool_enabled = 0;
 
 void
 NvxNouveauBoPoolEnable(int enable)
 {
-   s_nvx_gart_pool_enabled = enable;
+   s_nvx_bo_pool_enabled = enable;
 }
 
 int
@@ -61,33 +67,54 @@ NvxNouveauBoCreate(NVX_WINSYS_DEVICE *device,
       return 0;
    }
 
-   if (s_nvx_gart_pool_enabled &&
-       description->Usage == NVX_3D_USAGE_GART_BUFFER) {
-      if (description->Bytes == 4096) {
-         uint32_t i;
-         for (i = s_nvx_gart_pool_4k_count; i > 0; i--) {
-            if (s_nvx_gart_pool_4k[i - 1].device == device) {
-               uint32_t align = description->Alignment ? description->Alignment : 0x1000U;
-               if (align && (s_nvx_gart_pool_4k[i - 1].allocation.GpuVa & (align - 1U)))
-                  continue;
-               bo->allocation = s_nvx_gart_pool_4k[i - 1].allocation;
-               s_nvx_gart_pool_4k[i - 1] = s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count - 1];
-               s_nvx_gart_pool_4k_count--;
-               bo->device = device;
-               bo->references = 1;
-               return 1;
+   if (s_nvx_bo_pool_enabled) {
+      if (description->Usage == NVX_3D_USAGE_GART_BUFFER) {
+         if (description->Bytes == 4096) {
+            uint32_t i;
+            for (i = s_nvx_gart_pool_4k_count; i > 0; i--) {
+               if (s_nvx_gart_pool_4k[i - 1].device == device) {
+                  uint32_t align = description->Alignment ? description->Alignment : 0x1000U;
+                  if (align && (s_nvx_gart_pool_4k[i - 1].allocation.GpuVa & (align - 1U)))
+                     continue;
+                  bo->allocation = s_nvx_gart_pool_4k[i - 1].allocation;
+                  s_nvx_gart_pool_4k[i - 1] = s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count - 1];
+                  s_nvx_gart_pool_4k_count--;
+                  bo->device = device;
+                  bo->references = 1;
+                  return 1;
+               }
+            }
+         } else if (description->Bytes == 65536) {
+            uint32_t i;
+            for (i = s_nvx_gart_pool_64k_count; i > 0; i--) {
+               if (s_nvx_gart_pool_64k[i - 1].device == device) {
+                  uint32_t align = description->Alignment ? description->Alignment : 0x1000U;
+                  if (align && (s_nvx_gart_pool_64k[i - 1].allocation.GpuVa & (align - 1U)))
+                     continue;
+                  bo->allocation = s_nvx_gart_pool_64k[i - 1].allocation;
+                  s_nvx_gart_pool_64k[i - 1] = s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count - 1];
+                  s_nvx_gart_pool_64k_count--;
+                  bo->device = device;
+                  bo->references = 1;
+                  return 1;
+               }
             }
          }
-      } else if (description->Bytes == 65536) {
+      } else {
+         /* VRAM BO recycling: match exact size, usage, tile mode, and memory kind */
          uint32_t i;
-         for (i = s_nvx_gart_pool_64k_count; i > 0; i--) {
-            if (s_nvx_gart_pool_64k[i - 1].device == device) {
+         for (i = s_nvx_vram_pool_count; i > 0; i--) {
+            if (s_nvx_vram_pool[i - 1].device == device &&
+                s_nvx_vram_pool[i - 1].allocation.Bytes == description->Bytes &&
+                s_nvx_vram_pool[i - 1].allocation.Usage == description->Usage &&
+                s_nvx_vram_pool[i - 1].allocation.TileMode == description->TileMode &&
+                s_nvx_vram_pool[i - 1].allocation.MemoryKind == description->MemoryKind) {
                uint32_t align = description->Alignment ? description->Alignment : 0x1000U;
-               if (align && (s_nvx_gart_pool_64k[i - 1].allocation.GpuVa & (align - 1U)))
+               if (align && (s_nvx_vram_pool[i - 1].allocation.GpuVa & (align - 1U)))
                   continue;
-               bo->allocation = s_nvx_gart_pool_64k[i - 1].allocation;
-               s_nvx_gart_pool_64k[i - 1] = s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count - 1];
-               s_nvx_gart_pool_64k_count--;
+               bo->allocation = s_nvx_vram_pool[i - 1].allocation;
+               s_nvx_vram_pool[i - 1] = s_nvx_vram_pool[s_nvx_vram_pool_count - 1];
+               s_nvx_vram_pool_count--;
                bo->device = device;
                bo->references = 1;
                return 1;
@@ -534,20 +561,28 @@ NvxNouveauBoDestroy(NVX_NOUVEAU_BO *bo)
       free(bo->shadow);
       bo->shadow = NULL;
    }
-   if (s_nvx_gart_pool_enabled &&
-       bo->allocation.Usage == NVX_3D_USAGE_GART_BUFFER) {
-      if (bo->allocation.Bytes == 4096 &&
-          s_nvx_gart_pool_4k_count < NVX_4K_GART_BO_POOL_CAPACITY) {
-         s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count].device = bo->device;
-         s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count].allocation = bo->allocation;
-         s_nvx_gart_pool_4k_count++;
-         memset(bo, 0, sizeof(*bo));
-         return 1;
-      } else if (bo->allocation.Bytes == 65536 &&
-                 s_nvx_gart_pool_64k_count < NVX_4K_GART_BO_POOL_CAPACITY) {
-         s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count].device = bo->device;
-         s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count].allocation = bo->allocation;
-         s_nvx_gart_pool_64k_count++;
+   if (s_nvx_bo_pool_enabled) {
+      if (bo->allocation.Usage == NVX_3D_USAGE_GART_BUFFER) {
+         if (bo->allocation.Bytes == 4096 &&
+             s_nvx_gart_pool_4k_count < NVX_4K_GART_BO_POOL_CAPACITY) {
+            s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count].device = bo->device;
+            s_nvx_gart_pool_4k[s_nvx_gart_pool_4k_count].allocation = bo->allocation;
+            s_nvx_gart_pool_4k_count++;
+            memset(bo, 0, sizeof(*bo));
+            return 1;
+         } else if (bo->allocation.Bytes == 65536 &&
+                    s_nvx_gart_pool_64k_count < NVX_4K_GART_BO_POOL_CAPACITY) {
+            s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count].device = bo->device;
+            s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count].allocation = bo->allocation;
+            s_nvx_gart_pool_64k_count++;
+            memset(bo, 0, sizeof(*bo));
+            return 1;
+         }
+      } else if (s_nvx_vram_pool_count < NVX_VRAM_BO_POOL_CAPACITY) {
+         /* Recycle VRAM buffer */
+         s_nvx_vram_pool[s_nvx_vram_pool_count].device = bo->device;
+         s_nvx_vram_pool[s_nvx_vram_pool_count].allocation = bo->allocation;
+         s_nvx_vram_pool_count++;
          memset(bo, 0, sizeof(*bo));
          return 1;
       }
@@ -581,6 +616,17 @@ NvxNouveauBoPoolFlush(NVX_WINSYS_DEVICE *device)
                                   s_nvx_gart_pool_64k[i].allocation.BufferId);
          s_nvx_gart_pool_64k[i] = s_nvx_gart_pool_64k[s_nvx_gart_pool_64k_count - 1];
          s_nvx_gart_pool_64k_count--;
+      } else {
+         i++;
+      }
+   }
+   i = 0;
+   while (i < s_nvx_vram_pool_count) {
+      if (!device || s_nvx_vram_pool[i].device == device) {
+         (void)NvxWinsysFreeBuffer(s_nvx_vram_pool[i].device,
+                                  s_nvx_vram_pool[i].allocation.BufferId);
+         s_nvx_vram_pool[i] = s_nvx_vram_pool[s_nvx_vram_pool_count - 1];
+         s_nvx_vram_pool_count--;
       } else {
          i++;
       }

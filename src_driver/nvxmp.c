@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 3.0.0.332
+ * Driver Version: 3.0.0.334
  */
 
 #include "miniport.h"
@@ -1377,6 +1377,18 @@ BOOLEAN NTAPI HwVidInitialize(PVOID HwDeviceExtension) {
             LogStr("NVX [DUALVIEW]: secondary VideoPortEnumerateChildren status=");
             LogHex(enumStatus);
             LogStr("\n");
+        }
+    }
+
+    if (!devExt->IsSecondaryDisplay && !devExt->BatchScratchBuffer) {
+        devExt->BatchScratchBytes = (ULONG)(NVX_3D_MAX_BATCH_BYTES +
+            NVX_3D_MAX_BATCH_BUFFERS * sizeof(NVX_3D_ALLOC_BUFFER) + 1024U);
+        devExt->BatchScratchBuffer = VideoPortAllocatePool(devExt, VpNonPagedPool,
+            devExt->BatchScratchBytes, 0x4258564eUL);
+        if (devExt->BatchScratchBuffer) {
+            VideoPortZeroMemory(devExt->BatchScratchBuffer, devExt->BatchScratchBytes);
+            LogStr("NVX [3D]: preallocated BatchScratchBuffer bytes=");
+            LogHex(devExt->BatchScratchBytes);LogStr("\n");
         }
     }
 
@@ -4372,10 +4384,16 @@ validate_batch_done:
         ULONG pendingSlot=0;
         ULONG64 scratchBytes;
         ULONG64 lookupSlotScans=0,lookupStartTsc;
+        ULONG64 submitIoctlStartTsc,stageStartTsc;
+        ULONG64 batchCopyCycles=0,pendingWaitCycles=0,validationCycles=0;
+        ULONG64 submitIoctlCycles;
         ULONG64 fenceValue;
         BOOLEAN submitted=FALSE,clientReserved=FALSE,batchSlotReserved=FALSE;
+        BOOLEAN reportPerfSample=FALSE;
         NVX_GR_CLIENT_CHANNEL *channel=NULL;
+        BOOLEAN dynamicScratchAllocated=FALSE;
         status=ERROR_DEVICE_NOT_READY;
+        submitIoctlStartTsc=Nvx3dReadTsc();
         if(!RequestPacket->InputBuffer||
            RequestPacket->InputBufferLength<sizeof(header)||
            RequestPacket->InputBufferLength>NVX_3D_MAX_BATCH_BYTES||
@@ -4397,11 +4415,14 @@ validate_batch_done:
         if(scratchBytes>0xffffffffULL) {
             status=ERROR_INVALID_PARAMETER;goto submit_batch_done;
         }
-        /* One nonpaged allocation holds the stable batch copy and precisely
-         * the ownership records needed for this batch. The old path made two
-         * pool allocations and always reserved records for all 64 refs. */
-        copiedInput=VideoPortAllocatePool(devExt,VpNonPagedPool,
-                            (ULONG)scratchBytes,0x4258564eUL);
+        /* Use preallocated BatchScratchBuffer to eliminate per-batch pool alloc overhead. */
+        if(engine&&engine->BatchScratchBuffer&&scratchBytes<=engine->BatchScratchBytes) {
+            copiedInput=engine->BatchScratchBuffer;
+        } else {
+            copiedInput=VideoPortAllocatePool(devExt,VpNonPagedPool,
+                                (ULONG)scratchBytes,0x4258564eUL);
+            if(copiedInput) dynamicScratchAllocated=TRUE;
+        }
         if(!copiedInput) {
             LogStr("NVX [NVC0-BATCH]: reject allocation dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
@@ -4410,14 +4431,20 @@ validate_batch_done:
         }
         ownedAllocations=(NVX_3D_ALLOC_BUFFER *)((PUCHAR)copiedInput+
                                                    ownedOffset);
+        stageStartTsc=Nvx3dReadTsc();
         VideoPortMoveMemory(copiedInput,RequestPacket->InputBuffer,
                             requiredBytes);
+        batchCopyCycles=Nvx3dReadTsc()-stageStartTsc;
+        stageStartTsc=Nvx3dReadTsc();
         if(!engine||!Nvx3dWaitBatchCopies(engine,copiedInput,&header)) {
+            pendingWaitCycles=Nvx3dReadTsc()-stageStartTsc;
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
         }
         if(!engine||!Nvx3dReservePendingBatch(engine,&pendingSlot)) {
+            pendingWaitCycles=Nvx3dReadTsc()-stageStartTsc;
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
         }
+        pendingWaitCycles=Nvx3dReadTsc()-stageStartTsc;
         batchSlotReserved=TRUE;
         if(!engine||!Nvx3dLockBuffers()) {
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
@@ -4497,8 +4524,10 @@ validate_batch_done:
         dwords=(uint32_t *)((PUCHAR)copiedInput+sizeof(header)+
             (ULONG64)header.BufferReferenceCount*
             sizeof(NVX_3D_BUFFER_REFERENCE));
+        stageStartTsc=Nvx3dReadTsc();
         if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
                 ownedAllocations,ownedCount,header.ClientToken)) {
+            validationCycles+=Nvx3dReadTsc()-stageStartTsc;
             LogStr("NVX [NVC0-BATCH]: reject packet/address validation dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr(" owned=");
@@ -4514,17 +4543,22 @@ validate_batch_done:
             LogStr("\n");
             status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
         }
+        validationCycles+=Nvx3dReadTsc()-stageStartTsc;
         {
             uint32_t bindingFailSubchannel=0xffffffffU,bindingFailValue=0;
+            BOOLEAN bindingsValid;
             classIds[0]=channel->ClassIds[0];
             classIds[1]=channel->ClassIds[1];
             classIds[2]=channel->ClassIds[2];
             classIds[3]=channel->ClassIds[3];
             classIds[4]=channel->ClassIds[4];
-            if(!Nvx3dValidateNvc0ObjectBindingsEx((const uint8_t *)dwords,
+            stageStartTsc=Nvx3dReadTsc();
+            bindingsValid=Nvx3dValidateNvc0ObjectBindingsEx((const uint8_t *)dwords,
                     header.DwordCount,classIds,
                     FALSE, /* Private queue setup already bound 3D. */
-                    &bindingFailSubchannel,&bindingFailValue)) {
+                    &bindingFailSubchannel,&bindingFailValue);
+            validationCycles+=Nvx3dReadTsc()-stageStartTsc;
+            if(!bindingsValid) {
                 LogStr("NVX [NVC0-BATCH]: reject class bindings boundToken=");
                 LogHex(channel->Channel);LogStr(" client=");
                 LogHex(header.ClientToken);LogStr(" ids=");
@@ -4597,9 +4631,24 @@ submit_batch_done:
             Nvx3dUnlockBuffers();
         }
         if(clientReserved&&Nvx3dLockBuffers()) {
+            submitIoctlCycles=Nvx3dReadTsc()-submitIoctlStartTsc;
+            channel->PerfSubmitIoctlCount++;
+            channel->PerfSubmitIoctlCycles+=submitIoctlCycles;
+            if(channel->PerfSubmitIoctlMaxCycles<submitIoctlCycles)
+                channel->PerfSubmitIoctlMaxCycles=submitIoctlCycles;
+            channel->PerfBatchCopyCycles+=batchCopyCycles;
+            channel->PerfBatchPendingCycles+=pendingWaitCycles;
+            channel->PerfBatchValidationCycles+=validationCycles;
+            if(status!=NO_ERROR) channel->PerfSubmitFailures++;
+            if(channel->PerfSubmitCount-channel->PerfLastPerfReport>=4096U) {
+                channel->PerfLastPerfReport=channel->PerfSubmitCount;
+                reportPerfSample=TRUE;
+            }
             channel->Submitting=FALSE;
             Nvx3dUnlockBuffers();
         }
+        if(reportPerfSample)
+            NvxGspLogClientPerfSample(engine,header.ClientToken);
         if(status!=NO_ERROR) {
             LogStr("NVX [NVC0-BATCH]: IOCTL failed status=");
             LogHex(status);LogStr(" bytes=");
@@ -4612,7 +4661,7 @@ submit_batch_done:
             }
             LogStr("\n");
         }
-        if(copiedInput) VideoPortFreePool(devExt,copiedInput);
+        if(copiedInput&&dynamicScratchAllocated) VideoPortFreePool(devExt,copiedInput);
         break;
     }
 
@@ -5187,7 +5236,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-        LogStr(" NVX Video Miniport Driver 3.0.0.332 (open-gpu-kernel-modules unified v2)\n");
+        LogStr(" NVX Video Miniport Driver 3.0.0.334 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

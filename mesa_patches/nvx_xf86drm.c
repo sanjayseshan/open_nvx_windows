@@ -772,7 +772,7 @@ nvx_drm_submit_pushbuf(int fd,
    struct nvx_drm_device_slot *device;
    struct drm_nouveau_gem_pushbuf_bo *buffers;
    struct drm_nouveau_gem_pushbuf_push *pushes;
-   NVX_WINSYS_DEVICE winsys;
+   NVX_WINSYS_DEVICE *winsys = NULL;
    NVX_3D_BATCH_HEADER header;
    NVX_3D_BUFFER_REFERENCE references[NVX_3D_MAX_BATCH_BUFFERS];
    NVX_3D_RELOCATION translated_relocations[NVX_3D_MAX_BATCH_RELOCATIONS];
@@ -1084,10 +1084,10 @@ nvx_drm_submit_pushbuf(int fd,
       relocation_count++;
    }
 
-   winsys = device->device;
+   winsys = &device->device;
    client_token = device->client_token;
 #if defined(_WIN32) || defined(_WIN64)
-   submit_ring_slot = winsys.NouveauBatchPushIndex %
+   submit_ring_slot = winsys->NouveauBatchPushIndex %
                       NVX_WINSYS_BATCH_PUSH_SLOTS;
 #endif
    nvx_drm_lock_release();
@@ -1103,7 +1103,7 @@ nvx_drm_submit_pushbuf(int fd,
          if (dump->force_gpu_readback)
             continue;
          if (!dump->copied_from_shadow &&
-             !NvxWinsysDownloadBuffer(&winsys, dump->buffer_id,
+             !NvxWinsysDownloadBuffer(winsys, dump->buffer_id,
                                      dump->allocation_bytes, dump->offset,
                                      dump->dwords, dump->bytes))
             result = 2U;
@@ -1135,7 +1135,7 @@ nvx_drm_submit_pushbuf(int fd,
    failure_stage = 9U;
    translated = Nvx3dTranslateNvc0ObjectBindings(
       batch + sizeof(header) + reference_bytes, dword_count,
-      winsys.NouveauObjectBindings, winsys.NouveauObjectBindingCount);
+      winsys->NouveauObjectBindings, winsys->NouveauObjectBindingCount);
    if (relocation_bytes)
       memcpy(batch + sizeof(header) + reference_bytes + dword_bytes,
              translated_relocations, relocation_bytes);
@@ -1145,13 +1145,13 @@ nvx_drm_submit_pushbuf(int fd,
       NvxWglRecordNouveauTranslateProfile(profile_translate_us);
       profile_submit_start = nvx_wgl_present_timer();
       failure_stage = 10U;
-      valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes, sizeof(batch),
+      valid = NvxWinsysSubmitBatch(winsys, batch, batch_bytes, sizeof(batch),
                                    &fence_value);
       profile_submit_us = nvx_wgl_present_elapsed_us(profile_submit_start);
 #if defined(_WIN32) || defined(_WIN64)
       if (nvx_drm_submit_trace_count < 32U) {
          const NVX_3D_ALLOC_BUFFER *push_bo =
-            &winsys.NouveauBatchPushBuffer[submit_ring_slot];
+            &winsys->NouveauBatchPushBuffer[submit_ring_slot];
          uint32_t trace_index = nvx_drm_submit_trace_count++;
          NvxWglRecordNouveauPushbufItem(18U, trace_index,
             (uint32_t)push_bo->BufferId, submit_ring_slot, dword_count,
@@ -1160,23 +1160,12 @@ nvx_drm_submit_pushbuf(int fd,
       }
 #endif
    }
-   /* NvxWinsysSubmitBatch is the existing Nouveau-winsys ring implementation.
-    * Preserve its ring state in the persistent per-device adapter object;
-    * otherwise every DRM ioctl starts again at slot zero and loses the fence
-    * protecting that staging BO. */
+   /* NvxWinsysSubmitBatch modified device->device directly via winsys pointer.
+    * Only update submit_busy and lock state; no large memcpy needed. */
    nvx_drm_lock_acquire();
    device = nvx_drm_find_device_locked(fd);
    if (device && device->client_token == client_token &&
        device->nouveau_submit_busy) {
-      memcpy(device->device.NouveauBatchPushBuffer,
-             winsys.NouveauBatchPushBuffer,
-             sizeof(winsys.NouveauBatchPushBuffer));
-      memcpy(device->device.NouveauBatchLastFence,
-             winsys.NouveauBatchLastFence,
-             sizeof(winsys.NouveauBatchLastFence));
-      device->device.NouveauBatchPushIndex = winsys.NouveauBatchPushIndex;
-      if (winsys.CompletedFence > device->device.CompletedFence)
-         device->device.CompletedFence = winsys.CompletedFence;
       device->nouveau_submit_busy = 0;
    }
    submit_busy_owned = 0;
@@ -1213,14 +1202,14 @@ nvx_drm_submit_pushbuf(int fd,
          if (vertex_dumps[dump_index].force_gpu_readback)
             has_forced_dump = 1;
       if (has_forced_dump)
-         completed = NvxWinsysWaitFence(&winsys, fence_value, 5000U);
+         completed = NvxWinsysWaitFence(winsys, fence_value, 5000U);
       for (dump_index = 0; dump_index < vertex_dump_count; dump_index++) {
          struct nvx_drm_vertex_dump *dump = &vertex_dumps[dump_index];
          uint32_t result;
          if (!dump->force_gpu_readback)
             continue;
          result = completed ? 0U : 3U;
-         if (completed && !NvxWinsysDownloadBuffer(&winsys, dump->buffer_id,
+         if (completed && !NvxWinsysDownloadBuffer(winsys, dump->buffer_id,
                dump->allocation_bytes, dump->offset, dump->dwords,
                dump->bytes))
             result = 2U;
@@ -1232,12 +1221,12 @@ nvx_drm_submit_pushbuf(int fd,
    if (NVX_XP_GPU_READBACK_TRACE && valid && fence_value &&
        shader_dump_count) {
       uint32_t dump_index;
-      int completed = NvxWinsysWaitFence(&winsys, fence_value, 5000U);
+      int completed = NvxWinsysWaitFence(winsys, fence_value, 5000U);
       for (dump_index = 0; dump_index < shader_dump_count; dump_index++) {
          struct nvx_drm_shader_dump *dump = &shader_dumps[dump_index];
          uint32_t result = 3U;
          if (completed) {
-            result = NvxWinsysDownloadBuffer(&winsys, dump->buffer_id,
+            result = NvxWinsysDownloadBuffer(winsys, dump->buffer_id,
                dump->allocation_bytes, dump->offset, dump->dwords,
                dump->bytes) ? 0U : 2U;
          }
@@ -1257,8 +1246,8 @@ nvx_drm_submit_pushbuf(int fd,
        * the response consistent with the empty pushbuf initialization ioctl. */
       request->suffix0 = 0;
       request->suffix1 = 0;
-      request->vram_available = winsys.caps.VramApertureBytes;
-      request->gart_available = winsys.caps.GartBytes;
+      request->vram_available = winsys->caps.VramApertureBytes;
+      request->gart_available = winsys->caps.GartBytes;
    }
    if (valid) {
       uint32_t total_us = nvx_wgl_present_elapsed_us(profile_start);

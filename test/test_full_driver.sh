@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.332"
+NVX_TEST_VERSION="3.0.0.334"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
@@ -139,7 +139,7 @@ with open('$NVX_ROOT/dist_full/wined3d.dll', 'wb') as f:
 fi
 if [ "${NVX_GR_CHANNEL_PROBE:-0}" = "1" ]; then
     NVX_DRIVER_BUILD_TARGET=full-gr-probe
-    NVX_DRIVER_BUILD_ARGS=("NVX_ENABLE_GR_CHANNEL_PROBE=1")
+    NVX_DRIVER_BUILD_ARGS=("NVX_ENABLE_GR_CHANNEL_PROBE=1" "NVX_TRACE_HOTPATH=0")
     echo "==> Enabling the isolated Ampere GR allocation probe (no rendering submission)"
     if [ "${NVX_GR_PROMOTE_PROBE:-0}" = "1" ]; then
         NVX_DRIVER_BUILD_ARGS+=("NVX_ENABLE_GR_PROMOTE_PROBE=1")
@@ -163,7 +163,7 @@ if [ "${NVX_GR_CHANNEL_PROBE:-0}" = "1" ]; then
     fi
 else
     NVX_DRIVER_BUILD_TARGET=full
-    NVX_DRIVER_BUILD_ARGS=()
+    NVX_DRIVER_BUILD_ARGS=("NVX_TRACE_HOTPATH=0")
 fi
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     sudo -u "$SUDO_USER" make -C "$NVX_ROOT/src_driver" check "$NVX_DRIVER_BUILD_TARGET" "${NVX_DRIVER_BUILD_ARGS[@]}"

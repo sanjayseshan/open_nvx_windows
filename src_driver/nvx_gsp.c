@@ -159,27 +159,6 @@ static VOID NvxGspLogNvc0FaultCapture(PNVX_DEVICE_EXTENSION dev,
     }
 }
 
-static VOID NvxGspLogClientPerfSample(NVX_GR_CLIENT_CHANNEL *channel)
-{
-    if(!channel) return;
-    LogStr("NVX [NVC0-PERF-SAMPLE]: token=");LogHex(channel->ClientToken);
-    LogStr(" process_id=");LogHex(channel->ProcessId);
-    LogStr(" batches=");LogHex(channel->PerfSubmitCount);
-    LogStr(" completed=");LogHex(channel->CompletedBatches);
-    LogStr(" dwords=");LogHex(channel->PerfDwordCount);
-    LogStr(" buffer_lookup_cycles=");LogHex(channel->PerfBufferLookupCycles);
-    LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
-    LogStr(" submit_max_cycles=");LogHex(channel->PerfSubmitMaxCycles);
-    LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
-    LogStr(" fence_wait_calls=");LogHex(channel->PerfFenceWaitCalls);
-    LogStr(" fence_wait_ms=");LogHex(channel->PerfFenceWaitPolls);
-    LogStr(" max_fence_wait_ms=");LogHex(channel->PerfFenceWaitMaxPolls);
-    LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
-    LogStr(" doorbell_retries=");LogHex(channel->PerfDoorbellRetries);
-    LogStr("\n");
-    channel->PerfLastPerfReport=channel->PerfSubmitCount;
-}
-
 VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
@@ -195,10 +174,17 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" dwords=");LogHex(channel->PerfDwordCount);
     LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" buffer_lookup_cycles=");LogHex(channel->PerfBufferLookupCycles);
+    LogStr(" submit_ioctl_count=");LogHex(channel->PerfSubmitIoctlCount);
+    LogStr(" submit_ioctl_cycles=");LogHex(channel->PerfSubmitIoctlCycles);
+    LogStr(" submit_ioctl_max_cycles=");LogHex(channel->PerfSubmitIoctlMaxCycles);
+    LogStr(" batch_copy_cycles=");LogHex(channel->PerfBatchCopyCycles);
+    LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
+    LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
+    LogStr(" submit_failures=");LogHex(channel->PerfSubmitFailures);
     LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
     LogStr(" submit_max_cycles=");LogHex(channel->PerfSubmitMaxCycles);
     LogStr(" fence_fast_poll_1us=");LogHex(channel->PerfFenceFastPolls);
-    LogStr(" fence_wait_poll_1ms=");LogHex(channel->PerfFenceWaitPolls);
+    LogStr(" fence_wait_poll_loops=");LogHex(channel->PerfFenceWaitPolls);
     LogStr(" max_fence_wait_polls=");LogHex(channel->PerfFenceWaitMaxPolls);
     LogStr(" fence_wait_calls=");LogHex(channel->PerfFenceWaitCalls);
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
@@ -213,6 +199,32 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
         LogStr(" completed_fence=");LogHex(channel->CompletedFence);
         LogStr("\n");
     }
+}
+
+/* Long-running applications may not close their context before a test
+ * timeout. Emit a cumulative snapshot only at coarse submission intervals. */
+VOID NvxGspLogClientPerfSample(PVOID HwDeviceExtension,ULONG64 clientToken)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    NVX_GR_CLIENT_CHANNEL *channel;
+    if(!dev) return;
+    channel=NvxGspFindClientChannel(dev,clientToken);
+    if(!channel||!channel->PerfSubmitCount) return;
+    LogStr("NVX [NVC0-PERF-SAMPLE]: token=");LogHex(clientToken);
+    LogStr(" process_id=");LogHex(channel->ProcessId);
+    LogStr(" batches=");LogHex(channel->PerfSubmitCount);
+    LogStr(" completed=");LogHex(channel->CompletedBatches);
+    LogStr(" submit_ioctl_cycles=");LogHex(channel->PerfSubmitIoctlCycles);
+    LogStr(" batch_copy_cycles=");LogHex(channel->PerfBatchCopyCycles);
+    LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
+    LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
+    LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
+    LogStr(" buffer_lookup_cycles=");LogHex(channel->PerfBufferLookupCycles);
+    LogStr(" fence_wait_calls=");LogHex(channel->PerfFenceWaitCalls);
+    LogStr(" fence_wait_poll_loops=");LogHex(channel->PerfFenceWaitPolls);
+    LogStr(" submit_failures=");LogHex(channel->PerfSubmitFailures);
+    LogStr(" doorbell_retries=");LogHex(channel->PerfDoorbellRetries);
+    LogStr("\n");
 }
 
 _Static_assert(GSP_VRAM_MAP_BYTES ==
@@ -1011,6 +1023,7 @@ BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
     PULONG64 tables;
     ULONG done;
     ULONG64 offset;
+    BOOLEAN changed=FALSE;
     if(!dev||!dev->GspVramPteVirtual||!dev->GspVaSpaceHandle||!bytes||
        gpuVa<dev->GspVramGpuVa||(gpuVa&0xffffULL)||(bytes&0xffffU)||
        (map&&kind>0xffU)||(!map&&kind!=0U))
@@ -1024,12 +1037,19 @@ BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
         ULONG slice=(ULONG)(pageOffset/GSP_VRAM_SLICE_BYTES);
         ULONG page=(ULONG)((pageOffset%GSP_VRAM_SLICE_BYTES)/0x10000ULL);
         PULONG64 lpt;
+        ULONG64 val;
         if(slice>=GSP_VRAM_SLICE_COUNT||page>=32U)
             return FALSE;
         lpt=(PULONG64)((PUCHAR)tables+GSP_VRAM_LPT_OFFSET+slice*0x100);
-        lpt[page]=(pageOffset>>4)|1ULL|
+        val=(pageOffset>>4)|1ULL|
             (map?((1ULL<<7)|((ULONG64)kind<<56)):0ULL);
+        if(lpt[page]!=val) {
+            lpt[page]=val;
+            changed=TRUE;
+        }
     }
+    if(!changed)
+        return TRUE;
     __sync_synchronize();
     if(!NvxGspInvalidateVaSpace(dev)) {
         if(map) {
@@ -1047,9 +1067,11 @@ BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
         }
         return FALSE;
     }
+#if NVX_TRACE_HOTPATH
     LogStr("NVX [MMU]: VRAM range ");LogHex(gpuVa);
     LogStr(map?" mapped kind ":" restored kind ");LogHex(map?kind:0U);
     LogStr(" bytes=");LogHex(bytes);LogStr("\n");
+#endif
     return TRUE;
 }
 
@@ -4139,7 +4161,6 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     ULONG put,wait,lockPolls,tailCount=5U,pushBytesNeeded,totalDwords;
     ULONG64 fenceVa,pushVa,fifoEntry,submitStartTsc,submitCycles;
     ULONG fenceSlot;
-    BOOLEAN logPerf=FALSE;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        (!allocations&&allocationCount)||
        !pushVirtual||!pushGpuVa||!pushBytes||!dev->GspInitialized||
@@ -4176,8 +4197,15 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     *completedFence=fenceValue;
 
     submitStartTsc=NvxGspReadTsc();
+#if NVX_TRACE_HOTPATH
     NvxGspCaptureNvc0Batch(dev,channel,nvc0Dwords,dwordCount,allocations,
                            allocationCount,pushGpuVa,fenceValue);
+#else
+    if(dev->GspGraphicsDeviceFaulted || channel->Faulted) {
+        NvxGspCaptureNvc0Batch(dev,channel,(const ULONG *)nvc0Dwords,dwordCount,allocations,
+                               allocationCount,pushGpuVa,fenceValue);
+    }
+#endif
 
     scratch=(PUCHAR)channel->Virtual;
     userd=(volatile ULONG *)(scratch+NVX_GR_CLIENT_USERD_OFFSET);
@@ -4222,8 +4250,6 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     __sync_synchronize();
     dev->Nvx3dFenceSequence[fenceSlot]=fenceValue;
     NvxGspRecordNvc0BatchTiming(channel,dwordCount,0,0);
-    if(channel->PerfSubmitCount-channel->PerfLastPerfReport>=4096U)
-        logPerf=TRUE;
     if(channel->DrawTraceCount<4U) {
         ULONG primitive,vertexStart,vertexCount;
         if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
@@ -4240,7 +4266,6 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
         }
     }
     __sync_lock_release(&NvxGrUserSubmitBusy);
-    if(logPerf) NvxGspLogClientPerfSample(channel);
     return TRUE;
 
 }
@@ -4654,7 +4679,6 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
     }
     if(timeoutMs>=5000U&&ownerChannel&&!ownerChannel->Faulted) {
         ownerChannel->Faulted=TRUE;
-        NvxGspLogClientPerfSample(ownerChannel);
         LogStr("NVX [NVC0-FENCE]: completion timeout fence=");
         LogHex(fenceValue);LogStr(" channel=");LogHex(ownerChannel->Channel);
         LogStr(" observed=");
