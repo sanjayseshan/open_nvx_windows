@@ -14,6 +14,8 @@ mkdir -p "$NVX_WINE_BUILD/source" "$NVX_WINE_BUILD/host-tools"
 git -C "$NVX_ROOT/wine" archive "$NVX_WINE_COMMIT" | tar -xf - -C "$NVX_WINE_BUILD/source"
 git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0001-native-wgl-pixel-format-query.patch"
 git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0002-log-3dmark-d3d9-caps.patch"
+git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0004-xp-dynamic-d3dkmt.patch"
+git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0005-csmt-nonblocking-discard-map-and-queue-size.patch"
 NVX_WINE_DIAG_CFLAGS=
 if [ "${NVX_D3D9_CAPS_DIAGNOSTICS:-0}" = "1" ]; then
     git -C "$NVX_WINE_BUILD/source" apply --recount "$NVX_ROOT/wine_patches/0003-log-3dmark-d3d9-failed-probes.patch"

@@ -7,7 +7,7 @@ index 5e6488d..769e54a 100644
      */
     if (dev->chipset >= 0xe0)
 -      screen->base.transfer_pushbuf_threshold = 1024;
-+      screen->base.transfer_pushbuf_threshold = 8192;
++      screen->base.transfer_pushbuf_threshold = 32768;
  
     screen->base.vidmem_bindings |= PIPE_BIND_CONSTANT_BUFFER |
        PIPE_BIND_SHADER_BUFFER |

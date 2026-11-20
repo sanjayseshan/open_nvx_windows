@@ -38,7 +38,8 @@ $repo_root/mesa_patches/0035-nouveau-xp-submission-profile.patch
 $repo_root/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
 $repo_root/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 $repo_root/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
-$repo_root/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch"
+$repo_root/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
+$repo_root/mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch"
 expected_revision=cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
 
 actual_revision=$(git -C "$mesa_dir" rev-parse HEAD)

@@ -72,10 +72,13 @@ echo "------------------------------------------------------------------"
 qemu-system-x86_64 \
     -enable-kvm \
     -m "$NVX_VM_MEMORY_MB" \
-    -cpu host,invtsc=on,+tsc-deadline,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic \
-    -smp 4 \
+    -cpu host,migratable=off,host-cache-info=on,invtsc=on \
+    -smp 6,sockets=1,cores=6,threads=1 \
+    -no-hpet \
+    -rtc base=localtime,clock=host,driftfix=none \
+    -global kvm-pit.lost_tick_policy=discard \
     -vga none \
-    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:3389-:3389 -device rtl8139,netdev=net0,addr=03.0 \
+    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:3389-:3389,hostfwd=tcp:0.0.0.0:5900-:5900 -device rtl8139,netdev=net0,addr=03.0 \
     -device vfio-pci,host=01:00.0,multifunction=on,x-vga=on,addr=02.0 \
     -device vfio-pci,host=01:00.1,addr=02.1 \
     -drive file="$ROOT_DIR/winxp_x64.qcow2",format=qcow2,if=ide \

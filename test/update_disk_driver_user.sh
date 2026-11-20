@@ -279,6 +279,11 @@ elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_SYSTEM32/wined3d.dll"
 fi
 
+if [ -d "$NVX_PACKAGE/vnc" ]; then
+    mkdir -p "$NVX_MOUNT/TightVNC"
+    cp -vr "$NVX_PACKAGE/vnc/"* "$NVX_MOUNT/TightVNC/"
+fi
+
 # Deploy 32-bit WineD3D for SysWOW64 if available
 if [ -d "$NVX_WINE_X86_DIR" ]; then
     [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ] || {
@@ -292,6 +297,30 @@ if [ -d "$NVX_WINE_X86_DIR" ]; then
             cp -v "$NVX_WINE_X86_DIR/$dll" "$NVX_MOUNT/WINDOWS/SysWOW64/"
         fi
     done
+fi
+
+# Ensure /usepmtimer is set in C:\boot.ini for precise QPC timing on multi-core
+if [ -f "$NVX_MOUNT/boot.ini" ]; then
+    python3 - "$NVX_MOUNT/boot.ini" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+try:
+    content = p.read_text(encoding='latin-1')
+    if "/usepmtimer" not in content.lower():
+        lines = []
+        for line in content.splitlines():
+            # Only add to [operating systems] entry line, never to default= line in [boot loader]
+            if "partition" in line.lower() and "=" in line and "/usepmtimer" not in line.lower():
+                line = line.rstrip() + " /usepmtimer"
+            lines.append(line)
+        p.write_text("\r\n".join(lines) + "\r\n", encoding='latin-1')
+        print("[BOOT.INI] Appended /usepmtimer to guest operating systems configuration.")
+    else:
+        print("[BOOT.INI] /usepmtimer already present.")
+except Exception as e:
+    print(f"[BOOT.INI] Notice: {e}")
+PY
 fi
 
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
@@ -308,6 +337,10 @@ if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace
 if exist C:\WINDOWS\nvxmp.log del C:\WINDOWS\nvxmp.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 echo [NVX_TEST_SUITE_START] > \\.\COM1
+if exist C:\TightVNC\tvnserver.exe (
+    echo [VNC] Starting TightVNC Server... >> C:\test_accel.log
+    start "" /b C:\TightVNC\tvnserver.exe -run
+)
 if exist C:\3dmark05.log del C:\3dmark05.log
 if exist C:\3dmark_caps.log del C:\3dmark_caps.log
 if exist C:\test_accel\p2mf_probe_gart.flag (
@@ -375,8 +408,13 @@ if exist C:\test_accel\run_3dmark.flag (
         set WINEDEBUG=-all
         rem Launch background watcher to stream results to COM1 once available WITHOUT closing 3DMark
         start /b cmd /c "ping -n 60 127.0.0.1 >nul & :WATCH_LOOP & ping -n 5 127.0.0.1 >nul & if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log & findstr /i "3DMark" C:\3dmark_text.log >nul 2>&1 && (echo [3DMARK05_SCORES_STREAM_START] > \\.\COM1 & type C:\3dmark_text.log > \\.\COM1 & echo [3DMARK05_SCORES_STREAM_END] > \\.\COM1 & exit /b 0) & goto WATCH_LOOP"
-        3DMark05.exe -gtall -nosysteminfo -noscreens -nosplash -res=800x600 > C:\3dmark05.log 2>&1
-        set NVX_TEST_RC=!ERRORLEVEL!
+        start "" 3DMark05.exe -nosysteminfo
+        rem Periodically dump windows to find results
+        :WAIT_3DMARK
+        ping -n 10 127.0.0.1 >nul
+        tasklist /fi "imagename eq 3DMark05.exe" 2>nul | find /i "3DMark05.exe" >nul
+        if not errorlevel 1 goto WAIT_3DMARK
+        set NVX_TEST_RC=0
         echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
         if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log
         if exist C:\test_accel\dump_screen.exe C:\test_accel\dump_screen.exe C:\3dmark_score.ppm

@@ -1,0 +1,13 @@
+diff --git a/src/gallium/drivers/nouveau/nouveau_fence.c b/src/gallium/drivers/nouveau/nouveau_fence.c
+index a3522f7..e1289df 100644
+--- a/src/gallium/drivers/nouveau/nouveau_fence.c
++++ b/src/gallium/drivers/nouveau/nouveau_fence.c
+@@ -231,7 +231,7 @@ nouveau_fence_next(struct nouveau_context *context)
+    }
+
+    if (fence->state < NOUVEAU_FENCE_STATE_FLUSHED) {
+-      if (nouveau_pushbuf_kick(context->pushbuf))
++      if (PUSH_AVAIL(context->pushbuf) < 16384 && nouveau_pushbuf_kick(context->pushbuf))
+          return false;
+    }
+

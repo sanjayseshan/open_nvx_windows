@@ -108,7 +108,8 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
 
             # Allow the ICD enough time to initialize on slower XP boots.
             NVX_DESKTOP_TIMEOUT="${NVX_DESKTOP_TIMEOUT:-180}"
-            if [ "${NVX_RUN_3DMARK:-0}" != "1" ] && \
+            if [ "${NVX_KEEP_RUNNING:-0}" != "1" ] && [ "${NVX_KEEP_VM_RUNNING:-0}" != "1" ] && \
+               [ "${NVX_RUN_3DMARK:-0}" != "1" ] && \
                [ "$s" -ge "$NVX_DESKTOP_TIMEOUT" ] && \
                grep -q "GPU solid fill" "$NVX_RUN_LOG" 2>/dev/null; then
                 echo "==> Desktop active session completed ($s s; limit ${NVX_DESKTOP_TIMEOUT}s). Sending soft ACPI powerdown..."
@@ -119,6 +120,11 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
         done
 
         # Graceful wait for VM exit, fallback to quit
+        if [ "${NVX_KEEP_RUNNING:-0}" = "1" ] || [ "${NVX_KEEP_VM_RUNNING:-0}" = "1" ]; then
+            echo "==> NVX_KEEP_RUNNING=1: Keeping VM alive indefinitely for RDP/observation..."
+            while kill -0 "$VM_PID" 2>/dev/null; do sleep 60; done
+        fi
+
         if kill -0 "$VM_PID" 2>/dev/null; then
             echo "system_powerdown" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
             sleep 4

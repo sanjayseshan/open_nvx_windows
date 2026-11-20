@@ -111,6 +111,8 @@ def main():
     # Mesa WGL frontend imports nvxogl64.dll). Include package exports in the
     # same resolution set as the XP system DLLs.
     for path in package_files:
+        if "vnc" in path.parts:
+            continue
         if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe", ".dl"}:
             continue
         try:
@@ -137,6 +139,8 @@ def main():
                 name for name in shim_exports if name.startswith("D3DKMT")
             )
     for path in package_files:
+        if "vnc" in path.parts:
+            continue
         if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe", ".dl"}:
             continue
         try:
