@@ -1,33 +1,49 @@
-# Handoff — 2026-11-19
+# NVX handoff — 2026-11-22
 
-## Status
+## Current status
 
-- Windows XP x64 / RTX 3070 GA104 (`NV170`) is using the hardware Nouveau/NVC0 path. In .334 smoke tests, gears reached about 49–54 FPS, the cube 63 FPS, and D3D9 smoke 62–63 FPS.
-- User's saved 3DMark05 result remains 695 marks: GT1 12.41 FPS, GT2 0.135 FPS, GT3 12.83 FPS. Artifact: [user-test4-695.3dr](../test_logs/user-test4-695.3dr).
-- The .334 full test with 3DMark enabled launched the benchmark and generated live NVC0 samples, but no 3DMark exit/score marker was captured. It is not a completed benchmark result. Log: [v3.0.0.334-20261119-200133.log](../test_logs/v3.0.0.334-20261119-200133.log). Its final screen capture shows the XP desktop and launcher console, not a completed score.
-- At capture, QEMU used about 1.25 host cores. The benchmark client had submitted about 2.4 million batches with zero submission failures. Miniport packet-copy cycles were a small fraction of total submit accounting; this does not look like a BO-copy or VRAM-capacity limit.
+User reports 3DMark05 score 2600 and game FPS around 17 / 4 / 18. Goal is 10,000+, but no recent controlled 3DMark run has produced a comparable score after the performance changes.
 
-## Likely performance leads
+### Latest hardware test: 3.0.0.346
 
-- QEMU register snapshots repeatedly caught active guest CPUs 1 and 3 at `RIP=fffff8000081043a`, `CPL=0`, with `RDX=0x608`. The preceding instruction is `inl %dx,%eax`, consistent with reading QEMU's emulated ACPI PM timer. This is a concrete lead for expensive high-resolution timer queries/VM exits, but the snapshot has no caller stack and does not prove which process is polling it.
-- The pinned Wine submodule is Wine 1.7.55 (`a786dca`). Its `wined3d_cs_create()` chooses `wined3d_cs_st_ops`; command handlers execute synchronously on the caller. This build does not have a CSMT worker-thread implementation or a `csmt` setting. That can serialize D3D state translation and GL submission, and is a separate likely contributor.
-- Neither lead is confirmed as the sole cause. GT2 has an unusually large workload, and the short smoke tests do not reproduce its D3D shader/draw pattern.
+Log: `test_logs/v3.0.0.346-20261122-223623.log` (`vm_serial.log` points to the latest log).
 
-## Current test state
+- Hardware OpenGL is active (`GL_RENDERER = NV170`). WGL gears ran at 59.7 FPS. The separate 300-frame GL probes measured 29.4 and 46.6 FPS; D3D9 smoke ran at 35 FPS but the pixel proof failed.
+- The 3DMark test did not start. The guest emitted `3DMARK05_NOT_INSTALLED`, even though `3DMark05.exe` exists in the image under both `Program Files\Futuremark\3DMark05` and `Program Files (x86)\Futuremark\3DMark05`. The startup batch contains the selected path but its runtime `if exist` check failed. Fix and log that check before using this harness for a score.
+- Gears submitted 1,674 miniport batches with the same submission and fence-wait totals as the .344 log. Therefore the 59.7 FPS result cannot be attributed to the new kick-threshold patches; .344 measured 48.5 FPS, so display/workload timing varied.
+- Patch `0046` defers Windows NVC0 draw kicks; patch `0047` lowers its early-kick reserve from 64 KiB to 4 KiB. The .346 test did not show a lower gears batch count. Keep these as experiments, not proven speedups.
+- The .346 VM initially stalled in the VGA option ROM (`CS=c000`, unchanged EIP); one QEMU `system_reset` let it boot. The guest completed its test suite. The test process exited with code 1 because 3DMark was not launched and D3D pixel proof failed.
 
-- `vm_serial.log` currently points to `test_logs/xp_v2_20261119-201423.log`, with a separate VFIO auto-retry/QEMU session active at the time of this update. Do not overwrite its log or modify the guest image while it runs.
-- The .334 test log has no 3DMark completion or score marker. No code changes were made from this investigation.
+### Previous 3DMark attempt: 3.0.0.345
 
-## Next steps
+Log: `test_logs/v3.0.0.345-20261122-222208.log`.
 
-1. Preserve the active VFIO session's log and obtain its 3DMark outcome.
-2. Resolve the observed kernel RIP against the XP x64 HAL/kernel symbols, then measure guest `QueryPerformanceCounter` cost and call frequency. Compare a controlled VM clock-source configuration if the PM-timer path is confirmed hot.
-3. Build or select a WineD3D revision with CSMT, retain XP compatibility, and A/B GT1/GT2/GT3 with the same guest, driver, resolution, and settings.
-4. Compare per-test NVC0 batch/fence metrics; optimize whichever stage grows during GT2 rather than making another speculative miniport change.
+- The automated Run click launched 3DMark, but GPU execution failed with `Graphics Exception: Shader Program Header 18 Error` (`ESR 0x405840=0x82040000`), followed by fence timeout and `ERROR_DEVICE_NOT_READY`. The run produced no valid score.
+- Before the fault, the miniport recorded 8,192 submissions and 3,758 fence-wait calls. This indicates significant command traffic but does not prove it is the main cause of low FPS.
+
+## Likely performance constraint and next steps
+
+The tested 3DMark path is x86 WineD3D over the WGL ICD. Wine is pinned to 1.7.55; `wine/dlls/wined3d/cs.c` installs only `wined3d_cs_st_ops`. The guest batch writes `csmt=1`, but this source has no worker-thread command-stream implementation, so that setting does not provide CSMT. This serial D3D9-to-OpenGL path is a strong CPU-side bottleneck candidate; game 2 at 4 FPS may also be limited by shader/GPU work. Measure a clean benchmark before assigning percentages.
+
+1. Fix 3DMark automation path detection and log `dir`/`if exist` results inside the guest. Confirm the exact running EXE and retain the per-game FPS / score output.
+2. Fix the first Shader Program Header 18 fault from .345 by tracing NVC0 shader BO upload, VA, contents, and lifetime. Do not accept a score from a run with this fault.
+3. Profile one clean 3DMark run: per-game frame times, host CPU utilization, NVC0 submissions, and fence waits. Compare against the user's 2600 / 17-4-18 baseline.
+4. Evaluate an XP-compatible WineD3D command-stream worker or a supported newer WineD3D. Backporting CSMT is a substantial separate change; registry configuration alone is insufficient in this Wine source.
+5. Gallium Nine remains separate and unproven: earlier runs had incorrect/black rendering and failed pixel proof. Recent 3DMark runs use WineD3D.
 
 ## Relevant files
 
-- Wine revision/build: [test/build_wined3d_xp.sh](../test/build_wined3d_xp.sh), [wine/dlls/wined3d/cs.c](../wine/dlls/wined3d/cs.c)
-- Guest test automation: [test/update_disk_driver_user.sh](../test/update_disk_driver_user.sh), [test/test_full_driver.sh](../test/test_full_driver.sh), [test/run_vfio_xp_autoretry.sh](../test/run_vfio_xp_autoretry.sh)
-- Submit metrics: [src_driver/nvxmp.c](../src_driver/nvxmp.c), [src_driver/nvx_gsp.c](../src_driver/nvx_gsp.c)
-- Current .334 benchmark log: [v3.0.0.334-20261119-200133.log](../test_logs/v3.0.0.334-20261119-200133.log)
+- Batch patches: `mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch`, `mesa_patches/0047-nouveau-xp-fill-pushbuf-before-kick.patch`, `test/apply_mesa_xp_patches.sh`
+- NVC0 draw/fence path: `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c`, `nvc0_state_validate.c`, `nvc0_context.c`, `mesa/src/gallium/drivers/nouveau/nouveau_fence.c`
+- WineD3D command stream: `wine/dlls/wined3d/cs.c`
+- Miniport submit, timing, and GPU fault handling: `src_driver/nvxmp.c`, `src_driver/nvx_gsp.c`
+- 3DMark harness/image setup: `test/update_disk_driver_user.sh`, `test/run_3dmark_full.c`, `test/test_3dmark_launch_diag.c`
+- Full test: `test/test_full_driver.sh`
+
+## Hardware test command
+
+```sh
+NVX_BUILD_WINED3D=0 NVX_BUILD_MESA_ICD=1 NVX_RUN_3DMARK=1 NVX_3DMARK_DIAG=1 ./test/test_full_driver.sh
+```
+
+Build bumps should keep the package version in `test/test_full_driver.sh` and driver version strings in `src_driver/nvxmp.c` aligned.

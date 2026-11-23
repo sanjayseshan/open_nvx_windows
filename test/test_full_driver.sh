@@ -4,8 +4,18 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.334"
-NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
+NVX_TEST_VERSION="3.0.0.351"
+NVX_D3D9_BACKEND="${NVX_D3D9_BACKEND:-nine}"
+export NVX_D3D9_BACKEND
+case "$NVX_D3D9_BACKEND" in
+    wined3d|nine) ;;
+    *) echo "NVX_D3D9_BACKEND must be wined3d or nine" >&2; exit 1 ;;
+esac
+if [ "${NVX_NINE_ONLY:-0}" = "1" ]; then
+    NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-0}"
+else
+    NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
+fi
 NVX_RUN_3DMARK="${NVX_RUN_3DMARK:-0}"
 case "$NVX_RUN_3DMARK" in
     0) NVX_TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-240}" ;;
@@ -13,7 +23,10 @@ case "$NVX_RUN_3DMARK" in
     *) echo "NVX_RUN_3DMARK must be 0 or 1" >&2; exit 1 ;;
 esac
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
-if [ "${NVX_BUILD_WINED3D:-1}" = "1" ]; then
+if [ "$NVX_D3D9_BACKEND" = "nine" ]; then
+    echo "==> Selecting Gallium Nine for x86 D3D9; WineD3D is excluded from this test path"
+    "$NVX_ROOT/build_d3d9_nine.sh"
+elif [ "${NVX_BUILD_WINED3D:-1}" = "1" ]; then
     NVX_WINE_BUILD="${NVX_WINE_BUILD:-/tmp/nvx-wined3d-xp-$NVX_TEST_VERSION-$NVX_STAMP}"
     export NVX_WINE_BUILD
     echo "==> Building pinned WineD3D with the current XP patches"
@@ -103,6 +116,11 @@ i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
     -lopengl32 -lgdi32 -luser32 \
     -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 \
     -o "$NVX_ROOT/test/test_gpu_accel32.exe"
+i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
+    -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 \
+    "$NVX_ROOT/test/test_3dmark_launch_diag.c" -lpsapi \
+    -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 \
+    -o "$NVX_ROOT/test/test_3dmark_launch_diag.exe"
 x86_64-w64-mingw32-gcc -x c -O2 -static-libgcc -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -o "$NVX_ROOT/test/3d_tests/wglgears.exe"
 i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$NVX_ROOT/test/3d_tests/wglgears32.exe"
 x86_64-w64-mingw32-gcc -O2 -shared -static-libgcc "$NVX_ROOT/test/ucrtbase_xp.c" "$NVX_ROOT/test/ucrtbase.def" -o "$NVX_ROOT/test/ucrtbase.dll" -lm
@@ -120,11 +138,21 @@ if [ -d "$NVX_ROOT/test/wined3d_xp/x64" ]; then
     # stack from SysWOW64. Keep that package in step with the x86 runtime just
     # built above instead of silently reusing older dist_full/x86 DLLs.
     mkdir -p "$NVX_ROOT/dist_full/x86"
-    for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
-        if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
-            cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_ROOT/dist_full/x86/"
-        fi
-    done
+    if [ "$NVX_D3D9_BACKEND" = "nine" ]; then
+        # The x86 D3D9 entrypoint is the Mesa Nine frontend staged above.
+        # Do not overwrite it with WineD3D or package WineD3D beside it.
+        for dll in d3d8.dll ddraw.dll; do
+            if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
+                cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_ROOT/dist_full/x86/"
+            fi
+        done
+    else
+        for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+            if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
+                cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_ROOT/dist_full/x86/"
+            fi
+        done
+    fi
 elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_ROOT/dist_full/d3d9.dll"
     if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
@@ -239,7 +267,7 @@ finish() {
     echo
     echo "==> Result log: $NVX_RUN_LOG"
     if [ -f "$NVX_ROOT/winxp_x64.qcow2" ] && command -v guestfish >/dev/null 2>&1; then
-        for guest_log in nvx_exception.log mesa_bridge.log nvx_nouveau_trace.log nvxogl_trace.txt nvxmp.log test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
+        for guest_log in nvx_exception.log mesa_bridge.log mesa99.log mesa99_trace.log nvx_nouveau_trace.log nvxogl_trace.txt nvxmp.log test_accel.log wglgears.log 3dmark05.log 3dmark_caps.log; do
             case "$guest_log" in
                 3dmark05.log|3dmark_caps.log)
                     [ "$NVX_RUN_3DMARK" = "1" ] || continue ;;

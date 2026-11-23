@@ -1,0 +1,29 @@
+--- a/src/compiler/nir/nir_lower_reg_intrinsics_to_ssa.c
++++ b/src/compiler/nir/nir_lower_reg_intrinsics_to_ssa.c
+@@ -47,6 +47,8 @@ setup_reg(nir_intrinsic_instr *decl, struct regs_to_ssa_state *state)
+       return;
+    }
+ 
++   if (decl->def.index >= state->b.impl->ssa_alloc)
++      return;
+    assert(state->values[decl->def.index] == NULL);
+    if (!should_lower_reg(decl))
+       return;
+@@ -69,6 +71,8 @@ rewrite_load(nir_intrinsic_instr *load, struct regs_to_ssa_state *state)
+    nir_block *block = load->instr.block;
+    nir_def *reg = load->src[0].ssa;
+ 
++   if (reg->index >= state->b.impl->ssa_alloc)
++      return;
+    struct nir_phi_builder_value *value = state->values[reg->index];
+    if (!value)
+       return;
+@@ -87,6 +91,8 @@ rewrite_store(nir_intrinsic_instr *store, struct regs_to_ssa_state *state)
+    nir_def *new_value = store->src[0].ssa;
+    nir_def *reg = store->src[1].ssa;
+ 
++   if (reg->index >= state->b.impl->ssa_alloc)
++      return;
+    struct nir_phi_builder_value *value = state->values[reg->index];
+    if (!value)
+       return;

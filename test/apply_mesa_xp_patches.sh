@@ -39,7 +39,13 @@ $repo_root/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
 $repo_root/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 $repo_root/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
 $repo_root/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
-$repo_root/mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch"
+$repo_root/mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch
+$repo_root/mesa_patches/0042-wgl-export-mesa-nine-winsys.patch
+$repo_root/mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
+$repo_root/mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
+$repo_root/mesa_patches/0045-nvc0-xp-wait-shader-upload.patch
+$repo_root/mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch
+$repo_root/mesa_patches/0047-nouveau-xp-fill-pushbuf-before-kick.patch"
 expected_revision=cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
 
 actual_revision=$(git -C "$mesa_dir" rev-parse HEAD)

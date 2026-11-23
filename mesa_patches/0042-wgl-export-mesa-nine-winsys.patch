@@ -1,0 +1,74 @@
+diff --git a/src/gallium/targets/wgl/gallium_wgl.def.in b/src/gallium/targets/wgl/gallium_wgl.def.in
+index 412225f631f3d..70a5c5b3f45d1 100644
+--- a/src/gallium/targets/wgl/gallium_wgl.def.in
++++ b/src/gallium/targets/wgl/gallium_wgl.def.in
+@@ -53,3 +53,6 @@ stw_interop_flush_objects
+ 
+ _mesa_glapi_get_proc_address
+ _mesa_glapi_get_dispatch
++MesaScreenCreate@12
++MesaPresent@24
++MesaDimensions@28
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+index 100753a18bf7e..f34fa3821d3c7 100644
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -321,3 +321,58 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+    }
+    return true;
+ }
++
++BOOL WINAPI MesaScreenCreate(HDC hdc, struct pipe_screen **pScreen, DWORD flags);
++BOOL WINAPI MesaPresent(struct pipe_screen *screen, struct pipe_context *ctx,
++                        struct pipe_resource *res, HDC dc,
++                        const RECT *pSrcRect, const RECT *pDstRect);
++BOOL WINAPI MesaDimensions(struct pipe_screen *screen, struct pipe_context *ctx,
++                           struct pipe_resource *res,
++                           int *pWidth, int *pHeight, int *pBpp, int *pPitch);
++
++BOOL WINAPI
++MesaScreenCreate(HDC hdc, struct pipe_screen **pScreen, DWORD flags)
++{
++   (void)flags;
++   if (hdc)
++      nvx_wgl_set_hdc(hdc);
++   struct pipe_screen *screen = stw_winsys.create_screen(hdc);
++   if (!screen)
++      return FALSE;
++   if (pScreen)
++      *pScreen = screen;
++   return TRUE;
++}
++
++BOOL WINAPI
++MesaPresent(struct pipe_screen *screen, struct pipe_context *ctx,
++            struct pipe_resource *res, HDC dc,
++            const RECT *pSrcRect, const RECT *pDstRect)
++{
++   (void)pSrcRect;
++   (void)pDstRect;
++   if (!screen || !res || !dc)
++      return FALSE;
++   stw_winsys.present(screen, ctx, res, dc);
++   return TRUE;
++}
++
++BOOL WINAPI
++MesaDimensions(struct pipe_screen *screen, struct pipe_context *ctx,
++               struct pipe_resource *res,
++               int *pWidth, int *pHeight, int *pBpp, int *pPitch)
++{
++   (void)screen;
++   (void)ctx;
++   if (!res)
++      return FALSE;
++   if (pWidth)
++      *pWidth = res->width0;
++   if (pHeight)
++      *pHeight = res->height0;
++   if (pBpp)
++      *pBpp = 32;
++   if (pPitch)
++      *pPitch = res->width0 * 4;
++   return TRUE;
++}

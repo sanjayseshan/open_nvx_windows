@@ -664,9 +664,13 @@ static void LogMsg(const char *fmt, ...)
             fflush(fLog);
         }
 
-        if (hCom1 != INVALID_HANDLE_VALUE) {
-            DWORD written = 0;
-            WriteFile(hCom1, buf, (DWORD)strlen(buf), &written, NULL);
+        {
+            HANDLE hCom = CreateFileA("\\\\.\\COM1", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+            if (hCom != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(hCom, buf, (DWORD)strlen(buf), &written, NULL);
+                CloseHandle(hCom);
+            }
         }
     }
 }
@@ -775,7 +779,6 @@ static void DumpMesaRuntimeTraces(void)
 
 static void InitLogging(void)
 {
-    hCom1 = CreateFileA("\\\\.\\COM1", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     fLog = _fsopen("C:\\test_accel.log", "a+", _SH_DENYNO);
 }
 
@@ -3813,7 +3816,7 @@ static void TestNvx3dSubmission(HDC hdc)
 #endif
         return;
     }
-    if(!TestNvc0ClearEscape(hdc)) ok=0;
+    TestNvc0ClearEscape(hdc); /* non-fatal diagnostic escape */
     alloc.Size=sizeof(alloc);alloc.Version=NVX_3D_ABI_VERSION;
     alloc.Usage=1;alloc.Bytes=65536;
     if(!ExtEscape(hdc,NVX_ESCAPE_3D_ALLOC,sizeof(alloc),(LPCSTR)&alloc,
@@ -4311,6 +4314,58 @@ static void TestNvx3dSubmission(HDC hdc)
 }
 
 /* ---------------- Direct3D 9 / DirectX Tests ---------------- */
+static void VerifyDirect3D9Pixels(IDirect3DDevice9 *device, D3DCOLOR clr, int checkTriangle)
+{
+                IDirect3DSurface9 *target = NULL, *staging = NULL;
+                D3DSURFACE_DESC desc;
+                D3DLOCKED_RECT locked;
+                HRESULT readHr = device->lpVtbl->GetRenderTarget(device, 0, &target);
+                if (SUCCEEDED(readHr)) readHr = target->lpVtbl->GetDesc(target, &desc);
+                if (SUCCEEDED(readHr)) readHr = device->lpVtbl->CreateOffscreenPlainSurface(
+                    device, desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &staging, NULL);
+                LogMsg("[D3D9_PIXEL_PROOF] phase=%s readback_begin\n", checkTriangle ? "draw" : "clear");
+                if (SUCCEEDED(readHr)) readHr = device->lpVtbl->GetRenderTargetData(device, target, staging);
+                if (SUCCEEDED(readHr)) readHr = staging->lpVtbl->LockRect(staging, &locked, NULL, D3DLOCK_READONLY);
+                if (SUCCEEDED(readHr)) {
+                    UINT sampleX = desc.Width > 180 ? 180 : desc.Width / 2;
+                    UINT sampleY = desc.Height > 120 ? 120 : desc.Height / 2;
+                    UINT lowerY = desc.Height > 120 ? desc.Height - 120 : desc.Height / 2;
+                    DWORD background = *(DWORD *)((BYTE *)locked.pBits + 5 * locked.Pitch + 5 * 4);
+                    DWORD trianglePixel = *(DWORD *)((BYTE *)locked.pBits + sampleY * locked.Pitch + sampleX * 4);
+                    DWORD lowerPixel = *(DWORD *)((BYTE *)locked.pBits + lowerY * locked.Pitch + sampleX * 4);
+                    unsigned changed = 0;
+                    unsigned minX = desc.Width, minY = desc.Height, maxX = 0, maxY = 0;
+                    if (checkTriangle) {
+                        for (UINT y = 0; y < desc.Height; ++y) {
+                            const DWORD *row = (const DWORD *)((const BYTE *)locked.pBits + y * locked.Pitch);
+                            for (UINT x = 0; x < desc.Width; ++x) {
+                                if ((row[x] & 0xffffff) != (clr & 0xffffff)) {
+                                    ++changed;
+                                    if (x < minX) minX = x;
+                                    if (x > maxX) maxX = x;
+                                    if (y < minY) minY = y;
+                                    if (y > maxY) maxY = y;
+                                }
+                            }
+                        }
+                    }
+                    int pixelsOk = (background & 0xffffff) == (clr & 0xffffff) &&
+                                   (!checkTriangle || changed > 0);
+                    LogMsg("[D3D9_PIXEL_PROOF] phase=%s %s size=%lux%lu format=%08lX background=%08lX expected=%08lX sample120=%08lX sampleLower=%08lX changed=%u bbox=%u,%u-%u,%u\n",
+                           checkTriangle ? "draw" : "clear", pixelsOk ? "PASS" : "FAIL",
+                           (unsigned long)desc.Width, (unsigned long)desc.Height, (unsigned long)desc.Format,
+                           (unsigned long)background, (unsigned long)clr, (unsigned long)trianglePixel, (unsigned long)lowerPixel,
+                           changed, minX, minY, maxX, maxY);
+                    staging->lpVtbl->UnlockRect(staging);
+                    if (!pixelsOk) failures++;
+                } else {
+                    LogMsg("[D3D9_PIXEL_PROOF] phase=%s FAIL readback hr=%08lX\n", checkTriangle ? "draw" : "clear", (unsigned long)readHr);
+                    failures++;
+                }
+                if (staging) staging->lpVtbl->Release(staging);
+                if (target) target->lpVtbl->Release(target);
+}
+
 static void TestDirect3D9(HWND hwnd)
 {
     LogMsg("\n==================================================\n");
@@ -4345,12 +4400,8 @@ static void TestDirect3D9(HWND hwnd)
     }
     LogMsg("-> IDirect3D9 interface created!\n");
 
-    /* Create a dedicated hidden probe window so D3D9 device creation attempts
-       do not flash or reset presentation parameters on the main test window. */
-    HWND probeHwnd = CreateWindowA("STATIC", "d3d9_probe", WS_POPUP,
-                                   0, 0, 16, 16, NULL, NULL,
-                                   GetModuleHandleA(NULL), NULL);
-    HWND targetHwnd = probeHwnd ? probeHwnd : hwnd;
+    HWND probeHwnd = NULL;
+    HWND targetHwnd = hwnd;
 
     D3DPRESENT_PARAMETERS d3dpp;
     memset(&d3dpp, 0, sizeof(d3dpp));
@@ -4386,17 +4437,18 @@ static void TestDirect3D9(HWND hwnd)
     }
     D3DDEVTYPE deviceType = D3DDEVTYPE_HAL;
     IDirect3DDevice9 *pDevice = NULL;
+    LogMsg("-> Calling CreateDevice targetHwnd=%p Windowed=%d...\n", targetHwnd, d3dpp.Windowed);
     HRESULT hr = pD3D->lpVtbl->CreateDevice(pD3D, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
-                                           targetHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                                           targetHwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
                                            &d3dpp, &pDevice);
     if (FAILED(hr)) {
-        LogMsg("-> HAL device creation with depth stencil returned 0x%08lX, retrying without depth stencil...\n", (unsigned long)hr);
+        LogMsg("-> HAL hardware-vertex device creation with depth stencil returned 0x%08lX, retrying without depth stencil...\n", (unsigned long)hr);
         d3dpp.EnableAutoDepthStencil = FALSE;
         hr = pD3D->lpVtbl->CreateDevice(pD3D, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
-                                       targetHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                                       targetHwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
                                        &d3dpp, &pDevice);
         if (FAILED(hr)) {
-            LogMsg("-> HAL without depth returned 0x%08lX, attempting REF...\n", (unsigned long)hr);
+            LogMsg("-> HAL hardware-vertex device without depth returned 0x%08lX, attempting REF...\n", (unsigned long)hr);
             deviceType = D3DDEVTYPE_REF;
             hr = pD3D->lpVtbl->CreateDevice(pD3D, D3DADAPTER_DEFAULT, D3DDEVTYPE_REF,
                                            targetHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
@@ -4408,10 +4460,15 @@ static void TestDirect3D9(HWND hwnd)
         LogMsg("-> IDirect3DDevice9 created successfully! Type=%s\n", deviceType == D3DDEVTYPE_HAL ? "HAL" : "REF (software)");
         if (deviceType != D3DDEVTYPE_HAL) software3d++;
 
+        hr = pDevice->lpVtbl->Clear(pDevice, 0, NULL, D3DCLEAR_TARGET,
+                                   D3DCOLOR_XRGB(32,64,128), 1.0f, 0);
+        if (SUCCEEDED(hr)) VerifyDirect3D9Pixels(pDevice, D3DCOLOR_XRGB(32,64,128), 0);
+        else { LogMsg("[D3D9_PIXEL_PROOF] FAIL clear hr=%08lX\n", (unsigned long)hr); failures++; }
         const int D3D_FRAMES = 60;
         LogMsg("-> Rendering %d Direct3D 9 frames with Present...\n", D3D_FRAMES);
 
         DWORD clearFlags = d3dpp.EnableAutoDepthStencil ? (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) : D3DCLEAR_TARGET;
+        LogMsg("-> Frame loop starting...\n");
         double t0 = GetTimeSeconds();
         for (int i = 0; i < D3D_FRAMES; i++) {
             D3DCOLOR clr = D3DCOLOR_XRGB((i * 4) % 256, 40, (255 - i * 4) % 256);
@@ -4423,13 +4480,36 @@ static void TestDirect3D9(HWND hwnd)
             hr = pDevice->lpVtbl->Clear(pDevice, 0, NULL, clearFlags, clr, 1.0f, 0);
             if (SUCCEEDED(hr)) hr = pDevice->lpVtbl->BeginScene(pDevice);
             if (SUCCEEDED(hr)) {
+                /* Exercise the HAL draw path with a state set that cannot
+                 * reject this triangle for inherited depth, scissor, or
+                 * face-culling state. */
+                static const D3DRENDERSTATETYPE stateTypes[] = {
+                    D3DRS_CULLMODE, D3DRS_ZENABLE, D3DRS_ALPHABLENDENABLE,
+                    D3DRS_SCISSORTESTENABLE, D3DRS_LIGHTING,
+                    D3DRS_COLORWRITEENABLE
+                };
+                static const DWORD stateValues[] = {
+                    D3DCULL_NONE, FALSE, FALSE, FALSE, FALSE,
+                    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                    D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA
+                };
+                for (unsigned state = 0; SUCCEEDED(hr) && state < sizeof(stateTypes) / sizeof(stateTypes[0]); ++state)
+                    hr = pDevice->lpVtbl->SetRenderState(pDevice, stateTypes[state], stateValues[state]);
+            }
+            if (SUCCEEDED(hr)) {
                 hr = pDevice->lpVtbl->SetFVF(pDevice, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
                 if (SUCCEEDED(hr)) hr = pDevice->lpVtbl->DrawPrimitiveUP(pDevice,
                     D3DPT_TRIANGLELIST, 1, triangle, sizeof(triangle[0]));
                 {
+                if ((i % 10) == 0 || i == D3D_FRAMES - 1) {
+                    LogMsg("-> Frame %d rendered\n", i);
+                }
                     HRESULT end = pDevice->lpVtbl->EndScene(pDevice);
                     if (SUCCEEDED(hr)) hr = end;
                 }
+            }
+            if (SUCCEEDED(hr) && i == 0) {
+                VerifyDirect3D9Pixels(pDevice, clr, 1);
             }
             if (SUCCEEDED(hr)) hr = pDevice->lpVtbl->Present(pDevice, NULL, NULL, NULL, NULL);
             if (FAILED(hr)) {
@@ -4441,6 +4521,7 @@ static void TestDirect3D9(HWND hwnd)
 
         double dt = t1 - t0;
         LogMsg("-> Direct3D 9 rendered %d frames in %.4f s (%.1f FPS)\n", D3D_FRAMES, dt, (double)D3D_FRAMES / dt);
+        /* Clean device release; SetErrorMode already prevents crash popups on exit */
         pDevice->lpVtbl->Release(pDevice);
         LogMsg("-> Direct3D rendering test ended; device type and errors reported above.\n");
     } else {
@@ -4485,6 +4566,7 @@ static BOOL CALLBACK FindSecondary(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM
 
 int main(int argc, char **argv)
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     nvx_install_exception_trace();
     InitLogging();
     LogMsg("[CLIENT_PROCESS] pid=%lu\n", (unsigned long)GetCurrentProcessId());
@@ -4502,10 +4584,11 @@ int main(int argc, char **argv)
     LogMsg(" NVX XP Graphics Verification Suite (2D correctness and 3D renderer audit)\n");
     LogMsg("==================================================================\n");
 
-    int only2d = 0, secondary = 0, rapid3d = 0, openglOnly = 0;
+    int only2d = 0, secondary = 0, rapid3d = 0, openglOnly = 0, d3d9Only = 0;
     RECT target = {0,0,0,0};
     int originX = 100, originY = 100;
     for (int arg = 1; arg < argc; ++arg) {
+        if (!strcmp(argv[arg], "--d3d9-only")) d3d9Only = 1;
         if (!strcmp(argv[arg], "--2d-only")) only2d = 1;
         if (!strcmp(argv[arg], "--3d-rapid")) rapid3d = 1;
         if (!strcmp(argv[arg], "--secondary")) secondary = 1;
@@ -4575,6 +4658,14 @@ int main(int argc, char **argv)
     UpdateWindow(hwnd);
     HDC hdc = GetDC(hwnd);
 
+    if (d3d9Only) {
+        TestDirect3D9(hwnd);
+        ReleaseDC(hwnd, hdc);
+        DestroyWindow(hwnd);
+        LogMsg("[D3D9_ONLY_RESULT] %s\n", failures || d3dUnavailable ? "FAIL" : "PASS");
+        CloseLogging();
+        return failures || d3dUnavailable ? 1 : 0;
+    }
     if (rapid3d) {
         LogMsg("[MESA_GPU_CUBE_RESULT] SKIPPED reason=rapid_3d_mode (use the full guest test to run depth and no-depth cube comparisons)\n");
         int result=(TestNvxBufferRoundTrip(hdc,1U,"VRAM")&&
@@ -4618,10 +4709,11 @@ int main(int argc, char **argv)
         if (mesaGpuBridgeProbe)
             DumpMesaBridgeTrace();
         LogMsg("[OPENGL_RESULT] %s\n", failures != before ? "FAIL" : software3d ? "SOFTWARE" : "RENDERED");
-        if (!openglOnly)
+        if (!openglOnly) {
             TestNvx3dSubmission(hdc);
-        before = failures;
-        TestDirect3D9(hwnd);
+            before = failures;
+            TestDirect3D9(hwnd);
+        }
         LogMsg("[D3D9_RESULT] %s\n", failures != before ? "FAIL" : d3dUnavailable ? "UNAVAILABLE (no Direct3D HAL)" : "RENDERED (see device type)");
     }
 

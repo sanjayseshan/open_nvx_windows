@@ -1,0 +1,77 @@
+diff --git a/src/c11/impl/threads_win32.c b/src/c11/impl/threads_win32.c
+index 91870baa1ae9e..ea260f31b39c1 100644
+--- a/src/c11/impl/threads_win32.c
++++ b/src/c11/impl/threads_win32.c
+@@ -335,7 +335,45 @@ thrd_detach(thrd_t thr)
+ int
+ thrd_equal(thrd_t thr0, thrd_t thr1)
+ {
+-    return GetThreadId(thr0.handle) == GetThreadId(thr1.handle);
++    /* GetThreadId is Vista+ on client Windows. Resolve it dynamically and
++     * use the XP-era NtQueryInformationThread fallback when running on XP.
++     */
++    typedef DWORD (WINAPI *get_thread_id_proc)(HANDLE);
++    typedef LONG NTSTATUS;
++    typedef struct {
++        PVOID UniqueProcess;
++        PVOID UniqueThread;
++    } impl_client_id;
++    typedef struct {
++        NTSTATUS ExitStatus;
++        PVOID TebBaseAddress;
++        impl_client_id ClientId;
++        ULONG_PTR AffinityMask;
++        LONG Priority;
++        LONG BasePriority;
++    } impl_thread_basic_information;
++    typedef NTSTATUS (NTAPI *query_thread_proc)(HANDLE, ULONG, PVOID,
++                                                ULONG, PULONG);
++    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
++    get_thread_id_proc get_thread_id = kernel32 ?
++        (get_thread_id_proc)GetProcAddress(kernel32, "GetThreadId") : NULL;
++
++    if (get_thread_id)
++        return get_thread_id(thr0.handle) == get_thread_id(thr1.handle);
++
++    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
++    query_thread_proc query_thread = ntdll ?
++        (query_thread_proc)GetProcAddress(ntdll, "NtQueryInformationThread") : NULL;
++    if (query_thread) {
++        impl_thread_basic_information info0, info1;
++        if (query_thread(thr0.handle, 0, &info0, sizeof(info0), NULL) >= 0 &&
++            query_thread(thr1.handle, 0, &info1, sizeof(info1), NULL) >= 0)
++            return info0.ClientId.UniqueThread == info1.ClientId.UniqueThread;
++    }
++
++    /* Failure is conservatively treated as unequal; zero IDs must not make
++     * unrelated threads compare equal. */
++    return 0;
+ }
+ 
+ // 7.25.5.5
+diff --git a/src/util/u_thread.c b/src/util/u_thread.c
+index d6b3a074e1d08..c0ccc378505cc 100644
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -39,7 +39,20 @@ util_get_current_cpu(void)
+    return sched_getcpu();
+ 
+ #elif defined(_WIN32) && !defined(HAVE_PTHREAD)
+-   return GetCurrentProcessorNumber();
++   /* GetCurrentProcessorNumber is Vista+ and is absent from XP's kernel32.
++    * Mesa only uses this value to make an optional scheduling hint, so leave
++    * that optimization disabled when the API is unavailable. Resolve it at
++    * runtime to retain the hint on newer Windows versions without adding a
++    * Vista-only import to XP binaries.
++    */
++   {
++      typedef DWORD (WINAPI *get_current_processor_number_proc)(void);
++      HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
++      get_current_processor_number_proc get_cpu = kernel32 ?
++         (get_current_processor_number_proc)GetProcAddress(
++            kernel32, "GetCurrentProcessorNumber") : NULL;
++      return get_cpu ? (int)get_cpu() : -1;
++   }
+ 
+ #else
+    return -1;

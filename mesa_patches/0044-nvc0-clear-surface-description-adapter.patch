@@ -1,0 +1,64 @@
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_surface.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_surface.c
+@@ -286,7 +286,7 @@
+ }
+ 
+ static void
+-nvc0_clear_render_target(struct pipe_context *pipe,
++nvc0_clear_render_target_native(struct pipe_context *pipe,
+                          struct pipe_surface *dst,
+                          const union pipe_color_union *color,
+                          unsigned dstx, unsigned dsty,
+@@ -620,7 +620,7 @@
+ }
+ 
+ static void
+-nvc0_clear_depth_stencil(struct pipe_context *pipe,
++nvc0_clear_depth_stencil_native(struct pipe_context *pipe,
+                          struct pipe_surface *dst,
+                          unsigned clear_flags,
+                          double depth,
+@@ -689,6 +689,43 @@
+       IMMED_NVC0(push, NVC0_3D(COND_MODE), nvc0->cond_condmode);
+ 
+    nvc0->dirty_3d |= NVC0_NEW_3D_FRAMEBUFFER;
++}
++
++/* Gallium surface descriptions are now passed by value. The hardware clear
++ * helpers still use nv50_surface's offset/width/height/depth fields. Construct
++ * that driver object with the same upstream allocator used by framebuffer
++ * validation; never cast the caller's bare pipe_surface to nv50_surface. */
++static void
++nvc0_clear_render_target(struct pipe_context *pipe,
++                         struct pipe_surface *dst,
++                         const union pipe_color_union *color,
++                         unsigned dstx, unsigned dsty,
++                         unsigned width, unsigned height,
++                         bool render_condition_enabled)
++{
++   struct pipe_surface *surface = nvc0_miptree_surface_new(pipe, dst->texture, dst);
++   if (!surface)
++      return;
++   nvc0_clear_render_target_native(pipe, surface, color, dstx, dsty,
++                                   width, height, render_condition_enabled);
++   nv50_surface_destroy(pipe, surface);
++}
++
++static void
++nvc0_clear_depth_stencil(struct pipe_context *pipe,
++                         struct pipe_surface *dst,
++                         unsigned clear_flags, double depth, unsigned stencil,
++                         unsigned dstx, unsigned dsty,
++                         unsigned width, unsigned height,
++                         bool render_condition_enabled)
++{
++   struct pipe_surface *surface = nvc0_miptree_surface_new(pipe, dst->texture, dst);
++   if (!surface)
++      return;
++   nvc0_clear_depth_stencil_native(pipe, surface, clear_flags, depth, stencil,
++                                   dstx, dsty, width, height,
++                                   render_condition_enabled);
++   nv50_surface_destroy(pipe, surface);
+ }
+ 
+ void

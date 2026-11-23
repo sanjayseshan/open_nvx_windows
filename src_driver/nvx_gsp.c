@@ -4197,7 +4197,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     *completedFence=fenceValue;
 
     submitStartTsc=NvxGspReadTsc();
-#if NVX_TRACE_HOTPATH
+#if NVX_TRACE_HOTPATH || NVX_CAPTURE_NVC0_BATCHES
     NvxGspCaptureNvc0Batch(dev,channel,nvc0Dwords,dwordCount,allocations,
                            allocationCount,pushGpuVa,fenceValue);
 #else

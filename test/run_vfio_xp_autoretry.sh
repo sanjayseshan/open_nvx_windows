@@ -68,16 +68,9 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
             fi
 
             # Send Enter key at key startup points to ensure automated logon
-            if [ "$s" -ge 8 ] && [ "$s" -le 24 ] && [ $((s % 4)) -eq 0 ]; then
+            if [ "$s" -ge 8 ] && [ "$s" -le 24 ] && [ $((s % 4)) -eq 0 ] &&
+               ! grep -Fq '[NVX_TEST_SUITE_START]' "$NVX_RUN_LOG" 2>/dev/null; then
                 echo "sendkey ret" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
-            fi
-
-            # When 3DMark is running, periodically send ret to dismiss splash/modal prompts
-            if grep -q "\[3DMARK05_START\]" "$NVX_RUN_LOG" 2>/dev/null && \
-               ! grep -q "\[3DMARK05_EXIT\]" "$NVX_RUN_LOG" 2>/dev/null; then
-                if [ $((s % 4)) -eq 0 ]; then
-                    echo "sendkey ret" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
-                fi
             fi
 
             if grep -Eq "ALL_BENCHMARKS_FINISHED|\\[NVX_3D_RAPID_RESULT\\]" "$NVX_RUN_LOG" 2>/dev/null; then

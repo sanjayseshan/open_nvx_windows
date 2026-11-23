@@ -6,6 +6,11 @@ NVX_QCOW="$NVX_ROOT/winxp_x64.qcow2"
 NVX_PACKAGE="$NVX_ROOT/dist"
 NVX_FULL_PACKAGE=0
 NVX_WINE_X86_DIR="$NVX_ROOT/test/wined3d_xp/x86"
+NVX_D3D9_BACKEND="${NVX_D3D9_BACKEND:-nine}"
+case "$NVX_D3D9_BACKEND" in
+    wined3d|nine) ;;
+    *) echo "NVX_D3D9_BACKEND must be wined3d or nine" >&2; exit 1 ;;
+esac
 NVX_OPENGL_ICD_DLL="${NVX_OPENGL_ICD_DLL:-nvxogl64.dll}"
 NVX_MESA_APPLOCAL="${NVX_MESA_APPLOCAL:-0}"
 if [ "${1:-}" = full ]; then
@@ -55,12 +60,23 @@ if [ "$NVX_FULL_PACKAGE" = "1" ]; then
             exit 1
         }
     done
-    for file in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
-        [ -f "$NVX_WINE_X86_DIR/$file" ] || {
-            echo "Full install bundle is incomplete: missing $NVX_WINE_X86_DIR/$file" >&2
+    if [ "$NVX_D3D9_BACKEND" = "nine" ]; then
+        [ -f "$NVX_PACKAGE/x86/d3d9.dll" ] || {
+            echo "Gallium Nine x86 D3D9 DLL is missing: $NVX_PACKAGE/x86/d3d9.dll" >&2
             exit 1
         }
-    done
+        file "$NVX_PACKAGE/x86/d3d9.dll" | grep -q 'PE32 executable.*Intel 80386' || {
+            echo "Gallium Nine D3D9 must be an x86 PE DLL." >&2
+            exit 1
+        }
+    else
+        for file in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+            [ -f "$NVX_WINE_X86_DIR/$file" ] || {
+                echo "Full install bundle is incomplete: missing $NVX_WINE_X86_DIR/$file" >&2
+                exit 1
+            }
+        done
+    fi
 fi
 
 NVX_MOUNT="$(mktemp -d /tmp/nvx-xp-mount.XXXXXX)"
@@ -117,13 +133,16 @@ fi
 if [ -f "$NVX_ROOT/test/3d_tests/wglgears32.exe" ]; then
     NVX_AUDIT_ARGS+=(--package "$NVX_ROOT/test/3d_tests/wglgears32.exe")
 fi
-# Resolve x86 WineD3D imports against the DLLs being installed, not stale
-# copies in SysWOW64. Mixing packaged Wine versions otherwise passes unnoticed.
-for nvx_dll in d3d9 d3d8 ddraw wined3d libwine; do
-    if [ -f "$NVX_WINE_X86_DIR/$nvx_dll.dll" ]; then
-        NVX_AUDIT_ARGS+=(--package "$NVX_WINE_X86_DIR/$nvx_dll.dll")
-    fi
-done
+# Resolve imports for the x86 backend that will actually be installed.
+if [ "$NVX_D3D9_BACKEND" = "wined3d" ]; then
+    for nvx_dll in d3d9 d3d8 ddraw wined3d libwine; do
+        if [ -f "$NVX_WINE_X86_DIR/$nvx_dll.dll" ]; then
+            NVX_AUDIT_ARGS+=(--package "$NVX_WINE_X86_DIR/$nvx_dll.dll")
+        fi
+    done
+else
+    NVX_AUDIT_ARGS+=(--package "$NVX_PACKAGE/x86/d3d9.dll")
+fi
 python3 "$NVX_ROOT/test/audit_xp_imports.py" "${NVX_AUDIT_ARGS[@]}"
 
 cp -v "$NVX_PACKAGE/nvxmp.sys" "$NVX_DRIVERS/nvxmp.sys"
@@ -284,8 +303,14 @@ if [ -d "$NVX_PACKAGE/vnc" ]; then
     cp -vr "$NVX_PACKAGE/vnc/"* "$NVX_MOUNT/TightVNC/"
 fi
 
-# Deploy 32-bit WineD3D for SysWOW64 if available
-if [ -d "$NVX_WINE_X86_DIR" ]; then
+# Deploy the selected x86 D3D9 backend for SysWOW64 and the test directory.
+if [ "$NVX_D3D9_BACKEND" = "nine" ]; then
+    echo "[TEST-PACKAGE] x86 D3D9 backend: Gallium Nine"
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_PACKAGE/x86/d3d9.dll" "$NVX_MOUNT/test_accel/x86/d3d9.dll"
+    cp -v "$NVX_PACKAGE/x86/d3d9.dll" "$NVX_MOUNT/WINDOWS/SysWOW64/d3d9.dll"
+elif [ -d "$NVX_WINE_X86_DIR" ]; then
+    echo "[TEST-PACKAGE] x86 D3D9 backend: WineD3D"
     [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ] || {
         echo "XP x64 SysWOW64 directory is missing; cannot install 32-bit DirectX support." >&2
         exit 1
@@ -337,6 +362,7 @@ if exist C:\test_accel\nvx_nouveau_trace.log del C:\test_accel\nvx_nouveau_trace
 if exist C:\WINDOWS\nvxmp.log del C:\WINDOWS\nvxmp.log
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
 echo [NVX_TEST_SUITE_START] > \\.\COM1
+if exist C:\test_accel\dump_dialog_error.exe start "" C:\test_accel\dump_dialog_error.exe
 if exist C:\TightVNC\tvnserver.exe (
     echo [VNC] Starting TightVNC Server... >> C:\test_accel.log
     start "" /b C:\TightVNC\tvnserver.exe -run
@@ -357,6 +383,7 @@ if exist C:\test_accel\test_display_modes.exe (
     test_display_modes.exe >> C:\test_accel.log 2>&1
     if errorlevel 1 set NVX_SUITE_FAILED=1
 )
+if exist C:\test_accel\nine_only.flag goto NINE_ONLY
 if exist C:\test_accel\wglgears.exe (
     cd /d C:\test_accel
     set GALLIUM_DRIVER=nouveau
@@ -367,7 +394,7 @@ if exist C:\test_accel\wglgears.exe (
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
 cd /d C:\test_accel
-test_gpu_accel.exe >> C:\test_accel.log 2>&1
+test_gpu_accel.exe --opengl-only >> C:\test_accel.log 2>&1
 set NVX_TEST_RC=!ERRORLEVEL!
 echo [TEST] 64-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
 if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
@@ -384,10 +411,14 @@ if exist C:\test_accel\x86\wglgears32.exe (
     echo [TEST] 32-bit wglgears Return Code: !NVX_TEST_RC! >> C:\test_accel.log
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
 )
+:NINE_ONLY
 if exist C:\test_accel\x86\test_gpu_accel32.exe (
     cd /d C:\test_accel\x86
-    test_gpu_accel32.exe >> C:\test_accel.log 2>&1
+    if exist C:\mesa99.log del C:\mesa99.log
+    if exist C:\test_accel\nine_only.flag (test_gpu_accel32.exe --d3d9-only >> C:\test_accel.log 2>&1) else (test_gpu_accel32.exe >> C:\test_accel.log 2>&1)
     set NVX_TEST_RC=!ERRORLEVEL!
+    type C:\test_accel.log > \\.\COM1
+    if "%NVX_NINE_DEBUG%"=="1" if exist C:\mesa99.log type C:\mesa99.log > \\.\COM1
     echo [TEST] 32-bit Test Return Code: !NVX_TEST_RC! >> C:\test_accel.log
     if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
     findstr /l /c:"[NVX_3D_RESULT] FAIL" C:\test_accel.log >nul && set NVX_SUITE_FAILED=1
@@ -395,32 +426,63 @@ if exist C:\test_accel\x86\test_gpu_accel32.exe (
 if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
     echo [3DMARK05_START] > \\.\COM1
+    if exist C:\test_accel\nine_backend.flag (
+        echo [D3D9_BACKEND] Gallium Nine (x86) > \\.\COM1
+        echo [3DMARK05] D3D9 backend: Gallium Nine (x86) >> C:\test_accel.log
+    ) else (
+        echo [D3D9_BACKEND] WineD3D (x86) > \\.\COM1
+        echo [3DMARK05] D3D9 backend: WineD3D (x86) >> C:\test_accel.log
+    )
     rem WineD3D performance settings to minimize CPU sync overhead
-    reg add "HKCU\Software\Wine\Direct3D" /v StrictDrawOrdering /t REG_SZ /d disabled /f >nul 2>&1
-    reg add "HKCU\Software\Wine\Direct3D" /v AlwaysOffscreen /t REG_SZ /d enabled /f >nul 2>&1
-    reg add "HKCU\Software\Wine\Direct3D" /v CheckFloatConstants /t REG_SZ /d disabled /f >nul 2>&1
-    reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelVS /t REG_DWORD /d 3 /f >nul 2>&1
-    reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelPS /t REG_DWORD /d 3 /f >nul 2>&1
-    reg add "HKCU\Software\Wine\Direct3D" /v csmt /t REG_DWORD /d 1 /f >nul 2>&1
-    if exist "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" (
+    if exist C:\test_accel\wined3d_backend.flag (
+        reg add "HKCU\Software\Wine\Direct3D" /v StrictDrawOrdering /t REG_SZ /d disabled /f >nul 2>&1
+        reg add "HKCU\Software\Wine\Direct3D" /v AlwaysOffscreen /t REG_SZ /d enabled /f >nul 2>&1
+        reg add "HKCU\Software\Wine\Direct3D" /v CheckFloatConstants /t REG_SZ /d disabled /f >nul 2>&1
+        reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelVS /t REG_DWORD /d 3 /f >nul 2>&1
+        reg add "HKCU\Software\Wine\Direct3D" /v MaxShaderModelPS /t REG_DWORD /d 3 /f >nul 2>&1
+        reg add "HKCU\Software\Wine\Direct3D" /v csmt /t REG_DWORD /d 1 /f >nul 2>&1
+    )
+    echo [3DMARK05] Selected directory: C:\Program Files (x86)\Futuremark\3DMark05 >> C:\test_accel.log
+    dir "C:\Program Files (x86)\Futuremark\3DMark05\3DMark05.exe" >> C:\test_accel.log 2>&1
+    rem The host verifies the executable in the offline image and substitutes its path above.
+    rem Do not repeat a guest IF EXIST check: it incorrectly failed on the x64 image path.
+    if 1==1 (
         cd /d "C:\Program Files (x86)\Futuremark\3DMark05"
+        if exist C:\mesa99_trace.log del C:\mesa99_trace.log
         rem Keep WineD3D diagnostics from dominating the serial log during this long run.
         set WINEDEBUG=-all
         rem Launch background watcher to stream results to COM1 once available WITHOUT closing 3DMark
         start /b cmd /c "ping -n 60 127.0.0.1 >nul & :WATCH_LOOP & ping -n 5 127.0.0.1 >nul & if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log & findstr /i "3DMark" C:\3dmark_text.log >nul 2>&1 && (echo [3DMARK05_SCORES_STREAM_START] > \\.\COM1 & type C:\3dmark_text.log > \\.\COM1 & echo [3DMARK05_SCORES_STREAM_END] > \\.\COM1 & exit /b 0) & goto WATCH_LOOP"
-        start "" 3DMark05.exe -nosysteminfo
+        if exist C:\test_accel\3dmark_automation_result.txt del C:\test_accel\3dmark_automation_result.txt
+        if exist C:\test_accel\test_3dmark_caps_eval.exe C:\test_accel\test_3dmark_caps_eval.exe
+        if exist C:\test_accel\run_3dmark_diag.flag (
+            start "" C:\test_accel\test_3dmark_launch_diag.exe
+        ) else if exist run_3dmark_full.exe ( start "" run_3dmark_full.exe ) else if exist C:\test_accel\run_3dmark_full.exe ( start "" C:\test_accel\run_3dmark_full.exe ) else ( start "" 3DMark05.exe -nosysteminfo )
         rem Periodically dump windows to find results
         :WAIT_3DMARK
         ping -n 10 127.0.0.1 >nul
         tasklist /fi "imagename eq 3DMark05.exe" 2>nul | find /i "3DMark05.exe" >nul
         if not errorlevel 1 goto WAIT_3DMARK
-        set NVX_TEST_RC=0
+        rem The launcher records the process exit code; do not report a closed
+        rem or crashed 3DMark process as a successful run.
+        rem Give the helper time to persist its result after the child exits.
+        ping -n 3 127.0.0.1 >nul
+        set NVX_TEST_RC=2
+        if exist C:\test_accel\3dmark_automation_result.txt (
+            for /f "tokens=1" %%A in (C:\test_accel\3dmark_automation_result.txt) do set NVX_TEST_RC=%%A
+        )
         echo [3DMARK05] Process exit code: !NVX_TEST_RC! >> C:\test_accel.log
+        if not "!NVX_TEST_RC!"=="0" set NVX_SUITE_FAILED=1
         if exist C:\test_accel\dump_3dmark_text.exe C:\test_accel\dump_3dmark_text.exe C:\3dmark_text.log
         if exist C:\test_accel\dump_screen.exe C:\test_accel\dump_screen.exe C:\3dmark_score.ppm
         if exist C:\3dmark_text.log type C:\3dmark_text.log >> C:\test_accel.log
         if exist C:\3dmark_text.log type C:\3dmark_text.log > \\.\COM1
-        echo [3DMARK05_EXIT] code=0 > \\.\COM1
+        if exist C:\mesa99_trace.log (
+            echo [MESA99_VIEW_TRACE_START] > \\.\COM1
+            type C:\mesa99_trace.log > \\.\COM1
+            echo [MESA99_VIEW_TRACE_END] > \\.\COM1
+        )
+        echo [3DMARK05_EXIT] code=!NVX_TEST_RC! > \\.\COM1
         echo [3DMARK05] RUN_COMPLETE >> C:\test_accel.log
     ) else (
         echo [3DMARK05] NOT_INSTALLED: expected 3DMark05.exe in the configured benchmark directory >> C:\test_accel.log
@@ -436,12 +498,25 @@ if "!NVX_SUITE_FAILED!"=="0" (echo [ALL_BENCHMARKS_FINISHED] Status: PASS > \\.\
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 rem Keeping VM running for user observation - no shutdown!
 EOF
+if [ -f "$NVX_ROOT/test/dump_dialog_error.exe" ]; then
+    cp -v "$NVX_ROOT/test/dump_dialog_error.exe" "$NVX_MOUNT/test_accel/dump_dialog_error.exe"
+fi
+if [ -f "$NVX_ROOT/test/run_3dmark_full.exe" ]; then
+    cp -v "$NVX_ROOT/test/run_3dmark_full.exe" "$NVX_MOUNT/test_accel/run_3dmark_full.exe"
+fi
+if [ -f "$NVX_ROOT/test/test_3dmark_launch_diag.exe" ]; then
+    cp -v "$NVX_ROOT/test/test_3dmark_launch_diag.exe" "$NVX_MOUNT/test_accel/test_3dmark_launch_diag.exe"
+fi
+if [ -f "$NVX_ROOT/test/test_3dmark_caps_eval.exe" ]; then
+    cp -v "$NVX_ROOT/test/test_3dmark_caps_eval.exe" "$NVX_MOUNT/test_accel/test_3dmark_caps_eval.exe"
+fi
 if [ "$NVX_RUN_3DMARK" = "1" ]; then
-    NVX_3DMARK_EXE="$(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print -quit)"
-    if [ -z "$NVX_3DMARK_EXE" ]; then
+    mapfile -t NVX_3DMARK_EXES < <(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print)
+    if [ "${#NVX_3DMARK_EXES[@]}" -eq 0 ]; then
         echo "3DMark05.exe was not found in the guest image." >&2
         exit 1
     fi
+    NVX_3DMARK_EXE="${NVX_3DMARK_EXES[0]}"
     python3 - "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_MOUNT" "$NVX_3DMARK_EXE" <<'PY'
 from pathlib import Path
 import sys
@@ -451,9 +526,33 @@ p = Path(batch)
 p.write_text(p.read_text().replace(r'C:\Program Files (x86)\Futuremark\3DMark05', directory))
 print('3DMark05 guest directory:', directory)
 PY
+    for NVX_3DMARK_EXE in "${NVX_3DMARK_EXES[@]}"; do
+        NVX_3DMARK_DIR="$(dirname "$NVX_3DMARK_EXE")"
+        if [ -f "$NVX_ROOT/test/dump_dialog_error.exe" ]; then
+            cp -v "$NVX_ROOT/test/dump_dialog_error.exe" "$NVX_3DMARK_DIR/dump_dialog_error.exe"
+        fi
+        if [ -f "$NVX_ROOT/test/run_3dmark_full.exe" ]; then
+            cp -v "$NVX_ROOT/test/run_3dmark_full.exe" "$NVX_3DMARK_DIR/run_3dmark_full.exe"
+        fi
+        if [ -f "$NVX_PACKAGE/x86/d3d9.dll" ]; then
+            # 3DMark05 is x86. Never install the package-root (x64) D3D9 DLL
+            # beside it; replace any stale/corrupted app-local copy in each
+            # duplicate installation directory with the validated x86 build.
+            if ! file "$NVX_PACKAGE/x86/d3d9.dll" | grep -q 'PE32 executable.*Intel 80386'; then
+                echo "Refusing non-x86 D3D9 DLL: $NVX_PACKAGE/x86/d3d9.dll" >&2
+                exit 1
+            fi
+            cp -v "$NVX_PACKAGE/x86/d3d9.dll" "$NVX_3DMARK_DIR/d3d9.dll"
+        fi
+    done
 fi
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
 rm -f "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
+if [ "${NVX_3DMARK_DIAG:-1}" = "1" ]; then
+    : > "$NVX_MOUNT/test_accel/run_3dmark_diag.flag"
+else
+    rm -f "$NVX_MOUNT/test_accel/run_3dmark_diag.flag"
+fi
 case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in
     gart)
         : > "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag"
@@ -470,6 +569,18 @@ if [ "$NVX_RUN_3DMARK" = "1" ]; then
     : > "$NVX_MOUNT/test_accel/run_3dmark.flag"
 else
     rm -f "$NVX_MOUNT/test_accel/run_3dmark.flag"
+fi
+if [ "${NVX_NINE_ONLY:-0}" = "1" ]; then
+    : > "$NVX_MOUNT/test_accel/nine_only.flag"
+else
+    rm -f "$NVX_MOUNT/test_accel/nine_only.flag"
+fi
+if [ "$NVX_D3D9_BACKEND" = "nine" ]; then
+    : > "$NVX_MOUNT/test_accel/nine_backend.flag"
+    rm -f "$NVX_MOUNT/test_accel/wined3d_backend.flag"
+else
+    : > "$NVX_MOUNT/test_accel/wined3d_backend.flag"
+    rm -f "$NVX_MOUNT/test_accel/nine_backend.flag"
 fi
 NVX_STARTUP_ADMIN="$NVX_MOUNT/Documents and Settings/Administrator/Start Menu/Programs/Startup"
 NVX_STARTUP_ALL="$NVX_MOUNT/Documents and Settings/All Users/Start Menu/Programs/Startup"

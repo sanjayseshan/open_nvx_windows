@@ -1,0 +1,12 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+index 88c61a0fa18..eb1b87bc000 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+@@ -1172,6 +1172,6 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
+     * pushbuf-space limits still submit the stream before it can be reused.
+     */
+-   if (PUSH_VAL(push) || PUSH_AVAIL(push) < 16384)
++   if (PUSH_VAL(push) || PUSH_AVAIL(push) < 1024)
+       PUSH_KICK(push);
+ #else
+    PUSH_KICK(push);

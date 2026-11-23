@@ -1,6 +1,7 @@
 cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
 b6264aa68589cbae3331ea7142eef1004233b7f7347114fca73c8b87d4e19142  /home/sanjay/temp/xddm/mesa_patches/0001-xp-win32-shims.patch
 4d68c98ddd7f2405a56016922d627bcd265254e92064c83bd9f64ad984ec6fad  /home/sanjay/temp/xddm/mesa_patches/0002-nvx-gallium-bridge.patch
+542e91d7a9d7fdb81a8cf2cd8a92f2d27d29b7e66a8d263045f7b11dd0cdc266  /home/sanjay/temp/xddm/mesa_patches/0002-xp-kernel32-api-compat.patch
 45108db53fc7e67ec9ea020ff2ae4568d4adc5828d19684a3d48f8005a854c39  /home/sanjay/temp/xddm/mesa_patches/0003-nouveau-wgl-exclude-nvk-winsys.patch
 b97f4020bf0f67a45af9e554d480066ebf1f248c4075093b9049ed1ef6210652  /home/sanjay/temp/xddm/mesa_patches/0004-nouveau-wgl-drop-unused-renderonly.patch
 5a87a76749b3ad043ae3e1d1d276e283e4263eca578cf0948aa3fff6d45d3944  /home/sanjay/temp/xddm/mesa_patches/0005-wgl-nouveau-present.patch
@@ -40,4 +41,10 @@ f34e7be1579cfc41e1219cc6e09bf5c0338a8013450189d68c7ce0a378996ae0  /home/sanjay/t
 721a124b3f2932692f063876ded21dc12372e7ecf0bcd801a5898f893c13bb33  /home/sanjay/temp/xddm/mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
 9c87ffe8a86b2e2553edc2676ee90a7105b9b505491614e7e593bcf82800d36d  /home/sanjay/temp/xddm/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
 8fb21d2657b491e5e923913dce535f508e60191fb8e7bb1974bb5034c384abc6  /home/sanjay/temp/xddm/mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch
-dcba3de8e131512a814be32daadcb3018540e650e408134d1586c1ec5718973e  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+86d4f8e56860050069f27605b19a4935705beef987d574cd86af9e77a254f773  /home/sanjay/temp/xddm/mesa_patches/0042-wgl-export-mesa-nine-winsys.patch
+c161d2b87e43aa4a0c18e8fe2f7ded76eb56eeb0b5fa0fd1b01a92476ca946d2  /home/sanjay/temp/xddm/mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
+f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/temp/xddm/mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
+cf92becac210a49f7c8732c928636889301d97ecb481e7fb7ac57368212fce8f  /home/sanjay/temp/xddm/mesa_patches/0045-nvc0-xp-wait-shader-upload.patch
+1eb4ef2933eb676982e8099071338e2ba8d37627733aaefe236006f59c83bb72  /home/sanjay/temp/xddm/mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch
+fca108447afe22c5d7965d764c736dc0d32bbba9b5e25a3d7581beff94e02ad7  /home/sanjay/temp/xddm/mesa_patches/0047-nouveau-xp-fill-pushbuf-before-kick.patch
+81d124aa85c6f23a30447678a86ab82f4af03d15337650e5d4c0cf6250b4d0f0  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
