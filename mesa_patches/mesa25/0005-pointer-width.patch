@@ -1,0 +1,82 @@
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau.c b/src/gallium/winsys/nouveau/drm/nouveau.c
+index 27cbdc10033cc..379fa12a7625a 100644
+--- a/src/gallium/winsys/nouveau/drm/nouveau.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau.c
+@@ -1119,7 +1119,7 @@ pushbuf_dump(struct nouveau_device *dev,
+    kpsh = krec->push;
+    for (i = 0; i < krec->nr_push; i++, kpsh++) {
+       kref = krec->buffer + kpsh->bo_index;
+-      bo = (void *)(unsigned long)kref->user_priv;
++      bo = (void *)(uintptr_t)kref->user_priv;
+       bgn = (uint32_t *)((char *)bo->map + kpsh->offset);
+       end = bgn + ((kpsh->length & 0x7fffff) /4);
+ 
+@@ -1169,11 +1169,11 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
+    while (krec && krec->nr_push) {
+       req.channel = channel;
+       req.nr_buffers = krec->nr_buffer;
+-      req.buffers = (uint64_t)(unsigned long)krec->buffer;
++      req.buffers = (uint64_t)(uintptr_t)krec->buffer;
+       req.nr_relocs = krec->nr_reloc;
+       req.nr_push = krec->nr_push;
+-      req.relocs = (uint64_t)(unsigned long)krec->reloc;
+-      req.push = (uint64_t)(unsigned long)krec->push;
++      req.relocs = (uint64_t)(uintptr_t)krec->reloc;
++      req.push = (uint64_t)(uintptr_t)krec->push;
+       req.suffix0 = nvpb->suffix0;
+       req.suffix1 = nvpb->suffix1;
+       req.vram_available = 0;
+@@ -1198,7 +1198,7 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
+ 
+       kref = krec->buffer;
+       for (i = 0; i < krec->nr_buffer; i++, kref++) {
+-         bo = (void *)(unsigned long)kref->user_priv;
++         bo = (void *)(uintptr_t)kref->user_priv;
+ 
+          info = &kref->presumed;
+          if (!info->valid) {
+@@ -1234,7 +1234,7 @@ pushbuf_flush(struct nouveau_pushbuf *push)
+ 
+    kref = krec->buffer;
+    for (i = 0; i < krec->nr_buffer; i++, kref++) {
+-      struct nouveau_bo *bo = (void *)(unsigned long)kref->user_priv;
++      struct nouveau_bo *bo = (void *)(uintptr_t)kref->user_priv;
+       ret = cli_kref_set(push->client, bo, NULL, NULL);
+       if (ret)
+          return ret;
+@@ -1306,7 +1306,7 @@ pushbuf_kref_fits(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t
+       if (!(kref->valid_domains & NOUVEAU_GEM_DOMAIN_GART))
+          continue;
+ 
+-      kbo = (void *)(unsigned long)kref->user_priv;
++      kbo = (void *)(uintptr_t)kref->user_priv;
+       if (!(kref->valid_domains & NOUVEAU_GEM_DOMAIN_VRAM) ||
+           krec->vram_used + kbo->size > dev->vram_limit)
+          continue;
+@@ -1377,7 +1377,7 @@ pushbuf_kref(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t flags
+          return NULL;
+ 
+       kref = &krec->buffer[krec->nr_buffer++];
+-      kref->user_priv = (unsigned long)bo;
++      kref->user_priv = (uintptr_t)bo;
+       kref->handle = bo->handle;
+       kref->valid_domains = domains;
+       kref->write_domains = domains_wr;
+@@ -1448,7 +1448,7 @@ pushbuf_refn_fail(struct nouveau_pushbuf *push, int sref, int srel)
+ 
+    kref = krec->buffer + sref;
+    while (krec->nr_buffer-- > sref) {
+-      struct nouveau_bo *bo = (void *)(unsigned long)kref->user_priv;
++      struct nouveau_bo *bo = (void *)(uintptr_t)kref->user_priv;
+       ret = cli_kref_set(push->client, bo, NULL, NULL);
+       if (ret)
+          return ret;
+@@ -1617,7 +1617,7 @@ nouveau_pushbuf_del(struct nouveau_pushbuf **ppush)
+       while ((krec = nvpb->list)) {
+          kref = krec->buffer;
+          while (krec->nr_buffer--) {
+-            unsigned long priv = kref++->user_priv;
++            uintptr_t priv = kref++->user_priv;
+             struct nouveau_bo *bo = (void *)priv;
+             cli_kref_set(nvpb->base.client, bo, NULL, NULL);
+             nouveau_bo_ref(NULL, &bo);

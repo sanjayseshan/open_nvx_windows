@@ -2183,8 +2183,8 @@ nvx_update_softpipe_tile(struct softpipe_context *sp,
       nvx_bridge_trace("reject framebuffer: color tile cache is null");
       return 0;
    }
-   if (sp->framebuffer.cbufs[0].format != PIPE_FORMAT_B8G8R8A8_UNORM &&
-       sp->framebuffer.cbufs[0].format != PIPE_FORMAT_B8G8R8X8_UNORM) {
+   if (sp->framebuffer.cbufs[0]->format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+       sp->framebuffer.cbufs[0]->format != PIPE_FORMAT_B8G8R8X8_UNORM) {
       nvx_bridge_trace("reject framebuffer: unsupported pipe format");
       return 0;
    }
@@ -2218,7 +2218,7 @@ nvx_update_softpipe_tile(struct softpipe_context *sp,
          rgba[0] = ((pixel >> 16) & 0xff) / 255.0f;
          rgba[1] = ((pixel >> 8) & 0xff) / 255.0f;
          rgba[2] = (pixel & 0xff) / 255.0f;
-         rgba[3] = sp->framebuffer.cbufs[0].format ==
+         rgba[3] = sp->framebuffer.cbufs[0]->format ==
                    PIPE_FORMAT_B8G8R8X8_UNORM ? 1.0f :
                    ((pixel >> 24) & 0xff) / 255.0f;
       }
@@ -2386,11 +2386,11 @@ nvx_wgl_try_softpipe_triangle(struct softpipe_context *sp,
        (!sp->depth_stencil->depth_writemask ||
         sp->depth_stencil->depth_func != PIPE_FUNC_LESS ||
         !sp->zsbuf_cache ||
-        (sp->framebuffer.zsbuf.format != PIPE_FORMAT_Z24_UNORM_S8_UINT &&
-         sp->framebuffer.zsbuf.format != PIPE_FORMAT_Z24X8_UNORM &&
-         sp->framebuffer.zsbuf.format != PIPE_FORMAT_X8Z24_UNORM) ||
+        (sp->framebuffer.zsbuf->format != PIPE_FORMAT_Z24_UNORM_S8_UINT &&
+         sp->framebuffer.zsbuf->format != PIPE_FORMAT_Z24X8_UNORM &&
+         sp->framebuffer.zsbuf->format != PIPE_FORMAT_X8Z24_UNORM) ||
         sp->zsbuf_cache->clear_val != util_pack64_z_stencil(
-           sp->framebuffer.zsbuf.format, 1.0, 0))) {
+           sp->framebuffer.zsbuf->format, 1.0, 0))) {
       nvx_bridge_trace("reject: depth requires writable LESS Z24/Z32F and clear=1");
       return 0;
    }
@@ -2561,19 +2561,19 @@ nvx_wgl_try_softpipe_triangle(struct softpipe_context *sp,
           zf32_diagnostic[0] == '1') {
          target.Usage |= NVX_3D_USAGE_DEPTH_ZF32;
          wsprintfA(message, "depth hardware diagnostic=ZF32/kind-6 format=%u",
-                   (unsigned)sp->framebuffer.zsbuf.format);
+                   (unsigned)sp->framebuffer.zsbuf->format);
          nvx_bridge_trace(message);
-      } else if (sp->framebuffer.zsbuf.format == PIPE_FORMAT_Z24X8_UNORM) {
+      } else if (sp->framebuffer.zsbuf->format == PIPE_FORMAT_Z24X8_UNORM) {
          /* NIL maps Z24X8 to SET_ZT_FORMAT_X8Z24 and PTE kind S8Z24. */
          target.Usage |= NVX_3D_USAGE_DEPTH_S8Z24;
-      } else if (sp->framebuffer.zsbuf.format ==
+      } else if (sp->framebuffer.zsbuf->format ==
                  PIPE_FORMAT_Z24_UNORM_S8_UINT) {
          /* This packed layout uses SET_ZT_FORMAT_S8Z24 with the same PTE kind. */
          target.Usage |= NVX_3D_USAGE_DEPTH_S8Z24 |
                          NVX_3D_USAGE_DEPTH_METHOD_S8Z24;
       }
       wsprintfA(message, "depth format=%u usage=%u",
-                (unsigned)sp->framebuffer.zsbuf.format, target.Usage);
+                (unsigned)sp->framebuffer.zsbuf->format, target.Usage);
       nvx_bridge_trace(message);
    }
    stage = "target allocation";

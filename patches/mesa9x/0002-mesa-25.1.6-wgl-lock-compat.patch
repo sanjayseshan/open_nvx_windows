@@ -1,0 +1,113 @@
+diff --git a/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.c b/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.c
+index 0eb72d92..8753ef42 100644
+--- a/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.c
++++ b/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.c
+@@ -69,8 +69,7 @@ stw_framebuffer_from_hwnd_locked(HWND hwnd)
+           * lock, when the driver starts to look up properties,
+           * we'd end up double locking when looking up the framebuffer.
+           */
+-         assert(stw_dev->zink || fb->mutex.RecursionCount <= 1);
+-         // JH: my 9x driver has little problem with locking, so RecursionCount *could* be 0 (maybe same problem as with ZINK?)
++         assert(stw_dev->zink || fb->mutex.recursionCount == 1);
+          return fb;
+       }
+ 
+@@ -93,7 +92,8 @@ stw_framebuffer_release_locked(struct stw_framebuffer *fb,
+ 
+    assert(fb);
+    assert(stw_own_mutex(&fb->mutex));
+-   assert(stw_own_mutex(&stw_dev->fb_mutex) || fb->owner == STW_FRAMEBUFFER_EGL_WINDOW);
++   assert(stw_own_critical_section(&stw_dev->fb_mutex) ||
++          fb->owner == STW_FRAMEBUFFER_EGL_WINDOW);
+ 
+    /* check the reference count */
+    fb->refcnt--;
+@@ -371,6 +371,7 @@ stw_framebuffer_create(HWND hWnd, const struct stw_pixelformat_info *pfi, enum s
+ 
+    InitializeCriticalSection(&fb->mutex.cs);
+    fb->mutex.threadId = 0;
++   fb->mutex.recursionCount = 0;
+ 
+    /* This is the only case where we lock the stw_framebuffer::mutex before
+     * stw_dev::fb_mutex, since no other thread can know about this framebuffer
+@@ -412,8 +413,14 @@ stw_framebuffer_unlock(struct stw_framebuffer *fb)
+ {
+    assert(fb);
+    assert(stw_own_mutex(&fb->mutex));
+-   LeaveCriticalSection(&fb->mutex.cs);
++   if (fb->mutex.recursionCount > 1) {
++      fb->mutex.recursionCount--;
++      LeaveCriticalSection(&fb->mutex.cs);
++      return;
++   }
++   fb->mutex.recursionCount = 0;
+    fb->mutex.threadId = 0;
++   LeaveCriticalSection(&fb->mutex.cs);
+ }
+ 
+ 
+diff --git a/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.h b/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.h
+index a4934a2e..3da43a4c 100644
+--- a/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.h
++++ b/mesa-25.1.x/src/gallium/frontends/wgl/stw_framebuffer.h
+@@ -64,6 +64,7 @@ struct stw_framebuffer_mutex
+ {
+ 	CRITICAL_SECTION cs;
+ 	DWORD threadId;
++	unsigned recursionCount;
+ };
+ 
+ /**
+@@ -219,7 +220,12 @@ stw_framebuffer_lock(struct stw_framebuffer *fb)
+ {
+    assert(fb);
+    EnterCriticalSection(&fb->mutex.cs);
+-   fb->mutex.threadId = GetCurrentThreadId();
++   if (fb->mutex.threadId == GetCurrentThreadId())
++      fb->mutex.recursionCount++;
++   else {
++      fb->mutex.threadId = GetCurrentThreadId();
++      fb->mutex.recursionCount = 1;
++   }
+ }
+ 
+ 
+diff --git a/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.c b/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.c
+index 1c2b6c4b..59a1c391 100644
+--- a/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.c
++++ b/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.c
+@@ -75,6 +75,20 @@ stw_own_mutex(struct stw_framebuffer_mutex *mutex)
+    return false;
+ }
+ 
++bool
++stw_own_critical_section(const CRITICAL_SECTION *cs)
++{
++   CRITICAL_SECTION dummy;
++   bool owned;
++
++   InitializeCriticalSection(&dummy);
++   EnterCriticalSection(&dummy);
++   owned = cs->OwningThread == dummy.OwningThread;
++   LeaveCriticalSection(&dummy);
++   DeleteCriticalSection(&dummy);
++   return owned;
++}
++
+ static void
+ stw_pipe_blit(struct pipe_context *pipe,
+               struct pipe_resource *dst,
+diff --git a/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.h b/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.h
+index d3b52944..e36150b4 100644
+--- a/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.h
++++ b/mesa-25.1.x/src/gallium/frontends/wgl/stw_st.h
+@@ -39,6 +39,9 @@ struct stw_framebuffer_mutex;
+ bool
+ stw_own_mutex(struct stw_framebuffer_mutex *mutex);
+ 
++bool
++stw_own_critical_section(const CRITICAL_SECTION *cs);
++
+ struct pipe_frontend_drawable *
+ stw_st_create_framebuffer(struct stw_framebuffer *fb, struct pipe_frontend_screen *fscreen);
+ 

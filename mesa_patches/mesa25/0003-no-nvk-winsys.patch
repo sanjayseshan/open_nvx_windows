@@ -1,0 +1,11 @@
+diff --git a/src/nouveau/meson.build b/src/nouveau/meson.build
+--- a/src/nouveau/meson.build
++++ b/src/nouveau/meson.build
+@@ -4,6 +4,6 @@
+ subdir('drm')
+ subdir('headers')
+-subdir('winsys')
+ if with_nouveau_vk
++  subdir('winsys')
+   subdir('compiler')
+ endif

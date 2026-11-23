@@ -3,54 +3,11 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 mesa_dir="$repo_root/mesa"
-patch_files="$repo_root/mesa_patches/0001-xp-win32-shims.patch
-$repo_root/mesa_patches/0002-nvx-gallium-bridge.patch
-$repo_root/mesa_patches/0003-nouveau-wgl-exclude-nvk-winsys.patch
-$repo_root/mesa_patches/0004-nouveau-wgl-drop-unused-renderonly.patch
-$repo_root/mesa_patches/0005-wgl-nouveau-present.patch
-$repo_root/mesa_patches/0006-nouveau-xp-xf86drm-compat.patch
-$repo_root/mesa_patches/0007-nouveau-xp-pointer-width.patch
-$repo_root/mesa_patches/0008-nouveau-xp-hdc-entry.patch
-$repo_root/mesa_patches/0009-nouveau-xp-mmap-unsupported.patch
-$repo_root/mesa_patches/0010-nouveau-xp-disable-drm-sharing.patch
-$repo_root/mesa_patches/0011-nouveau-use-os-mman.patch
-$repo_root/mesa_patches/0012-nouveau-xp-nvx-bo-map.patch
-$repo_root/mesa_patches/0013-nouveau-xp-flush-mapped-pushbuf.patch
-$repo_root/mesa_patches/0014-nouveau-xp-screen-failure-trace.patch
-$repo_root/mesa_patches/0015-nouveau-xp-winsys-init-stage-trace.patch
-$repo_root/mesa_patches/0016-nouveau-xp-context-stage-trace.patch
-$repo_root/mesa_patches/0017-nouveau-xp-nvc0-tsc-stage-trace.patch
-$repo_root/mesa_patches/0018-nouveau-xp-pushbuf-validation-trace.patch
-$repo_root/mesa_patches/0019-nouveau-xp-preserve-pushbuf-limits-on-error.patch
-$repo_root/mesa_patches/0020-nouveau-xp-async-swap.patch
-$repo_root/mesa_patches/0021-nouveau-xp-swap-path-diagnostics.patch
-$repo_root/mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch
-$repo_root/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch
-$repo_root/mesa_patches/0026-nouveau-xp-render-target-trace.patch
-$repo_root/mesa_patches/0027-mesa-begin-end-staging-trace.patch
-$repo_root/mesa_patches/0028-nouveau-xp-widen-cached-bo-map.patch
-$repo_root/mesa_patches/0029-nouveau-zero-cb-sample-locations.patch
-$repo_root/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch
-$repo_root/mesa_patches/0032-nouveau-xp-process-session-close.patch
-$repo_root/mesa_patches/0033-nouveau-xp-tls-allocation-fallback.patch
-$repo_root/mesa_patches/0034-nouveau-wgl-present-before-flush.patch
-$repo_root/mesa_patches/0035-nouveau-xp-submission-profile.patch
-$repo_root/mesa_patches/0036-nouveau-xp-fence-allocation-recovery.patch
-$repo_root/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
-$repo_root/mesa_patches/0038-nouveau-xp-limit-reject-dumps.patch
-$repo_root/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
-$repo_root/mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch
-$repo_root/mesa_patches/0042-wgl-export-mesa-nine-winsys.patch
-$repo_root/mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
-$repo_root/mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
-$repo_root/mesa_patches/0045-nvc0-xp-wait-shader-upload.patch
-$repo_root/mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch
-$repo_root/mesa_patches/0047-nouveau-xp-fill-pushbuf-before-kick.patch"
-expected_revision=cc2dcf9abdc6afc093e85d48e4cfa34eed60a01e
+expected_revision=357bbc55bd419dae5625a14ffa0acf1818f9ebbe
 
 actual_revision=$(git -C "$mesa_dir" rev-parse HEAD)
 if [ "$actual_revision" != "$expected_revision" ]; then
-    echo "Mesa revision mismatch: expected $expected_revision, got $actual_revision" >&2
+    echo "Mesa revision mismatch: expected Mesa 25.1.6 $expected_revision, got $actual_revision" >&2
     exit 1
 fi
 
@@ -59,8 +16,13 @@ if [ -n "$(git -C "$mesa_dir" status --porcelain)" ]; then
     exit 1
 fi
 
-printf '%s\n' "$patch_files" | while IFS= read -r patch_file; do
-    git -C "$mesa_dir" apply --unidiff-zero --check "$patch_file"
-    git -C "$mesa_dir" apply --unidiff-zero "$patch_file"
+patch_series="$repo_root/test/mesa25_patch_series.txt"
+
+
+while IFS= read -r relative_patch; do
+    [ -n "$relative_patch" ] || continue
+    patch_file="$repo_root/$relative_patch"
+    git -C "$mesa_dir" apply --check "$patch_file"
+    git -C "$mesa_dir" apply "$patch_file"
     echo "Applied $(basename "$patch_file")."
-done
+done < "$patch_series"

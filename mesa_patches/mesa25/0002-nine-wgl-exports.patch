@@ -1,0 +1,10 @@
+diff --git a/src/gallium/targets/wgl/gallium_wgl.def.in b/src/gallium/targets/wgl/gallium_wgl.def.in
+--- a/src/gallium/targets/wgl/gallium_wgl.def.in
++++ b/src/gallium/targets/wgl/gallium_wgl.def.in
+@@ -53,3 +53,6 @@ stw_interop_flush_objects
+ 
+ _mesa_glapi_get_proc_address
+ _mesa_glapi_get_dispatch
++MesaScreenCreate@12
++MesaPresent@24
++MesaDimensions@28

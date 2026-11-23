@@ -1,49 +1,47 @@
-# NVX handoff — 2026-11-22
+# NVX handoff — 2026-11-23
 
-## Current status
+## Current state
 
-User reports 3DMark05 score 2600 and game FPS around 17 / 4 / 18. Goal is 10,000+, but no recent controlled 3DMark run has produced a comparable score after the performance changes.
+The Mesa migration is on branch `v4.0.0.x`. Both Mesa consumers now target 25.1.6:
 
-### Latest hardware test: 3.0.0.346
+- Top-level `mesa` is pinned to Mesa 25.1.6 commit `357bbc55bd419dae5625a14ffa0acf1818f9ebbe` (`mesa/VERSION` = `25.1.6`).
+- Gallium Nine uses `submodules/mesa9x/mesa-25.1.x` (`VERSION` = `25.1.6`); `build_d3d9_nine.sh` explicitly selects that tree. Mesa 23.1.9 remains bundled for legacy experiments but is no longer selected by the Nine build.
+- Mesa XP/WGL patches are external in `mesa_patches/mesa25/` and `test/mesa25_patch_series.txt`. Mesa9x's XP compatibility patch and Nine overlays are external in `patches/mesa9x/` and `mesa_patches/nine/`.
+- Legacy Mesa 23–27 ABI bridge patches were removed from the active path. The WGL bridge and winsys compile against Mesa 25 APIs.
 
-Log: `test_logs/v3.0.0.346-20261122-223623.log` (`vm_serial.log` points to the latest log).
+## Build verification
 
-- Hardware OpenGL is active (`GL_RENDERER = NV170`). WGL gears ran at 59.7 FPS. The separate 300-frame GL probes measured 29.4 and 46.6 FPS; D3D9 smoke ran at 35 FPS but the pixel proof failed.
-- The 3DMark test did not start. The guest emitted `3DMARK05_NOT_INSTALLED`, even though `3DMark05.exe` exists in the image under both `Program Files\Futuremark\3DMark05` and `Program Files (x86)\Futuremark\3DMark05`. The startup batch contains the selected path but its runtime `if exist` check failed. Fix and log that check before using this harness for a score.
-- Gears submitted 1,674 miniport batches with the same submission and fence-wait totals as the .344 log. Therefore the 59.7 FPS result cannot be attributed to the new kick-threshold patches; .344 measured 48.5 FPS, so display/workload timing varied.
-- Patch `0046` defers Windows NVC0 draw kicks; patch `0047` lowers its early-kick reserve from 64 KiB to 4 KiB. The .346 test did not show a lower gears batch count. Keep these as experiments, not proven speedups.
-- The .346 VM initially stalled in the VGA option ROM (`CS=c000`, unchanged EIP); one QEMU `system_reset` let it boot. The guest completed its test suite. The test process exited with code 1 because 3DMark was not launched and D3D pixel proof failed.
+Completed successfully on 2026-11-23:
 
-### Previous 3DMark attempt: 3.0.0.345
+- `NVX_MESA_ARCH=x64 JOBS=4 ./test/build_mesa_xp64.sh` produced `dist_full/nvxogl64.dll` and `dist_full/nvxmesa.dll`.
+- `NVX_MESA_ARCH=x86 JOBS=4 ./test/build_mesa_xp64.sh` produced `dist_full/nvxogl32.dll`.
+- `./build_d3d9_nine.sh` produced `dist_full/x86/d3d9.dll`, exports `Direct3DCreate9` and `Direct3DCreate9Ex`, and reports Mesa 25.1.6 in its build manifest.
+- The Mesa ICD imports are limited to GDI32, KERNEL32, msvcrt, and USER32. Nine additionally imports ADVAPI32. Full XP export compatibility audit still needs XP system DLL export tables.
 
-Log: `test_logs/v3.0.0.345-20261122-222208.log`.
+This proves the x86/x64 binaries compile and have the expected architecture/entry points. It does **not** prove that either Nouveau WGL or Nine renders correctly in the XP guest. The v4.0.0.2 VFIO run completed, but hardware rendering failed: x64 WGL and Nine used softpipe; x86 WGL used GDI Generic. See test_logs/v4.0.0.2-20261123-121854.log. `dist_full/x86/d3d9.dll` is currently Gallium Nine; building WineD3D afterward overwrites it.
 
-- The automated Run click launched 3DMark, but GPU execution failed with `Graphics Exception: Shader Program Header 18 Error` (`ESR 0x405840=0x82040000`), followed by fence timeout and `ERROR_DEVICE_NOT_READY`. The run produced no valid score.
-- Before the fault, the miniport recorded 8,192 submissions and 3,758 fence-wait calls. This indicates significant command traffic but does not prove it is the main cause of low FPS.
+## Latest hardware verification: v4.0.0.4
 
-## Likely performance constraint and next steps
+- v4.0.0.2 used softpipe (x64 WGL/Nine) and GDI Generic (x86 WGL).
+- Fixed Mesa25 patch 0007: NVX drmGetVersion returns zero deliberately; XP now validates descriptor registration instead of rejecting the transport with the upstream Linux DRM >= 1.3.1 check.
+- Fixed gears preload to select nvxogl32.dll for x86, nvxogl64.dll for x64. The x86 registry already correctly named nvxogl32.dll.
+- v4.0.0.3 created NV170 screens in both architectures but rendering caused RM 3D-Z KIND violations, then completion fence timeouts. Subsequent batch IOCTL 0x15 is ERROR_NOT_READY after clientFault=1. Archived failure: test_logs/v4.0.0.3-20261123-123027.log.
+- Removed obsolete 0024 depth-kind-zero override from active Mesa25 series. Current miniport supports requested PTE kinds; retain Nouveau's uncompressed depth kind instead of forcing zero.
+- v4.0.0.4: x64 gears NV170, 355 frames / 6s = 59.167 FPS; x86 gears NV170, 357 frames / 6s = 59.500 FPS. x64 cube completed 300 frames, OPENGL_RESULT RENDERED, GPU batches and GPU scanout presentation confirmed. x86 cube completed 300 frames at 45.2 FPS. Nine reports Mesa Nine (NV170), creates a HAL device, passes clear/draw readback proof, and renders 60 frames at 57.1 FPS. No KIND violations, fence timeouts or failed batch IOCTLs observed. Log: test_logs/v4.0.0.4-20261123-123322.log.
+- Both architectures rebuilt successfully, package XP import audits and host tests passed. Use NVX_AUTO_RETRY=1 for all VFIO tests.
 
-The tested 3DMark path is x86 WineD3D over the WGL ICD. Wine is pinned to 1.7.55; `wine/dlls/wined3d/cs.c` installs only `wined3d_cs_st_ops`. The guest batch writes `csmt=1`, but this source has no worker-thread command-stream implementation, so that setting does not provide CSMT. This serial D3D9-to-OpenGL path is a strong CPU-side bottleneck candidate; game 2 at 4 FPS may also be limited by shader/GPU work. Measure a clean benchmark before assigning percentages.
+## Remaining issues / next steps
 
-1. Fix 3DMark automation path detection and log `dir`/`if exist` results inside the guest. Confirm the exact running EXE and retain the per-game FPS / score output.
-2. Fix the first Shader Program Header 18 fault from .345 by tracing NVC0 shader BO upload, VA, contents, and lifetime. Do not accept a score from a run with this fault.
-3. Profile one clean 3DMark run: per-game frame times, host CPU utilization, NVC0 submissions, and fence waits. Compare against the user's 2600 / 17-4-18 baseline.
-4. Evaluate an XP-compatible WineD3D command-stream worker or a supported newer WineD3D. Backporting CSMT is a substantial separate change; registry configuration alone is insufficient in this Wine source.
-5. Gallium Nine remains separate and unproven: earlier runs had incorrect/black rendering and failed pixel proof. Recent 3DMark runs use WineD3D.
+1. Core hardware rendering is restored and verified on x64/x86 WGL and x86 Gallium Nine. v4.0.0.4 runner exited 0 and guest shut down.
+2. v4.0.0.5 fixes 3DMark deployment: default diagnostics previously left the OLD app-local Nine DLL (SizeOfImage 0x798000, revision343 ABI bridge). Updater now refreshes all installed 3DMark directories even when NVX_RUN_3DMARK=0. Latest diagnostic loads current DLL (SizeOfImage 0x442000), successfully creates a device, then shows unsupported-hardware dialog. No old indirect-call crash observed.
+3. Current 3DMark blocker: capabilities require MaxPointSize >=64; upstream nvc0 advertises 63 (nvc0_screen.c), which Nine passes through (adapter9.c). VS/PS 3.0 and all other checked requirements pass. The dialog generically mentions PS2.0; shader model support is present. Investigate correct point-size support/emulation rather than advertising unsupported behavior. v4.0.0.5 focused Nine/launch diagnostic is finishing; no game benchmark run is proven.
+4. Commit migration and fixes to v4.0.0.x after reviewing selected files; preserve untracked diagnostics and benchmark data. Migration files remain modified/untracked.
+5. Hardware command: NVX_AUTO_RETRY=1 NVX_BUILD_MESA_ICD=0 NVX_D3D9_BACKEND=nine NVX_NINE_ONLY=0 ./test/test_full_driver.sh . Build each ICD first with NVX_MESA_ARCH=x64 (then x86) JOBS=6 ./test/build_mesa_xp64.sh; do not build them simultaneously because they patch the same Mesa checkout.
 
 ## Relevant files
 
-- Batch patches: `mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch`, `mesa_patches/0047-nouveau-xp-fill-pushbuf-before-kick.patch`, `test/apply_mesa_xp_patches.sh`
-- NVC0 draw/fence path: `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c`, `nvc0_state_validate.c`, `nvc0_context.c`, `mesa/src/gallium/drivers/nouveau/nouveau_fence.c`
-- WineD3D command stream: `wine/dlls/wined3d/cs.c`
-- Miniport submit, timing, and GPU fault handling: `src_driver/nvxmp.c`, `src_driver/nvx_gsp.c`
-- 3DMark harness/image setup: `test/update_disk_driver_user.sh`, `test/run_3dmark_full.c`, `test/test_3dmark_launch_diag.c`
-- Full test: `test/test_full_driver.sh`
-
-## Hardware test command
-
-```sh
-NVX_BUILD_WINED3D=0 NVX_BUILD_MESA_ICD=1 NVX_RUN_3DMARK=1 NVX_3DMARK_DIAG=1 ./test/test_full_driver.sh
-```
-
-Build bumps should keep the package version in `test/test_full_driver.sh` and driver version strings in `src_driver/nvxmp.c` aligned.
+- Mesa pin and XP patch queue: `mesa`, `mesa/VERSION`, `test/apply_mesa_xp_patches.sh`, `test/mesa25_patch_series.txt`, `mesa_patches/mesa25/`
+- WGL bridge and Nouveau presentation: `mesa_patches/nvx_wgl_bridge.c`, `mesa_patches/nvx_disp_rpc.c`, `mesa_patches/mesa25/0001-nvx-wgl-native-nouveau.patch`
+- Gallium Nine build and overlays: `build_d3d9_nine.sh`, `test/apply_mesa9x_25_patches.sh`, `patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch`, `mesa_patches/nine/`
+- Build outputs and input hashes: `dist_full/nvxogl32.dll`, `dist_full/nvxogl64.dll`, `dist_full/x86/d3d9.dll`, `dist_full/mesa-build-manifest-x86.txt`, `dist_full/mesa-build-manifest-x64.txt`, `dist_full/nine-build-manifest.txt`
+- Guest integration: `test/test_full_driver.sh`, `test/run_vfio_vm.sh`, `vm_serial.log`

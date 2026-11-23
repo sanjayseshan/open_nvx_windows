@@ -1,0 +1,313 @@
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+index 75ec547cfd79e..7e2403f5b937b 100644
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -35,6 +35,8 @@
+ 
+ 
+ #include <windows.h>
++#include <stdint.h>
++#include <string.h>
+ 
+ #include "util/u_debug.h"
+ #include "stw_winsys.h"
+@@ -42,11 +44,13 @@
+ #include "gdi/gdi_sw_winsys.h"
+ #include "pipe/p_screen.h"
+ #include "pipe/p_context.h"
++#include "frontend/winsys_handle.h"
+ 
+ #ifdef GALLIUM_SOFTPIPE
+ #include "softpipe/sp_texture.h"
+ #include "softpipe/sp_screen.h"
+ #include "softpipe/sp_public.h"
++static bool use_softpipe = false;
+ #endif
+ 
+ #ifdef GALLIUM_LLVMPIPE
+@@ -75,6 +79,121 @@ static bool use_zink = false;
+ 
+ static const char *created_driver_name = NULL;
+ 
++extern int nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle,
++                                   uint32_t stride, uint32_t width,
++                                   uint32_t height);
++extern void NvxWglRecordMesaInitStage(const char *stage);
++extern int nvx_wgl_wait_gpu_buffer(uint32_t handle);
++extern uint64_t nvx_wgl_present_timer(void);
++extern uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
++extern void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
++extern void nvx_wgl_set_hdc(HDC hdc);
++extern void nvx_wgl_process_detach(void);
++extern struct pipe_screen *nvx_wgl_create_native_nouveau_screen(void);
++
++static volatile LONG nvx_present_busy;
++static volatile LONG nvx_present_trace_count;
++static bool use_nouveau;
++
++static void
++nvx_present_trace(const char *stage)
++{
++   if (InterlockedIncrement(&nvx_present_trace_count) <= 48)
++      NvxWglRecordMesaInitStage(stage);
++}
++
++static struct pipe_screen *nvx_present_screen;
++static struct pipe_resource *nvx_present_stage;
++static unsigned nvx_present_width;
++static unsigned nvx_present_height;
++static enum pipe_format nvx_present_format;
++
++static bool
++nvx_wgl_present_gpu(struct pipe_screen *screen, struct pipe_context *ctx,
++                    struct pipe_resource *res, HDC hDC)
++{
++   struct pipe_resource templ;
++   struct pipe_box box;
++   struct winsys_handle handle;
++   bool result = false;
++   uint64_t blit_start, flush_start;
++
++   if (!screen || !ctx || !res || !hDC || !screen->resource_create ||
++       !screen->resource_get_handle || !ctx->resource_copy_region ||
++       !ctx->flush || res->target != PIPE_TEXTURE_2D ||
++       res->format != PIPE_FORMAT_B8G8R8A8_UNORM || res->nr_samples > 1 ||
++       !res->width0 || !res->height0 || res->width0 > 4096 ||
++       res->height0 > 4096)
++      return false;
++
++   if (InterlockedCompareExchange(&nvx_present_busy, 1, 0) != 0)
++      return false;
++
++   if (nvx_present_stage &&
++       (nvx_present_screen != screen || nvx_present_width != res->width0 ||
++        nvx_present_height != res->height0 ||
++        nvx_present_format != res->format)) {
++      nvx_present_screen->resource_destroy(nvx_present_screen,
++                                           nvx_present_stage);
++      nvx_present_stage = NULL;
++      nvx_present_screen = NULL;
++   }
++   if (!nvx_present_stage) {
++      memset(&templ, 0, sizeof(templ));
++      templ.target = PIPE_TEXTURE_2D;
++      templ.format = res->format;
++      templ.width0 = res->width0;
++      templ.height0 = res->height0;
++      templ.depth0 = 1;
++      templ.array_size = 1;
++      templ.last_level = 0;
++      templ.nr_samples = 1;
++      templ.nr_storage_samples = 1;
++      templ.usage = PIPE_USAGE_STAGING;
++      templ.bind = PIPE_BIND_SHARED | PIPE_BIND_LINEAR;
++      nvx_present_stage = screen->resource_create(screen, &templ);
++      if (!nvx_present_stage) {
++         nvx_present_trace("GPU present: staging resource allocation failed");
++         goto done;
++      }
++      nvx_present_screen = screen;
++      nvx_present_width = res->width0;
++      nvx_present_height = res->height0;
++      nvx_present_format = res->format;
++   }
++
++   memset(&box, 0, sizeof(box));
++   box.width = res->width0;
++   box.height = res->height0;
++   box.depth = 1;
++   blit_start = nvx_wgl_present_timer();
++   ctx->resource_copy_region(ctx, nvx_present_stage, 0, 0, 0, 0,
++                             res, 0, &box);
++   flush_start = nvx_wgl_present_timer();
++   ctx->flush(ctx, NULL, 0);
++   nvx_wgl_trace_stage_timing(nvx_wgl_present_elapsed_us(blit_start),
++                              nvx_wgl_present_elapsed_us(flush_start));
++
++   memset(&handle, 0, sizeof(handle));
++   handle.type = WINSYS_HANDLE_TYPE_SHARED;
++   if (screen->resource_get_handle(screen, ctx, nvx_present_stage,
++                                   &handle, 0) &&
++       handle.handle && handle.stride &&
++       nvx_wgl_wait_gpu_buffer((uint32_t)(uintptr_t)handle.handle))
++      result = nvx_wgl_present_gpu_copy(hDC,
++                                        (uint32_t)(uintptr_t)handle.handle,
++                                        handle.stride,
++                                        res->width0, res->height0) != 0;
++   else
++      nvx_present_trace("GPU present: staging export or NVX fence wait failed");
++
++done:
++   if (!result)
++      nvx_present_trace("GPU present: attempt fell back to Mesa flush/readback");
++   InterlockedExchange(&nvx_present_busy, 0);
++   return result;
++}
++
+ static struct pipe_screen *
+ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+ {
+@@ -104,6 +223,16 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+ #ifdef GALLIUM_SOFTPIPE
+    if (strcmp(driver, "softpipe") == 0) {
+       screen = softpipe_create_screen(winsys);
++      if (screen)
++         use_softpipe = true;
++   }
++#endif
++#ifdef GALLIUM_NOUVEAU
++   if (strcmp(driver, "nouveau") == 0) {
++      nvx_wgl_set_hdc(hDC);
++      screen = nvx_wgl_create_native_nouveau_screen();
++      if (screen)
++         use_nouveau = true;
+    }
+ #endif
+ 
+@@ -113,6 +242,8 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+ static struct pipe_screen *
+ wgl_screen_create(HDC hDC)
+ {
++   nvx_wgl_set_hdc(hDC);
++
+    struct sw_winsys *winsys;
+    UNUSED bool sw_only = debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false);
+ 
+@@ -122,6 +253,7 @@ wgl_screen_create(HDC hDC)
+ 
+    const char *const drivers[] = {
+       debug_get_option("GALLIUM_DRIVER", ""),
++      sw_only ? "" : "nouveau",
+ #ifdef GALLIUM_D3D12
+       sw_only ? "" : "d3d12",
+ #endif
+@@ -143,6 +275,8 @@ wgl_screen_create(HDC hDC)
+       struct pipe_screen* screen = wgl_screen_create_by_name(hDC, drivers[i], winsys);
+       if (screen) {
+          created_driver_name = drivers[i];
++         if (strcmp(drivers[i], "nouveau") == 0)
++            winsys->destroy(winsys);
+          return screen;
+       }
+       if (i == 0 && drivers[i][0] != '\0')
+@@ -160,6 +294,9 @@ wgl_present(struct pipe_screen *screen,
+             struct pipe_resource *res,
+             HDC hDC)
+ {
++   if (use_nouveau && nvx_wgl_present_gpu(screen, ctx, res, hDC))
++      return;
++
+    /* This will fail if any interposing layer (trace, debug, etc) has
+     * been introduced between the gallium frontends and the pipe driver.
+     *
+@@ -199,10 +336,41 @@ wgl_present(struct pipe_screen *screen,
+ #endif
+ 
+ #ifdef GALLIUM_SOFTPIPE
+-   winsys = softpipe_screen(screen)->winsys,
+-   dt = softpipe_resource(res)->dt,
+-   gdi_sw_display(winsys, dt, hDC);
++   if (use_softpipe) {
++      winsys = softpipe_screen(screen)->winsys;
++      dt = softpipe_resource(res)->dt;
++      gdi_sw_display(winsys, dt, hDC);
++      return;
++   }
+ #endif
++   if (screen->flush_frontbuffer) {
++      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
++      return;
++   }
++   if (ctx && res && hDC && ctx->texture_map && ctx->texture_unmap) {
++      struct pipe_box box;
++      memset(&box, 0, sizeof(box));
++      box.width = res->width0;
++      box.height = res->height0;
++      box.depth = 1;
++      struct pipe_transfer *transfer = NULL;
++      void *map = ctx->texture_map(ctx, res, 0, PIPE_MAP_READ, &box, &transfer);
++      if (map && transfer) {
++         BITMAPINFO bmi;
++         memset(&bmi, 0, sizeof(bmi));
++         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++         bmi.bmiHeader.biWidth = transfer->stride ? (transfer->stride / 4) : res->width0;
++         bmi.bmiHeader.biHeight = -(LONG)res->height0;
++         bmi.bmiHeader.biPlanes = 1;
++         bmi.bmiHeader.biBitCount = 32;
++         bmi.bmiHeader.biCompression = BI_RGB;
++         bmi.bmiHeader.biSizeImage = transfer->stride * res->height0;
++         StretchDIBits(hDC, 0, 0, res->width0, res->height0,
++                       0, 0, res->width0, res->height0,
++                       map, &bmi, DIB_RGB_COLORS, SRCCOPY);
++         ctx->texture_unmap(ctx, transfer);
++      }
++   }
+ }
+ 
+ 
+@@ -293,9 +461,65 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+          // if Microsoft OPENGL32.DLL's DllMain is called after us, it will
+          // still try to invoke DrvDeleteContext to destroys all outstanding,
+          // so set stw_dev to NULL to return immediately if that happens.
++         nvx_wgl_process_detach();
+          stw_dev = NULL;
+       }
+       break;
+    }
+    return true;
+ }
++
++BOOL WINAPI MesaScreenCreate(HDC hdc, struct pipe_screen **pScreen, DWORD flags);
++BOOL WINAPI MesaPresent(struct pipe_screen *screen, struct pipe_context *ctx,
++                        struct pipe_resource *res, HDC dc,
++                        const RECT *pSrcRect, const RECT *pDstRect);
++BOOL WINAPI MesaDimensions(struct pipe_screen *screen, struct pipe_context *ctx,
++                           struct pipe_resource *res,
++                           int *pWidth, int *pHeight, int *pBpp, int *pPitch);
++
++BOOL WINAPI
++MesaScreenCreate(HDC hdc, struct pipe_screen **pScreen, DWORD flags)
++{
++   (void)flags;
++   if (hdc)
++      nvx_wgl_set_hdc(hdc);
++   struct pipe_screen *screen = stw_winsys.create_screen(hdc);
++   if (!screen)
++      return FALSE;
++   if (pScreen)
++      *pScreen = screen;
++   return TRUE;
++}
++
++BOOL WINAPI
++MesaPresent(struct pipe_screen *screen, struct pipe_context *ctx,
++            struct pipe_resource *res, HDC dc,
++            const RECT *pSrcRect, const RECT *pDstRect)
++{
++   (void)pSrcRect;
++   (void)pDstRect;
++   if (!screen || !res || !dc)
++      return FALSE;
++   stw_winsys.present(screen, ctx, res, dc);
++   return TRUE;
++}
++
++BOOL WINAPI
++MesaDimensions(struct pipe_screen *screen, struct pipe_context *ctx,
++               struct pipe_resource *res,
++               int *pWidth, int *pHeight, int *pBpp, int *pPitch)
++{
++   (void)screen;
++   (void)ctx;
++   if (!res)
++      return FALSE;
++   if (pWidth)
++      *pWidth = res->width0;
++   if (pHeight)
++      *pHeight = res->height0;
++   if (pBpp)
++      *pBpp = 32;
++   if (pPitch)
++      *pPitch = res->width0 * 4;
++   return TRUE;
++}

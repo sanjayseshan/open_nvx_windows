@@ -10,8 +10,19 @@ command -v i686-w64-mingw32-objdump >/dev/null || {
     exit 1
 }
 
-echo "==> Building x86 Gallium Nine from mesa9x (Mesa 23.1.x Nine frontend)"
-make -C "$MESA9X" mesa99.dll
+MESA_VERSION="$(tr -d '\r\n' < "$ROOT/mesa/VERSION")"
+if [[ "$MESA_VERSION" != "25.1.6" ]]; then
+    echo "Expected top-level Mesa 25.1.6, found $MESA_VERSION" >&2
+    exit 1
+fi
+
+echo "==> Building x86 Gallium Nine from mesa9x bundled Mesa 25.1.6"
+"$ROOT/test/apply_mesa9x_25_patches.sh"
+for source in mesa99.c nine_present.c nine_window.c nine_memory_helper.c; do
+    install -m 0644 "$ROOT/mesa_patches/nine/$source" \
+        "$MESA9X/win9x/nine/$source"
+done
+make -C "$MESA9X" MESA_VER=mesa-25.1.x mesa99.dll
 
 NINE_DLL="$MESA9X/mesa99.dll"
 [ -f "$NINE_DLL" ] || { echo "Nine build did not produce $NINE_DLL" >&2; exit 1; }
@@ -34,5 +45,12 @@ if [[ "$EXPORTS" != *Direct3DCreate9Ex* ]]; then
 fi
 
 echo "==> Staged Gallium Nine x86 D3D9: $OUT"
+{
+    printf 'Mesa bundled version: %s\n' "$(tr -d '\r\n' < "$MESA9X/mesa-25.1.x/VERSION")"
+    printf 'mesa9x revision: %s\n' "$(git -C "$MESA9X" rev-parse HEAD)"
+    sha256sum "$ROOT/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch"
+    sha256sum "$ROOT"/mesa_patches/nine/*.c
+    sha256sum "$OUT"
+} > "$ROOT/dist_full/nine-build-manifest.txt"
 sha256sum "$OUT"
 printf '%s\n' "$EXPORTS" | grep -F 'Direct3DCreate9'

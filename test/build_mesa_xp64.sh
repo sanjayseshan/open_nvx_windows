@@ -155,6 +155,9 @@ printf '%s\n' "$imports"
 # Record the exact external patch inputs alongside the packaged binary.
 {
     git -C "$ROOT/mesa" rev-parse HEAD
-    sha256sum "$ROOT"/mesa_patches/*.patch
+    while IFS= read -r relative_patch; do
+        [ -n "$relative_patch" ] || continue
+        sha256sum "$ROOT/$relative_patch"
+    done < "$ROOT/test/mesa25_patch_series.txt"
     sha256sum "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
 } > "$ROOT/dist_full/mesa-build-manifest-${NVX_MESA_ARCH}.txt"

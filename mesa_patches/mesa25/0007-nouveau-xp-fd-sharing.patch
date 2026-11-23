@@ -1,0 +1,94 @@
+diff --git a/src/gallium/drivers/nouveau/nouveau_screen.c b/src/gallium/drivers/nouveau/nouveau_screen.c
+index fe10590868881..129a7ca18915f 100644
+--- a/src/gallium/drivers/nouveau/nouveau_screen.c
++++ b/src/gallium/drivers/nouveau/nouveau_screen.c
+@@ -104,6 +104,12 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
+                               struct winsys_handle *whandle,
+                               unsigned *out_stride)
+ {
++#ifdef NVX_XP_WIN32_SHIMS
++   (void)pscreen;
++   (void)whandle;
++   (void)out_stride;
++   return NULL;
++#else
+    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
+    struct nouveau_bo *bo = NULL;
+    int ret;
+@@ -134,6 +140,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
+ 
+    *out_stride = whandle->stride;
+    return bo;
++#endif
+ }
+ 
+ 
+@@ -143,6 +150,16 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
+                              unsigned stride,
+                              struct winsys_handle *whandle)
+ {
++#ifdef NVX_XP_WIN32_SHIMS
++   if (whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
++      whandle->stride = stride;
++      whandle->handle = (HANDLE)(uintptr_t)bo->handle;
++      return true;
++   }
++   (void)pscreen;
++   (void)whandle;
++   return false;
++#else
+    whandle->stride = stride;
+ 
+    if (whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
+@@ -170,6 +187,7 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
+    } else {
+       return false;
+    }
++#endif
+ }
+ 
+ static void
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau.c b/src/gallium/winsys/nouveau/drm/nouveau.c
+index 27cbdc10033cc..9fc9c86c43c36 100644
+--- a/src/gallium/winsys/nouveau/drm/nouveau.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau.c
+@@ -60,6 +60,10 @@ debug_init(void)
+ int
+ nouveau_drm_new(int fd, struct nouveau_drm **pdrm)
+ {
++#ifdef NVX_XP_WIN32_SHIMS
++   if (!NvxXf86DrmIsRegistered(fd))
++      return -EINVAL;
++#endif
+    debug_init();
+ 
+    struct nouveau_drm *drm = calloc(1, sizeof(*drm));
+@@ -76,8 +80,12 @@ nouveau_drm_new(int fd, struct nouveau_drm **pdrm)
+    drm->version = (ver->version_major << 24) |
+                   (ver->version_minor << 8) |
+                    ver->version_patchlevel;
++#ifndef NVX_XP_WIN32_SHIMS
++   /* NVX validates its transport registration above; its version is not a
++    * Linux Nouveau DRM ABI version. */
+    if (drm->version < 0x01000301)
+       goto out_err;
++#endif
+ 
+    drmFreeVersion(ver);
+    return 0;
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c b/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
+index d2615102a28fa..eec71f1542122 100644
+--- a/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
+@@ -85,6 +85,11 @@ err_dev_new:
+ struct pipe_screen *
+ nouveau_drm_screen_create(int fd)
+ {
++#ifdef NVX_XP_WIN32_SHIMS
++   return u_pipe_screen_lookup_or_create(fd, NULL, NULL,
++                                         nouveau_screen_create);
++#else
+    return u_pipe_screen_lookup_or_create(os_dupfd_cloexec(fd), NULL, NULL,
+                                          nouveau_screen_create);
++#endif
+ }

@@ -1,0 +1,10 @@
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c b/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
+--- a/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau_drm_winsys.c
+@@ -7,6 +7,5 @@
+ #include "util/u_screen.h"
+ 
+-#include "renderonly/renderonly.h"
+ #include "nouveau_drm_public.h"
+ 
+ #include "nouveau/nouveau_screen.h"

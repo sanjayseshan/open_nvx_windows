@@ -386,7 +386,7 @@ if exist C:\test_accel\test_display_modes.exe (
 if exist C:\test_accel\nine_only.flag goto NINE_ONLY
 if exist C:\test_accel\wglgears.exe (
     cd /d C:\test_accel
-    set GALLIUM_DRIVER=nouveau
+    set GALLIUM_DRIVER=
     echo [TEST] Running 64-bit wglgears 3D benchmark... >> C:\test_accel.log
     wglgears.exe -info -seconds 6 >> C:\test_accel.log 2>&1
     set NVX_TEST_RC=!ERRORLEVEL!
@@ -404,7 +404,7 @@ rem x86 D3D capability and WGL diagnostics if the benchmark opens a modal
 rem unsupported-hardware dialog or stalls before returning to the batch file.
 if exist C:\test_accel\x86\wglgears32.exe (
     cd /d C:\test_accel\x86
-    set GALLIUM_DRIVER=nouveau
+    set GALLIUM_DRIVER=
     echo [TEST] Running 32-bit wglgears 3D benchmark... >> C:\test_accel.log
     wglgears32.exe -info -seconds 6 >> C:\test_accel.log 2>&1
     set NVX_TEST_RC=!ERRORLEVEL!
@@ -510,12 +510,15 @@ fi
 if [ -f "$NVX_ROOT/test/test_3dmark_caps_eval.exe" ]; then
     cp -v "$NVX_ROOT/test/test_3dmark_caps_eval.exe" "$NVX_MOUNT/test_accel/test_3dmark_caps_eval.exe"
 fi
-if [ "$NVX_RUN_3DMARK" = "1" ]; then
-    mapfile -t NVX_3DMARK_EXES < <(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print)
-    if [ "${#NVX_3DMARK_EXES[@]}" -eq 0 ]; then
-        echo "3DMark05.exe was not found in the guest image." >&2
-        exit 1
-    fi
+# Keep app-local D3D9 synchronized for the default launch diagnostic too.
+# Windows loads that DLL before SysWOW64, so stale copies bypass package fixes.
+mapfile -t NVX_3DMARK_EXES < <(find "$NVX_MOUNT" -type f -iname '3DMark05.exe' -print)
+if [ "$NVX_RUN_3DMARK" = "1" ] && [ "${#NVX_3DMARK_EXES[@]}" -eq 0 ]; then
+    echo "3DMark05.exe was not found in the guest image." >&2
+    exit 1
+fi
+if [ "${#NVX_3DMARK_EXES[@]}" -gt 0 ]; then
+    # Paths are shared by manual, diagnostic, and automated launches.
     NVX_3DMARK_EXE="${NVX_3DMARK_EXES[0]}"
     python3 - "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_MOUNT" "$NVX_3DMARK_EXE" <<'PY'
 from pathlib import Path

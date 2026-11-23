@@ -505,8 +505,15 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	 * Ensure the Mesa ICD is loaded in process so that ICD pixel formats and entrypoints
 	 * are registered with GDI WGL before format selection and context creation.
 	 */
-	HMODULE hIcd = GetModuleHandleA("nvxogl64.dll");
-	if (!hIcd) hIcd = LoadLibraryA("nvxogl64.dll");
+	#ifdef _WIN64
+	const char *icdName = "nvxogl64.dll";
+#else
+	const char *icdName = "nvxogl32.dll";
+#endif
+	HMODULE hIcd = GetModuleHandleA(icdName);
+	if (!hIcd) hIcd = LoadLibraryA(icdName);
+	log_out("[WGLGEARS] ICD preload %s: %s error=%lu\n",
+	        icdName, hIcd ? "loaded" : "failed", hIcd ? 0UL : GetLastError());
 	if (!hIcd) {
 		hIcd = GetModuleHandleA("nvxmesa.dll");
 		if (!hIcd) hIcd = LoadLibraryA("nvxmesa.dll");
@@ -806,7 +813,10 @@ main(int argc, char *argv[])
 {
    int            i;
    Bool	printInfo = False;
-   SetEnvironmentVariableA("GALLIUM_DRIVER", "nouveau");
+   /* Let Mesa try the NVX Nouveau screen and its normal fallback sequence.
+    * Forcing GALLIUM_DRIVER=nouveau makes screen creation failure fatal and
+    * causes opengl32 to silently fall back to Microsoft GDI Generic. */
+   SetEnvironmentVariableA("GALLIUM_DRIVER", NULL);
    FILE *fpReset = fopen("C:\\wglgears.log", "w");
    if (fpReset) fclose(fpReset);
 
