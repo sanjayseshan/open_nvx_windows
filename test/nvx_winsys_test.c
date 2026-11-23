@@ -176,6 +176,16 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       record_event(mock, MOCK_EVENT_ALLOC);
       return 1;
    }
+   case NVX_ESCAPE_3D_MAP_BUFFER: {
+      const NVX_3D_MAP_BUFFER *request = input;
+      NVX_3D_MAP_BUFFER *result = output;
+      struct mock_buffer *buffer = find_buffer(mock, request->BufferId);
+      assert(input_bytes == sizeof(*request) && output_bytes == sizeof(*result));
+      assert(buffer && (buffer->usage & NVX_3D_USAGE_GART_BUFFER));
+      *result = *request;
+      result->UserVirtualAddress = (uint64_t)(uintptr_t)buffer->storage;
+      return 1;
+   }
    case NVX_ESCAPE_3D_UPLOAD_SPANS: {
       const NVX_3D_UPLOAD_SPANS *r=input;
       struct mock_buffer *buffer=find_buffer(mock,r->BufferId);
@@ -794,6 +804,40 @@ main(void)
        * live session and device through its final fence wait. */
       assert(NvxNouveauScreenFreeBuffer(&nouveau_screen, &target));
       NvxNouveauScreenDestroy(&nouveau_screen);
+   }
+
+   /* A directly mapped GART BO has no shadow baseline. CPU_PREP/read maps
+    * must wait for GPU writes without attempting a shadow download. */
+   {
+      NVX_3D_ALLOC_BUFFER description = {0};
+      NVX_NOUVEAU_BO bo;
+      struct mock_buffer *gpu;
+      uint8_t *mapped;
+      uint32_t downloads = mock.download_count;
+      uint32_t features = device.caps.Features;
+      device.caps.Features |= NVX_3D_FEATURE_DIRECT_MAP;
+      description.Usage = NVX_3D_USAGE_GART_BUFFER;
+      description.Bytes = 4096;
+      assert(NvxNouveauBoCreate(&device, &description, device.ClientToken, &bo));
+      gpu = find_buffer(&mock, bo.allocation.BufferId);
+      mapped = NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_WRITE);
+      assert(mapped == gpu->storage && bo.direct_mapped && !bo.shadow_base);
+      assert(NvxNouveauBoMarkUsed(&bo, 100));
+      gpu->storage[128] = 0xa5;
+      mock.fail_wait = 1;
+      assert(!NvxNouveauBoRefreshRead(&bo));
+      assert(bo.shadow_fence != 100);
+      mock.fail_wait = 0;
+      assert(NvxNouveauBoRefreshRead(&bo));
+      assert(bo.shadow_fence == 100 && mapped[128] == 0xa5);
+      assert(NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_READ) == mapped);
+      assert(NvxNouveauBoUnmap(&bo));
+      assert(NvxNouveauBoUnmap(&bo));
+      assert(NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_READ) == mapped);
+      assert(mock.download_count == downloads && !bo.shadow_base);
+      assert(NvxNouveauBoUnmap(&bo));
+      assert(NvxNouveauBoDestroy(&bo));
+      device.caps.Features = features;
    }
 
    /* Sparse CPU writes must use one escape without clobbering bytes written

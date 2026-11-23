@@ -148,7 +148,21 @@ NvxNouveauBoRefreshRead(NVX_NOUVEAU_BO *bo)
 {
    uint8_t *gpu;
    uint32_t offset;
-   if (!bo || !bo->references || !bo->shadow || !bo->shadow_base || !bo->map_count)
+   if (!bo || !bo->references || !bo->shadow || !bo->map_count)
+      return 0;
+   /* A direct GART mapping already names GPU-visible system memory. There
+    * is no shadow baseline to refresh, but GPU completion and CPU ordering
+    * are still required before callers consume it. */
+   if (bo->direct_mapped) {
+      if (bo->last_fence &&
+          !NvxWinsysWaitFence(bo->device, bo->last_fence, 5000))
+         return 0;
+      __sync_synchronize();
+      bo->shadow_fence = bo->last_fence;
+      bo->contents_valid = 1;
+      return 1;
+   }
+   if (!bo->shadow_base)
       return 0;
    if (bo->shadow_fence >= bo->last_fence)
       return 1;
@@ -257,6 +271,17 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
       if ((access & NVX_NOUVEAU_BO_READ) &&
           !NvxNouveauBoRefreshReadIfStale(bo)) {
          bo->map_count--;
+         return NULL;
+      }
+      return bo->shadow;
+   }
+
+   /* Unmap releases a CPU access, while the process-owned VA remains valid. */
+   if (bo->direct_mapped && bo->shadow) {
+      bo->map_access = access;
+      bo->map_count = 1;
+      if ((access & NVX_NOUVEAU_BO_READ) && !NvxNouveauBoRefreshRead(bo)) {
+         bo->map_count = 0;
          return NULL;
       }
       return bo->shadow;
