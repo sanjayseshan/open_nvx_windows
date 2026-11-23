@@ -1,0 +1,75 @@
+--- a/src/gallium/winsys/nouveau/drm/nouveau.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau.c
+@@ -1118,6 +1118,11 @@
+ 
+    kpsh = krec->push;
+    for (i = 0; i < krec->nr_push; i++, kpsh++) {
++      if (kpsh->bo_index >= (uint32_t)krec->nr_buffer) {
++         err("ch%d: invalid push BO index %u (buffers %d)\n",
++             chid, kpsh->bo_index, krec->nr_buffer);
++         continue;
++      }
+       kref = krec->buffer + kpsh->bo_index;
+       bo = (void *)(uintptr_t)kref->user_priv;
+       bgn = (uint32_t *)((char *)bo->map + kpsh->offset);
+@@ -1247,6 +1252,8 @@
+    krec->nr_buffer = 0;
+    krec->nr_reloc = 0;
+    krec->nr_push = 0;
++   if (ret)
++      nvpb->bgn = push->cur;
+ 
+    list_for_each_entry_safe(struct nouveau_bufctx, bctx, &nvpb->bctx_list, head) {
+       list_splice(&bctx->current, &bctx->pending);
+@@ -1372,6 +1379,13 @@
+       kref->write_domains |= domains_wr;
+       kref->read_domains  |= domains_rd;
+    } else {
++      /* The XP transport has a smaller reference table than Linux DRM.
++       * Return through the existing flush/revalidate path before exceeding
++       * it. Reserve one entry for the XP staging pushbuffer BO. */
++#ifdef NVX_XP_WIN32_SHIMS
++      if (krec->nr_buffer >= NVX_3D_MAX_BATCH_BUFFERS - 1U)
++         return NULL;
++#endif
+       if (krec->nr_buffer == NOUVEAU_GEM_MAX_BUFFERS ||
+           !pushbuf_kref_fits(push, bo, &domains))
+          return NULL;
+@@ -1701,9 +1715,10 @@
+    int ret;
+ 
+    stage_start = nvx_wgl_present_timer();
+-   pushbuf_flush(push);
++   ret = pushbuf_flush(push);
+    flush_us = nvx_wgl_present_elapsed_us(stage_start);
+    stage_start = nvx_wgl_present_timer();
+-   ret = pushbuf_validate(push, false);
++   if (!ret)
++      ret = pushbuf_validate(push, false);
+    validate_us = nvx_wgl_present_elapsed_us(stage_start);
+    NvxWglRecordNouveauKickProfile(
+@@ -1560,6 +1560,12 @@
+    if (chan->oclass != NOUVEAU_FIFO_CHANNEL_CLASS)
+       return -EINVAL;
+ 
++#ifdef NVX_XP_WIN32_SHIMS
++   /* Keep automatic space flushes within the XP batch command capacity. */
++   if (size > NVX_3D_MAX_PUSH_DWORDS * sizeof(uint32_t))
++      size = NVX_3D_MAX_PUSH_DWORDS * sizeof(uint32_t);
++#endif
++
+    /* nop pushbuf call, to get the current "return to main" sequence
+     * we need to append to the pushbuf on early chipsets
+     */
+@@ -1236,8 +1236,8 @@
+    kref = krec->buffer;
+    for (i = 0; i < krec->nr_buffer; i++, kref++) {
+       struct nouveau_bo *bo = (void *)(uintptr_t)kref->user_priv;
+-      ret = cli_kref_set(push->client, bo, NULL, NULL);
+-      if (ret)
+-         return ret;
++      int cleanup_ret = cli_kref_set(push->client, bo, NULL, NULL);
++      if (cleanup_ret)
++         return cleanup_ret;
+       nouveau_bo_ref(NULL, &bo);
+    }

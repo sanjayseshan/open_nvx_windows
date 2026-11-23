@@ -196,6 +196,16 @@ done
 
 For a full package, keep the x86 DLLs under `dist_full/x86/`; the offline updater and batch installer both use that directory for `SysWOW64`. The x64 DLLs belong at the package root and go to `Windows\System32`. Do not mix architectures. `test_full_driver.sh` builds WineD3D by default before its integration run; set `NVX_BUILD_WINED3D=0` only when deliberately reusing an already-built WineD3D package.
 
+### Build the Gallium Nine Direct3D 9 frontend
+
+Gallium Nine is built as an x86 `d3d9.dll` from the Mesa 25.1.6 sources bundled in `submodules/mesa9x/mesa-25.1.x`. The XP WGL/Nouveau shims and Nine frontend customizations live outside the Mesa source trees. Build it after WineD3D if Nine should be the x86 Direct3D 9 implementation, because both produce `dist_full/x86/d3d9.dll`:
+
+```sh
+./build_d3d9_nine.sh
+```
+
+The script verifies the top-level Mesa version, applies the external Mesa9x compatibility patch, builds `mesa99.dll`, checks the x86 PE format and `Direct3DCreate9` exports, then stages it as `dist_full/x86/d3d9.dll`. The source build succeeds, but Nine has not yet passed a real XP guest rendering test on this Mesa 25 port. It does not replace x64 WineD3D or the x86 Direct3D 8/DirectDraw DLLs. Keep those WineD3D outputs in the package for applications that need them. The full hardware test must disable its default WineD3D rebuild when validating Nine, or it will overwrite the staged x86 `d3d9.dll`.
+
 ### Build Windows XP x86 driver binaries
 
 ```sh

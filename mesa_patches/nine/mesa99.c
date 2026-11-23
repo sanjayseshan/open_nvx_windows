@@ -995,7 +995,7 @@ HRESULT WINAPI NineNine_new(INineNine **ppOut)
         }
         ReleaseDC(desktop, hdc);
         last_screen = screen;
-        mesa99_stage("MesaScreenCreate returned Mesa 25.1.9 pipe_screen");
+        mesa99_stage("MesaScreenCreate returned Mesa 25.1.6 pipe_screen");
     }
 
     res = calloc(1, sizeof(*res));

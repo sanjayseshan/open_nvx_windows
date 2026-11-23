@@ -1,0 +1,9 @@
+Mesa bundled version: 25.1.6
+mesa9x revision: 8b5428ca315c1d18341b69adce4f4b821e33338d
+08b5fd8531056306e26c1f509206b9308325ebc1f1b12fd03a641fcacb1f66b9  /home/sanjay/temp/xddm/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch
+92c5a080e023dda677e13784880db07478f34e9a510196ebbfffd293956d2679  /home/sanjay/temp/xddm/patches/mesa9x/0003-nouveau-nine-pointsize-3dmark-compat.patch
+36e0e512a8a33e36f7724aced0b7c8807ace00a31d059e37ce2cdf40e323805e  /home/sanjay/temp/xddm/mesa_patches/nine/mesa99.c
+6b3cb43a7c1f59609dc63bdda636f6a9846b8f87a40eb1bae54a428ed5361a13  /home/sanjay/temp/xddm/mesa_patches/nine/nine_memory_helper.c
+6bb4163e0a41ee07b7553956ecc743cabf77c7f7d0ac206632123070a56cd6ae  /home/sanjay/temp/xddm/mesa_patches/nine/nine_present.c
+f6b6bb121925ebc4661013ecf652fb54e24143f369b7cbb854c3c840c833845a  /home/sanjay/temp/xddm/mesa_patches/nine/nine_window.c
+9579db0adb46296737cbd7ba11e0a3a70b0358e34c7026e491f4dce257f978a0  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll

@@ -49,6 +49,7 @@ echo "==> Staged Gallium Nine x86 D3D9: $OUT"
     printf 'Mesa bundled version: %s\n' "$(tr -d '\r\n' < "$MESA9X/mesa-25.1.x/VERSION")"
     printf 'mesa9x revision: %s\n' "$(git -C "$MESA9X" rev-parse HEAD)"
     sha256sum "$ROOT/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch"
+    sha256sum "$ROOT/patches/mesa9x/0003-nouveau-nine-pointsize-3dmark-compat.patch"
     sha256sum "$ROOT"/mesa_patches/nine/*.c
     sha256sum "$OUT"
 } > "$ROOT/dist_full/nine-build-manifest.txt"

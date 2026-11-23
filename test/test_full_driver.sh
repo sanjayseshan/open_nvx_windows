@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.5"
+NVX_TEST_VERSION="4.0.0.12"
 NVX_D3D9_BACKEND="${NVX_D3D9_BACKEND:-nine}"
 export NVX_D3D9_BACKEND
 case "$NVX_D3D9_BACKEND" in

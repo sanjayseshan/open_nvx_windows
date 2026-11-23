@@ -1,0 +1,32 @@
+--- a/src/gallium/drivers/nouveau/nouveau_fence.c
++++ b/src/gallium/drivers/nouveau/nouveau_fence.c
+@@ -36,20 +36,21 @@
+ bool
+ nouveau_fence_new(struct nouveau_context *nv, struct nouveau_fence **fence)
+ {
+-   *fence = CALLOC_STRUCT(nouveau_fence);
+-   if (!*fence)
++   struct nouveau_fence *new_fence = CALLOC_STRUCT(nouveau_fence);
++   if (!new_fence)
+       return false;
+ 
+-   int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &(*fence)->bo);
++   int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &new_fence->bo);
+    if (ret) {
+-      FREE(*fence);
++      FREE(new_fence);
+       return false;
+    }
+ 
+-   (*fence)->screen = nv->screen;
+-   (*fence)->context = nv;
+-   (*fence)->ref = 1;
+-   list_inithead(&(*fence)->work);
++   new_fence->screen = nv->screen;
++   new_fence->context = nv;
++   new_fence->ref = 1;
++   list_inithead(&new_fence->work);
++   *fence = new_fence;
+ 
+    return true;
+ }

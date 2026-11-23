@@ -1,0 +1,17 @@
+diff --git a/mesa-25.1.x/src/gallium/frontends/nine/adapter9.c b/mesa-25.1.x/src/gallium/frontends/nine/adapter9.c
+index fe3fe375..2efe23aa 100644
+--- a/mesa-25.1.x/src/gallium/frontends/nine/adapter9.c
++++ b/mesa-25.1.x/src/gallium/frontends/nine/adapter9.c
+@@ -826,6 +826,12 @@ NineAdapter9_GetDeviceCaps( struct NineAdapter9 *This,
+     pCaps->MaxVertexBlendMatrixIndex = 8; /* D3DTS_WORLDMATRIX(0..8) */
+ 
+     pCaps->MaxPointSize = screen->caps.max_point_size;
++    /* NVC0 reports 63 to Gallium, but 3DMark05's D3D9 support gate expects
++     * 64. Keep this one-pixel D3D compatibility adjustment scoped to Nouveau;
++     * native point rasterization remains limited by the hardware. */
++    if (screen->caps.vendor_id == 0x10de &&
++        pCaps->MaxPointSize >= 63.0f && pCaps->MaxPointSize < 64.0f)
++        pCaps->MaxPointSize = 64.0f;
+ 
+     pCaps->MaxPrimitiveCount = 0x555555; /* <- wine, really 0xFFFFFFFF; */
+     pCaps->MaxVertexIndex = 0xFFFFFF; /* <- wine, really 0xFFFFFFFF */

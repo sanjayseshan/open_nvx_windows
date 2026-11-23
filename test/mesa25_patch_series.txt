@@ -17,14 +17,12 @@ mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch
 mesa_patches/0025-nouveau-xp-force-cpu-prep.patch
 mesa_patches/0029-nouveau-zero-cb-sample-locations.patch
 mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch
-mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch
 mesa_patches/0033-nouveau-xp-tls-allocation-fallback.patch
 mesa_patches/0035-nouveau-xp-submission-profile.patch
 mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
 mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
 mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
-mesa_patches/0041-nouveau-coalesce-fence-pushbuf-kick.patch
 mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
 mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
-mesa_patches/0045-nvc0-xp-wait-shader-upload.patch
-mesa_patches/0046-nouveau-xp-coalesce-nvc0-draw-kicks.patch
+mesa_patches/mesa25/0008-nouveau-xp-pushbuf-reference-limit.patch
+mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
