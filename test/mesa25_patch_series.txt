@@ -26,3 +26,4 @@ mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
 mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
 mesa_patches/mesa25/0008-nouveau-xp-pushbuf-reference-limit.patch
 mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
+mesa_patches/mesa25/0010-nvc0-gm107-vbo-dirty-barrier.patch

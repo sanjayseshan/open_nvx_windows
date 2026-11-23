@@ -6,6 +6,7 @@ MESA9X="$ROOT/submodules/mesa9x"
 PATCHES=(
     "$ROOT/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch"
     "$ROOT/patches/mesa9x/0003-nouveau-nine-pointsize-3dmark-compat.patch"
+    "$ROOT/patches/mesa9x/0004-nine-window-fullscreen-robustness.patch"
 )
 
 for PATCH in "${PATCHES[@]}"; do

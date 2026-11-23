@@ -980,6 +980,9 @@ nvx_drm_submit_pushbuf(int fd,
          continue;
       if (!NvxNouveauBoFlush(&slot->bo))
          goto done;
+      slot->bo.dirty = 0;
+      slot->bo.dirty_offset = 0;
+      slot->bo.dirty_end = 0;
       flushed_shadow_count++;
       if (nvx_drm_shadow_flush_trace_count < 16U) {
          uint32_t trace_index = nvx_drm_shadow_flush_trace_count++;
@@ -2634,8 +2637,14 @@ NvxXf86DrmFlushBuffer(int fd, uint32_t handle)
    device = nvx_drm_find_device_locked(fd);
    slot = nvx_drm_find_bo_locked(device, handle);
    found = slot != NULL;
-   if (slot)
+   if (slot) {
       result = NvxNouveauBoFlush(&slot->bo);
+      if (result) {
+         slot->bo.dirty = 0;
+         slot->bo.dirty_offset = 0;
+         slot->bo.dirty_end = 0;
+      }
+   }
    nvx_drm_lock_release();
    if (!result)
       errno = found ? EIO : ENOENT;

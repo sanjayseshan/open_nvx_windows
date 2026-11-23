@@ -1,0 +1,51 @@
+diff --git a/win9x/nine/nine_window.c b/win9x/nine/nine_window.c
+index 5be7b429..5f5fed72 100644
+--- a/win9x/nine/nine_window.c
++++ b/win9x/nine/nine_window.c
+@@ -218,19 +218,7 @@ static LRESULT device_process_message(ID3DPresentM99 *present, HWND window, BOOL
+ 		//TRACE("WM_DISPLAYCHANGE %ux%u -> %ux%u\n",
+ 		//	present->params.BackBufferWidth, present->params.BackBufferHeight, width, height);
+ 
+-		/* Ex restores display mode, while non Ex requires the
+-		 * user to call Device::Reset() */
+-		if(!present->ex && !present->params.Windowed &&
+-			present->params.hDeviceWindow &&
+-			(width != present->params.BackBufferWidth || height != present->params.BackBufferHeight))
+-		{
+-			//TRACE("setting resolution_mismatch for non-extended\n");
+-			present->resolution_mismatch = TRUE;
+-		}
+-		else
+-		{
+-			present->resolution_mismatch = FALSE;
+-		}
++		present->resolution_mismatch = FALSE;
+ 	}
+ 	else if(message == WM_ACTIVATEAPP)
+ 	{
+@@ -239,23 +227,8 @@ static LRESULT device_process_message(ID3DPresentM99 *present, HWND window, BOOL
+ 
+ 		if(wparam == WA_INACTIVE)
+ 		{
+-			//TRACE("WM_ACTIVATEAPP WA_INACTIVE\n");
+-
+-			present->occluded = TRUE;
+-			present->reapply_mode = TRUE;
+-
+-			ZeroMemory(&new_mode, sizeof(DEVMODEA));
+-			new_mode.dmSize = sizeof(DEVMODEA);
+-			/* TODO: Win95 has problem with ENUM_REGISTRY_SETTINGS */
+-			if(EnumDisplaySettingsA(NULL, ENUM_REGISTRY_SETTINGS, &new_mode))
+-			{
+-				set_display_mode(present, &new_mode);
+-			}
+-
+-			if(!present->no_window_changes && IsWindowVisible(present->params.hDeviceWindow))
+-			{
+-				ShowWindow(present->params.hDeviceWindow, SW_MINIMIZE);
+-			}
++			// Do not occlude or minimize fullscreen window when focus shifts briefly during mode change
++			mesa99_dbg("WM_ACTIVATEAPP WA_INACTIVE (ignored for fullscreen robustness)");
+ 		}
+ 		else
+ 		{
