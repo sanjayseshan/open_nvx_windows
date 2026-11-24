@@ -334,6 +334,12 @@ typedef struct _NVX_NVC0_BATCH_CAPTURE {
     ULONG64 BufferIds[NVX_3D_MAX_BATCH_BUFFERS];
     ULONG64 BufferGpuVas[NVX_3D_MAX_BATCH_BUFFERS];
     ULONG64 BufferBytes[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferUsage[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferWidth[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferHeight[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferPitchBytes[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferTileMode[NVX_3D_MAX_BATCH_BUFFERS];
+    ULONG BufferMemoryKind[NVX_3D_MAX_BATCH_BUFFERS];
     ULONG Dwords[NVX_NVC0_CAPTURE_DWORDS];
 } NVX_NVC0_BATCH_CAPTURE;
 /* RM resources belong to a client, never to the currently submitting app.
@@ -576,6 +582,9 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG64 Nvx3dCompletedFence;
     ULONG64 Nvx3dFenceSequence[NVX_3D_FENCE_TRACK_SLOTS];
     ULONG64 Nvx3dFenceOwner[NVX_3D_FENCE_TRACK_SLOTS];
+    /* Reap a rotating window on hot submission; do a full sweep on drain. */
+    volatile ULONG Nvx3dBatchReapCursor;
+    volatile ULONG Nvx3dPendingCopyCount;
     NVX_3D_PENDING_BATCH Nvx3dPendingBatches[NVX_3D_MAX_INFLIGHT_BATCHES];
     NVX_3D_PENDING_COPY Nvx3dPendingCopies[NVX_3D_MAX_INFLIGHT_BATCHES];
     ULONG64 GspCopySlotFence[NVX_CE_ASYNC_COPY_SLOTS];

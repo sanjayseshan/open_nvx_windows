@@ -4,13 +4,24 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.12"
+NVX_TEST_VERSION="4.0.0.26"
+NVX_CAPTURE_NVC0_BATCHES="${NVX_CAPTURE_NVC0_BATCHES:-0}"
+case "$NVX_CAPTURE_NVC0_BATCHES" in
+    0|1) ;;
+    *) echo "NVX_CAPTURE_NVC0_BATCHES must be 0 or 1" >&2; exit 1 ;;
+esac
 NVX_D3D9_BACKEND="${NVX_D3D9_BACKEND:-nine}"
 export NVX_D3D9_BACKEND
 case "$NVX_D3D9_BACKEND" in
     wined3d|nine) ;;
     *) echo "NVX_D3D9_BACKEND must be wined3d or nine" >&2; exit 1 ;;
 esac
+NVX_GPU_READBACK_TRACE="${NVX_GPU_READBACK_TRACE:-0}"
+case "$NVX_GPU_READBACK_TRACE" in
+    0|1) ;;
+    *) echo "NVX_GPU_READBACK_TRACE must be 0 or 1" >&2; exit 1 ;;
+esac
+export NVX_GPU_READBACK_TRACE
 if [ "${NVX_NINE_ONLY:-0}" = "1" ]; then
     NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-0}"
 else
@@ -193,6 +204,10 @@ else
     NVX_DRIVER_BUILD_TARGET=full
     NVX_DRIVER_BUILD_ARGS=("NVX_TRACE_HOTPATH=0")
 fi
+if [ "$NVX_CAPTURE_NVC0_BATCHES" = "1" ]; then
+    NVX_DRIVER_BUILD_ARGS+=("NVX_CAPTURE_NVC0_BATCHES=1")
+    echo "==> Capturing bounded NVC0 batch previews for fence-fault diagnosis"
+fi
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     sudo -u "$SUDO_USER" make -C "$NVX_ROOT/src_driver" check "$NVX_DRIVER_BUILD_TARGET" "${NVX_DRIVER_BUILD_ARGS[@]}"
     sudo -u "$SUDO_USER" cp "$NVX_ROOT/src_driver/nvxmp.sys" "$NVX_ROOT/dist_full/nvxmp.sys"
@@ -256,6 +271,7 @@ if [ -n "${NVX_NVC0_P2MF_PROBE_TARGET:-}" ]; then
     echo "==> Guest diagnostic enabled: same-channel P2MF target=$NVX_NVC0_P2MF_PROBE_TARGET"
 fi
 NVX_RUN_3DMARK="$NVX_RUN_3DMARK" \
+NVX_GPU_READBACK_TRACE="$NVX_GPU_READBACK_TRACE" \
     "$NVX_ROOT/test/update_disk_driver_user.sh" full
 
 if [ ! -e /dev/vfio/vfio ]; then

@@ -7,6 +7,8 @@ PATCHES=(
     "$ROOT/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch"
     "$ROOT/patches/mesa9x/0003-nouveau-nine-pointsize-3dmark-compat.patch"
     "$ROOT/patches/mesa9x/0004-nine-window-fullscreen-robustness.patch"
+    "$ROOT/patches/mesa9x/0005-nine-draw-range-trace.patch"
+    "$ROOT/patches/mesa9x/0006-nine-draw-range-metadata.patch"
 )
 
 for PATCH in "${PATCHES[@]}"; do
@@ -20,3 +22,11 @@ for PATCH in "${PATCHES[@]}"; do
         exit 1
     fi
 done
+
+PATCH="$ROOT/patches/mesa9x/0007-xp-crt-failure-termination.patch"
+if git -C "$MESA9X/winpthreads" apply --check "$PATCH" 2>/dev/null; then
+    git -C "$MESA9X/winpthreads" apply "$PATCH"
+elif ! git -C "$MESA9X/winpthreads" apply --reverse --check "$PATCH" 2>/dev/null; then
+    echo "Cannot apply XP CRT compatibility patch" >&2
+    exit 1
+fi

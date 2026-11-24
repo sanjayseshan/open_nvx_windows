@@ -1063,6 +1063,11 @@ NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
    static volatile LONG bo_failure_trace_count;
    static volatile LONG bo_success_trace_count;
    static volatile LONG allocation_failure_trace_count;
+   static volatile LONG fence_allocation_failure_trace_count;
+   static volatile LONG vertex_bounds_trace_count;
+   static volatile LONG vertex_draw_context_trace_count;
+   static volatile LONG vertex_buffer_context_trace_count;
+   static volatile LONG vertex_actual_index_trace_count;
    char message[112];
 
    /* Kind 6 is the pushbuf result, emitted once for every batch. Keep that
@@ -1081,6 +1086,21 @@ NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
          return;
    } else if (kind == 24U) {
       if (InterlockedIncrement(&allocation_failure_trace_count) > 32)
+         return;
+   } else if (kind == 29U) {
+      if (InterlockedIncrement(&fence_allocation_failure_trace_count) > 16)
+         return;
+   } else if (kind == 30U) {
+      if (InterlockedIncrement(&vertex_bounds_trace_count) > 32)
+         return;
+   } else if (kind == 31U) {
+      if (InterlockedIncrement(&vertex_draw_context_trace_count) > 32)
+         return;
+   } else if (kind == 32U) {
+      if (InterlockedIncrement(&vertex_buffer_context_trace_count) > 32)
+         return;
+   } else if (kind == 33U) {
+      if (InterlockedIncrement(&vertex_actual_index_trace_count) > 32)
          return;
    }
    /* BO/push/reloc dumps are high-volume diagnostics, never part of the

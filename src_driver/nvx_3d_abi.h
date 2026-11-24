@@ -569,27 +569,50 @@ static inline int
 Nvx3dNvc0AddressMethodKind(uint32_t subchannel, uint32_t method,
                            uint32_t *pairIndex, uint32_t *arrayIndex)
 {
-    uint32_t i;
-    for(i=0;i<NVX_3D_NVC0_ADDRESS_PAIR_COUNT;i++) {
-        const NVX_3D_NVC0_ADDRESS_PAIR *pair=&Nvx3dNvc0AddressPairs[i];
-        uint32_t element;
-        if(pair->Subchannel!=subchannel) continue;
-        for(element=0;element<pair->IndexCount;element++) {
-            uint32_t high=pair->HighMethod+element*pair->IndexStride;
-            uint32_t low=pair->LowMethod+element*pair->IndexStride;
-            if(method==high) {
-                if(pairIndex) *pairIndex=i;
-                if(arrayIndex) *arrayIndex=element;
-                return 1;
-            }
-            if(method==low) {
-                if(pairIndex) *pairIndex=i;
-                if(arrayIndex) *arrayIndex=element;
-                return 2;
-            }
-        }
+    uint32_t lo=0,hi=NVX_3D_NVC0_ADDRESS_PAIR_COUNT,i,delta,element;
+    const NVX_3D_NVC0_ADDRESS_PAIR *pair;
+
+    /* The generated table is sorted by (subchannel, high method). Address
+     * validation visits every packet payload, and most methods are not BO
+     * addresses. Find the nearest candidate logarithmically instead of
+     * scanning every pair and array element for each dword. */
+    while(lo<hi) {
+        uint32_t mid=lo+(hi-lo)/2U;
+        const NVX_3D_NVC0_ADDRESS_PAIR *candidate=
+            &Nvx3dNvc0AddressPairs[mid];
+        if(candidate->Subchannel<subchannel ||
+           (candidate->Subchannel==subchannel &&
+            candidate->HighMethod<=method))
+            lo=mid+1U;
+        else
+            hi=mid;
     }
-    return 0;
+    if(!lo) return 0;
+    i=lo-1U;
+    pair=&Nvx3dNvc0AddressPairs[i];
+    if(pair->Subchannel!=subchannel||method<pair->HighMethod) return 0;
+    delta=method-pair->HighMethod;
+
+    if(!pair->IndexStride) {
+        if(!delta) element=0;
+        else if(delta==4U) {
+            if(pairIndex) *pairIndex=i;
+            if(arrayIndex) *arrayIndex=0;
+            return 2;
+        } else return 0;
+    } else if(delta%pair->IndexStride==0U &&
+              delta/pair->IndexStride<pair->IndexCount) {
+        element=delta/pair->IndexStride;
+    } else if(delta>=4U && (delta-4U)%pair->IndexStride==0U &&
+              (delta-4U)/pair->IndexStride<pair->IndexCount) {
+        if(pairIndex) *pairIndex=i;
+        if(arrayIndex) *arrayIndex=(delta-4U)/pair->IndexStride;
+        return 2;
+    } else return 0;
+
+    if(pairIndex) *pairIndex=i;
+    if(arrayIndex) *arrayIndex=element;
+    return 1;
 }
 
 static inline int

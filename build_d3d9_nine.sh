@@ -22,7 +22,18 @@ for source in mesa99.c nine_present.c nine_window.c nine_memory_helper.c; do
     install -m 0644 "$ROOT/mesa_patches/nine/$source" \
         "$MESA9X/win9x/nine/$source"
 done
-make -C "$MESA9X" MESA_VER=mesa-25.1.x mesa99.dll
+# Mesa's Meson build enables packed enums through this feature define.
+# The same definition is required for every Nine object sharing Gallium ABI.
+# Force a rebuild when introducing/changing these flags: make does not track them.
+NINE_ABI_FLAGS='-DHAVE_FUNC_ATTRIBUTE_PACKED=1'
+ABI_STAMP="$MESA9X/.nvx-nine-abi-flags"
+if [[ ! -f "$ABI_STAMP" ]] || [[ "$(cat "$ABI_STAMP")" != "$NINE_ABI_FLAGS" ]]; then
+    find "$MESA9X" -type f \( -name '*.c_gen.o' -o -name '*.cpp_gen.o' -o -name '*.c_gen.obj' -o -name '*.cpp_gen.obj' \) -delete
+    rm -f "$MESA9X/mesa99.dll"
+    printf '%s\n' "$NINE_ABI_FLAGS" > "$ABI_STAMP"
+fi
+make -C "$MESA9X/winpthreads" crtfix.o
+make -j"${JOBS:-4}" -C "$MESA9X" -f Makefile -f "$ROOT/patches/mesa9x/nvx-nine-build.mk" MESA_VER=mesa-25.1.x mesa99.dll
 
 NINE_DLL="$MESA9X/mesa99.dll"
 [ -f "$NINE_DLL" ] || { echo "Nine build did not produce $NINE_DLL" >&2; exit 1; }
@@ -50,6 +61,10 @@ echo "==> Staged Gallium Nine x86 D3D9: $OUT"
     printf 'mesa9x revision: %s\n' "$(git -C "$MESA9X" rev-parse HEAD)"
     sha256sum "$ROOT/patches/mesa9x/0002-mesa-25.1.6-wgl-lock-compat.patch"
     sha256sum "$ROOT/patches/mesa9x/0003-nouveau-nine-pointsize-3dmark-compat.patch"
+    sha256sum "$ROOT/patches/mesa9x/0005-nine-draw-range-trace.patch"
+    sha256sum "$ROOT/patches/mesa9x/0006-nine-draw-range-metadata.patch"
+    sha256sum "$ROOT/patches/mesa9x/0007-xp-crt-failure-termination.patch"
+    sha256sum "$ROOT/patches/mesa9x/nvx-nine-build.mk"
     sha256sum "$ROOT"/mesa_patches/nine/*.c
     sha256sum "$OUT"
 } > "$ROOT/dist_full/nine-build-manifest.txt"

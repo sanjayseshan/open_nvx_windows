@@ -69,6 +69,12 @@ static VOID NvxGspCaptureNvc0Batch(PNVX_DEVICE_EXTENSION dev,
         capture->BufferIds[i]=allocations[i].BufferId;
         capture->BufferGpuVas[i]=allocations[i].GpuVa;
         capture->BufferBytes[i]=allocations[i].Bytes;
+        capture->BufferUsage[i]=allocations[i].Usage;
+        capture->BufferWidth[i]=allocations[i].Width;
+        capture->BufferHeight[i]=allocations[i].Height;
+        capture->BufferPitchBytes[i]=allocations[i].PitchBytes;
+        capture->BufferTileMode[i]=allocations[i].TileMode;
+        capture->BufferMemoryKind[i]=allocations[i].MemoryKind;
     }
     if(dwordCount<=NVX_NVC0_CAPTURE_DWORDS) {
         capture->CapturedDwords=dwordCount;
@@ -82,16 +88,9 @@ static VOID NvxGspCaptureNvc0Batch(PNVX_DEVICE_EXTENSION dev,
                             firstCount*sizeof(ULONG));
         VideoPortMoveMemory(capture->Dwords+firstCount,
             (PVOID)(dwords+dwordCount-lastCount),lastCount*sizeof(ULONG));
-        /* Retain the complete newest oversized batch once per device. This
-           adds a copy only for batches larger than the preview and avoids
-           multiplying a 16-KiB capture array across every client session. */
-        if(dwordCount<=NVX_3D_MAX_PUSH_DWORDS) {
-            dev->Nvx3dFullCaptureClientToken=channel->ClientToken;
-            dev->Nvx3dFullCaptureFence=fenceValue;
-            dev->Nvx3dFullCaptureDwordCount=dwordCount;
-            VideoPortMoveMemory(dev->Nvx3dFullCaptureDwords,(PVOID)dwords,
-                                dwordCount*sizeof(ULONG));
-        }
+        /* Keep only the bounded head/tail preview here. Copying a complete
+           16K-dword push buffer on every submission materially perturbs the
+           workload and can hide timing-sensitive faults. */
     }
     channel->Nvc0CaptureHead=(channel->Nvc0CaptureHead+1U)%
                             NVX_NVC0_CAPTURE_BATCH_SLOTS;
@@ -110,7 +109,8 @@ static VOID NvxGspLogCaptureDword(ULONG value)
 }
 
 static VOID NvxGspLogNvc0FaultCapture(PNVX_DEVICE_EXTENSION dev,
-                                      NVX_GR_CLIENT_CHANNEL *channel)
+                                      NVX_GR_CLIENT_CHANNEL *channel,
+                                      ULONG64 faultVa)
 {
     ULONG i,j,index,fullCaptureRelevant=0;
     if(!dev||!channel||channel->FaultCaptureLogged) return;
@@ -128,9 +128,26 @@ static VOID NvxGspLogNvc0FaultCapture(PNVX_DEVICE_EXTENSION dev,
         LogStr(" capturedDwords=");LogHex(capture->CapturedDwords);
         LogStr(" refs=");LogHex(capture->ReferenceCount);LogStr("\n");
         for(j=0;j<capture->ReferenceCount;j++) {
+            ULONG64 end=0;
             LogStr("NVX [NVC0-FAULT-BO]: id=");LogHex(capture->BufferIds[j]);
             LogStr(" gpuVA=");LogHex(capture->BufferGpuVas[j]);
-            LogStr(" bytes=");LogHex(capture->BufferBytes[j]);LogStr("\n");
+            LogStr(" bytes=");LogHex(capture->BufferBytes[j]);
+            LogStr(" usage=");LogHex(capture->BufferUsage[j]);
+            LogStr(" width=");LogHex(capture->BufferWidth[j]);
+            LogStr(" height=");LogHex(capture->BufferHeight[j]);
+            LogStr(" pitch=");LogHex(capture->BufferPitchBytes[j]);
+            LogStr(" tile=");LogHex(capture->BufferTileMode[j]);
+            LogStr(" kind=");LogHex(capture->BufferMemoryKind[j]);
+            if(capture->BufferGpuVas[j]<=~0ULL-capture->BufferBytes[j]) {
+                end=capture->BufferGpuVas[j]+capture->BufferBytes[j];
+                if(faultVa>=capture->BufferGpuVas[j]&&faultVa<end) {
+                    LogStr(" faultOffset=");
+                    LogHex(faultVa-capture->BufferGpuVas[j]);
+                } else if(faultVa>=end) {
+                    LogStr(" faultPastEnd=");LogHex(faultVa-end);
+                }
+            }
+            LogStr("\n");
         }
         LogStr("NVX [NVC0-FAULT-DWORDS]: fence=");LogHex(capture->FenceValue);
         LogStr("\n");
@@ -4678,13 +4695,35 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
         }
     }
     if(timeoutMs>=5000U&&ownerChannel&&!ownerChannel->Faulted) {
+        NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo={0};
         ownerChannel->Faulted=TRUE;
         LogStr("NVX [NVC0-FENCE]: completion timeout fence=");
         LogHex(fenceValue);LogStr(" channel=");LogHex(ownerChannel->Channel);
         LogStr(" observed=");
         LogHex(((volatile ULONG *)((PUCHAR)ownerChannel->Virtual+0x5000+
             fenceSlot*sizeof(ULONG)))[0]);LogStr("\n");
-        NvxGspLogNvc0FaultCapture(dev,ownerChannel);
+        /* Capture the latched GPU fault before teardown or another control
+           request can overwrite it. This matches the existing native-clear
+           timeout diagnostic path and reports the address that caused the
+           queue to stop, when RM still has the record available. */
+        ULONG64 faultVa=0;
+        if(ownerChannel->Channel&&
+           NvxGspControl(dev,ownerChannel->Channel,
+                         NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO,
+                         &faultInfo,sizeof(faultInfo))) {
+            const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *reply=
+                (const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *)(dev->RpcRxRecord+104);
+            faultVa=((ULONG64)reply->addrHi<<32)|reply->addrLo;
+            LogStr("NVX [NVC0-FENCE-FAULT]: addr=");
+            LogHex(faultVa);
+            LogStr(" type=");LogHex(reply->faultType);
+            LogStr(" shaderVA0=");LogHex(reply->shaderProgramVA[0]);
+            LogStr(" shaderVA1=");LogHex(reply->shaderProgramVA[1]);
+            LogStr("\n");
+        } else {
+            LogStr("NVX [NVC0-FENCE-FAULT]: GET_MMU_FAULT_INFO unavailable\n");
+        }
+        NvxGspLogNvc0FaultCapture(dev,ownerChannel,faultVa);
         NvxGspLogPbdmaFault(dev);
     }
     return FALSE;

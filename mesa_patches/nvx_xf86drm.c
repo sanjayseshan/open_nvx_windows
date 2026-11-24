@@ -10,6 +10,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+/* Mesa's ioctl portability header supplies the DRM _IO* encodings below. */
+#ifdef _IO
+#undef _IO
+#endif
+#ifdef _IOR
+#undef _IOR
+#endif
+#ifdef _IOW
+#undef _IOW
+#endif
+#endif
+
 #include "xf86drm.h"
 #include "drm-uapi/nouveau_drm.h"
 #include "nvif/class.h"
@@ -150,16 +164,32 @@ static uint32_t nvx_drm_prep_call_trace_count;
 static uint32_t nvx_drm_shadow_flush_trace_count;
 static uint32_t nvx_drm_vertex_upload_trace_count;
 #define NVX_DRM_VERTEX_DUMP_LIMIT 16U
-#ifndef NVX_XP_GPU_READBACK_TRACE
-/* Shader/vertex dumps are useful when diagnosing rendering correctness, but
- * they force CPU readbacks and fence waits on Mesa's hot pushbuf path. Keep
- * the production path asynchronous; define this only in a diagnostic build. */
-#define NVX_XP_GPU_READBACK_TRACE 0
-#endif
 static uint64_t nvx_drm_vertex_dump_addresses[NVX_DRM_VERTEX_DUMP_LIMIT];
 static uint32_t nvx_drm_vertex_dump_count;
 #define NVX_DRM_SHADER_DUMP_LIMIT 16U
 #define NVX_DRM_SHADER_DUMP_BYTES 512U
+
+/* The diagnostic is opt-in per guest run. The path lookup is cached on the
+ * first Nouveau submission so the normal hot path adds no per-batch file I/O. */
+static int
+nvx_drm_gpu_readback_trace_enabled(void)
+{
+   static volatile LONG state = -1;
+   LONG enabled = InterlockedCompareExchange(&state, -1, -1);
+
+   if (enabled == -1) {
+      DWORD attributes = GetFileAttributesA(
+         "C:\\test_accel\\nvx_gpu_readback.flag");
+      enabled = attributes != INVALID_FILE_ATTRIBUTES &&
+                !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+      InterlockedCompareExchange(&state, enabled, -1);
+      enabled = InterlockedCompareExchange(&state, 0, 0);
+      if (enabled)
+         NvxWglRecordNouveauPushbufItem(25U, 0U, (uint32_t)enabled,
+                                        attributes, 0U, 0U, 0U, 0U);
+   }
+   return enabled == 1;
+}
 #endif
 static int nvx_drm_unsupported(void);
 static int nvx_drm_unsupported_operation(uint32_t kind,
@@ -191,8 +221,11 @@ struct nvx_drm_vertex_dump {
    uint32_t offset;
    uint32_t bytes;
    uint32_t dwords[NVX_DRM_VERTEX_DUMP_MAX_BYTES / sizeof(uint32_t)];
+   uint32_t expected_dwords[NVX_DRM_VERTEX_DUMP_MAX_BYTES / sizeof(uint32_t)];
    uint32_t copied_from_shadow;
    uint32_t force_gpu_readback;
+   uint32_t stride;
+   uint32_t fetch;
 };
 
 struct nvx_drm_shader_dump {
@@ -204,6 +237,7 @@ struct nvx_drm_shader_dump {
    uint32_t offset;
    uint32_t bytes;
    uint32_t dwords[NVX_DRM_SHADER_DUMP_BYTES / sizeof(uint32_t)];
+   uint32_t expected_dwords[NVX_DRM_SHADER_DUMP_BYTES / sizeof(uint32_t)];
    uint32_t copied_from_shadow;
 };
 
@@ -436,6 +470,11 @@ nvx_drm_capture_shader_addresses_locked(
          dump->bytes = NVX_DRM_SHADER_DUMP_BYTES;
          if (dump->bytes > allocation_bytes - offset)
             dump->bytes = (uint32_t)(allocation_bytes - offset) & ~3U;
+         if (slot->bo.shadow && slot->bo.map_count && dump->bytes) {
+            memcpy(dump->expected_dwords,
+                   slot->bo.shadow + (size_t)offset, dump->bytes);
+            dump->copied_from_shadow = 1U;
+         }
          captured++;
       }
    }
@@ -572,11 +611,17 @@ nvx_drm_capture_vertex_shadow_locked(
             }
             if (force_gpu_readback && !full_target_bit)
                device->shader_triangle_input_readback_scheduled = 1U;
-            if (slot->bo.shadow && slot->bo.map_count &&
-                !force_gpu_readback) {
-               memcpy(dump->dwords, slot->bo.shadow + dump->offset, bytes);
+            if (slot->bo.shadow && slot->bo.map_count) {
+               memcpy(dump->expected_dwords,
+                      slot->bo.shadow + dump->offset, bytes);
                dump->copied_from_shadow = 1U;
+               /* In diagnostic mode, compare the consumed GPU bytes with the
+                * CPU shadow after this batch's completion fence. */
+               if (nvx_drm_gpu_readback_trace_enabled())
+                  dump->force_gpu_readback = 1U;
             }
+            dump->stride = stride;
+            dump->fetch = fetch;
             return 1;
          }
          }
@@ -601,8 +646,11 @@ nvx_drm_add_direct_address_reference(
    uint32_t j;
    const struct nvx_drm_bo_slot *slot;
 
-   if (!address || !access || !references || !reference_count)
-      return 1;
+   /* This helper is called only for a decoded GPU address operand. An
+    * unresolved or zero address must fail the pushbuf: otherwise the miniport
+    * never pins the referenced allocation and the GPU can MMU-fault. */
+   if (!device || !address || !access || !references || !reference_count)
+      return 0;
    slot = nvx_drm_find_bo_address_locked(device, address, NULL);
    if (slot) {
       for (j = 0; j < *reference_count; j++) {
@@ -621,7 +669,7 @@ nvx_drm_add_direct_address_reference(
       (*reference_count)++;
       return 1;
    }
-   return 1;
+   return 0;
 }
 
 static int
@@ -886,7 +934,7 @@ nvx_drm_submit_pushbuf(int fd,
    }
 
 #if defined(_WIN32) || defined(_WIN64)
-   if (NVX_XP_GPU_READBACK_TRACE &&
+   if (nvx_drm_gpu_readback_trace_enabled() &&
        shader_dump_count < NVX_DRM_SHADER_DUMP_LIMIT) {
       shader_dump_count = nvx_drm_capture_shader_addresses_locked(device,
           batch + sizeof(header) +
@@ -953,7 +1001,7 @@ nvx_drm_submit_pushbuf(int fd,
          if (flush_ok) {
             flushed_shadow_count++;
 #if defined(_WIN32) || defined(_WIN64)
-            if (NVX_XP_GPU_READBACK_TRACE &&
+            if (nvx_drm_gpu_readback_trace_enabled() &&
                 !device->shader_triangle_input_readback_scheduled &&
                 vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT &&
                 offset <= slot->bo.allocation.Bytes &&
@@ -975,8 +1023,20 @@ nvx_drm_submit_pushbuf(int fd,
          continue;
       }
       /* Nouveau's map access flags govern waits, not CPU write permission.
-       * Its access=0 paths write through cached shared mappings as well. */
-      if (!slot->bo.map_count || !slot->bo.dirty)
+       * Its access=0 paths write through cached shared mappings as well.
+       * Even if map_count == 0 (e.g. unmapped before submit), any buffer marked
+       * dirty must have its shadow flushed before submitting the pushbuf.
+       * For direct-mapped buffers, issue a CPU memory barrier so writes are visible. */
+      if (slot->bo.direct_mapped) {
+         if (slot->bo.dirty) {
+            __sync_synchronize();
+            slot->bo.dirty = 0;
+            slot->bo.dirty_offset = 0;
+            slot->bo.dirty_end = 0;
+         }
+         continue;
+      }
+      if (!slot->bo.dirty)
          continue;
       if (!NvxNouveauBoFlush(&slot->bo))
          goto done;
@@ -993,7 +1053,7 @@ nvx_drm_submit_pushbuf(int fd,
       }
    }
 #if defined(_WIN32) || defined(_WIN64)
-   while (NVX_XP_GPU_READBACK_TRACE &&
+   while (nvx_drm_gpu_readback_trace_enabled() &&
           nvx_drm_vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT &&
           vertex_dump_count < NVX_DRM_VERTEX_DUMP_LIMIT) {
       struct nvx_drm_vertex_dump *dump =
@@ -1098,7 +1158,7 @@ nvx_drm_submit_pushbuf(int fd,
    profile_translate_start = nvx_wgl_present_timer();
 
 #if defined(_WIN32) || defined(_WIN64)
-   if (NVX_XP_GPU_READBACK_TRACE) {
+   if (nvx_drm_gpu_readback_trace_enabled()) {
       uint32_t dump_index;
       for (dump_index = 0; dump_index < vertex_dump_count; dump_index++) {
          struct nvx_drm_vertex_dump *dump = &vertex_dumps[dump_index];
@@ -1197,7 +1257,7 @@ nvx_drm_submit_pushbuf(int fd,
       nvx_drm_lock_release();
    }
 #if defined(_WIN32) || defined(_WIN64)
-   if (NVX_XP_GPU_READBACK_TRACE && valid && fence_value) {
+   if (nvx_drm_gpu_readback_trace_enabled() && valid && fence_value) {
       uint32_t dump_index;
       int has_forced_dump = 0;
       int completed = 0;
@@ -1211,28 +1271,69 @@ nvx_drm_submit_pushbuf(int fd,
          uint32_t result;
          if (!dump->force_gpu_readback)
             continue;
+         uint32_t matches = 0xffffffffU;
+         uint32_t first_mismatch = 0xffffffffU;
          result = completed ? 0U : 3U;
+         if (dump->copied_from_shadow)
+            NvxWglRecordNouveauBufferDwords((uint32_t)dump->buffer_id,
+               dump->gpu_va, dump->offset, dump->expected_dwords,
+               dump->bytes / sizeof(uint32_t), 1U);
          if (completed && !NvxWinsysDownloadBuffer(winsys, dump->buffer_id,
                dump->allocation_bytes, dump->offset, dump->dwords,
                dump->bytes))
             result = 2U;
-         NvxWglRecordNouveauBufferDwords((uint32_t)dump->buffer_id,
-            dump->gpu_va, dump->offset, dump->dwords,
-            dump->bytes / sizeof(uint32_t), result);
+         if (result == 0U && dump->copied_from_shadow) {
+            uint32_t word_count = dump->bytes / sizeof(uint32_t);
+            uint32_t word;
+            matches = 1U;
+            for (word = 0; word < word_count; word++) {
+               if (dump->expected_dwords[word] != dump->dwords[word]) {
+                  matches = 0U;
+                  first_mismatch = word;
+                  break;
+               }
+            }
+         }
+         NvxWglRecordNouveauPushbufItem(26U, dump_index,
+            (uint32_t)dump->buffer_id, dump->offset, dump->bytes,
+            dump->stride, result, matches);
+         if (!matches && first_mismatch != 0xffffffffU)
+            NvxWglRecordNouveauPushbufItem(27U, dump_index,
+               first_mismatch,
+               dump->expected_dwords[first_mismatch],
+               dump->dwords[first_mismatch], dump->fetch,
+               (uint32_t)dump->gpu_va,
+               (uint32_t)(dump->gpu_va >> 32));
+         if (result == 0U)
+            NvxWglRecordNouveauBufferDwords((uint32_t)dump->buffer_id,
+               dump->gpu_va, dump->offset, dump->dwords,
+               dump->bytes / sizeof(uint32_t), 0U);
       }
    }
-   if (NVX_XP_GPU_READBACK_TRACE && valid && fence_value &&
+   if (nvx_drm_gpu_readback_trace_enabled() && valid && fence_value &&
        shader_dump_count) {
       uint32_t dump_index;
       int completed = NvxWinsysWaitFence(winsys, fence_value, 5000U);
       for (dump_index = 0; dump_index < shader_dump_count; dump_index++) {
          struct nvx_drm_shader_dump *dump = &shader_dumps[dump_index];
          uint32_t result = 3U;
+         uint32_t matches = 0xffffffffU;
          if (completed) {
             result = NvxWinsysDownloadBuffer(winsys, dump->buffer_id,
                dump->allocation_bytes, dump->offset, dump->dwords,
                dump->bytes) ? 0U : 2U;
          }
+         if (dump->copied_from_shadow)
+            NvxWglRecordNouveauShaderDwords(dump->stage,
+               (uint32_t)dump->buffer_id, dump->gpu_va, dump->offset,
+               dump->expected_dwords, dump->bytes / sizeof(uint32_t),
+               1U, dump->draw_kind);
+         if (result == 0U && dump->copied_from_shadow)
+            matches = (uint32_t)(memcmp(dump->expected_dwords,
+               dump->dwords, dump->bytes) == 0);
+         NvxWglRecordNouveauPushbufItem(28U, dump_index,
+            (uint32_t)dump->buffer_id, dump->stage, dump->bytes,
+            dump->draw_kind, result, matches);
          NvxWglRecordNouveauShaderDwords(dump->stage,
             (uint32_t)dump->buffer_id, dump->gpu_va, dump->offset,
             dump->dwords, dump->bytes / sizeof(uint32_t),
@@ -2682,7 +2783,7 @@ NvxXf86DrmMarkBufferDirtyRange(int fd, uint32_t handle, uint64_t offset, uint64_
    device = nvx_drm_find_device_locked(fd);
    slot = nvx_drm_find_bo_locked(device, handle);
    found = slot != NULL;
-   if (slot && slot->bo.map_count) {
+   if (slot) {
       uint32_t end = (uint32_t)(offset + bytes);
       if (end > slot->bo.allocation.Bytes)
          end = slot->bo.allocation.Bytes;

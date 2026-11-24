@@ -1,0 +1,125 @@
+diff --git a/mesa-25.1.x/src/gallium/frontends/nine/nine_state.c b/mesa-25.1.x/src/gallium/frontends/nine/nine_state.c
+index 7e5762b1..c6eab2d2 100644
+--- a/mesa-25.1.x/src/gallium/frontends/nine/nine_state.c
++++ b/mesa-25.1.x/src/gallium/frontends/nine/nine_state.c
+@@ -2423,6 +2423,11 @@ init_draw_info(struct pipe_draw_info *info,
+                struct NineDevice9 *dev, D3DPRIMITIVETYPE type, UINT count)
+ {
+     info->mode = d3dprimitivetype_to_pipe_prim(type);
++    info->index_size = 0;
++    info->index_bounds_valid = false;
++    info->min_index = 0;
++    info->max_index = 0;
++    info->index.resource = NULL;
+     draw->count = prim_count_to_vertex_count(type, count);
+     info->start_instance = 0;
+     info->instance_count = 1;
+@@ -2437,6 +2442,84 @@ init_draw_info(struct pipe_draw_info *info,
+     info->restart_index = 0;
+ }
+ 
++/* Log only inconsistent draw metadata at the Nine-to-Gallium boundary. */
++static void
++nvx_trace_nine_draw_bounds(const struct pipe_draw_info *info,
++                           const struct pipe_draw_start_count_bias *draw,
++                           const struct nine_context *context)
++{
++    static volatile LONG trace_count;
++    char message[384];
++    bool metadata_mismatch;
++    unsigned i;
++
++    if (!draw->count)
++        return;
++
++    metadata_mismatch = info->index_size ?
++        (!info->index_bounds_valid || info->min_index > info->max_index) :
++        (info->index_bounds_valid ||
++         (uint64_t)info->max_index !=
++         (uint64_t)draw->start + draw->count - 1);
++
++    for (i = 0; i < PIPE_MAX_ATTRIBS; ++i) {
++        const struct pipe_vertex_buffer *vb = &context->vtxbuf[i];
++        const unsigned stride = context->vtxstride[i];
++        uint64_t last_index;
++        uint64_t offset, needed_bytes;
++        bool buffer_mismatch;
++
++        /* Only the current vertex declaration's active streams are consumed
++         * by this draw. Other D3D streams may remain bound with unrelated
++         * sizes and must not be diagnosed against this index range. */
++        if (!(context->stream_usage_mask & (1U << i)) ||
++            !(context->vtxbuf_mask & (1U << i)) ||
++            !vb->buffer.resource || !stride ||
++            (context->stream_freq[i] & D3DSTREAMSOURCE_INSTANCEDATA))
++            continue;
++
++        if (info->index_size) {
++            if (!info->index_bounds_valid || info->min_index > info->max_index)
++                continue;
++            if ((int64_t)info->max_index + draw->index_bias < 0)
++                continue;
++            last_index = (uint64_t)((int64_t)info->max_index + draw->index_bias);
++        } else {
++            last_index = (uint64_t)draw->start + draw->count - 1;
++        }
++        offset = vb->buffer_offset;
++        buffer_mismatch = offset > vb->buffer.resource->width0 ||
++            last_index >= (vb->buffer.resource->width0 -
++                           MIN2(offset, vb->buffer.resource->width0)) / stride;
++
++        if (!metadata_mismatch && !buffer_mismatch)
++            continue;
++        if (InterlockedIncrement(&trace_count) > 32)
++            return;
++
++        needed_bytes = (last_index + 1) * stride;
++        wsprintfA(message,
++                  "[NINE_PIPE_DRAW_MISMATCH] mode=%lu start=%lu count=%lu index_size=%u bounds_valid=%u min=%lu max=%lu bias=%ld stream=%lu freq=%08lx used=%04lx offset=%lu stride=%lu width=%lu needed=%lu meta_bad=%u",
++                  (unsigned long)info->mode,
++                  (unsigned long)draw->start,
++                  (unsigned long)draw->count,
++                  (unsigned)info->index_size,
++                  (unsigned)info->index_bounds_valid,
++                  (unsigned long)info->min_index,
++                  (unsigned long)info->max_index,
++                  (long)draw->index_bias,
++                  (unsigned long)i,
++                  (unsigned long)context->stream_freq[i],
++                  (unsigned long)context->stream_usage_mask,
++                  (unsigned long)offset,
++                  (unsigned long)stride,
++                  (unsigned long)vb->buffer.resource->width0,
++                  (unsigned long)needed_bytes,
++                  (unsigned)metadata_mismatch);
++        OutputDebugStringA(message);
++    }
++}
++
+ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
+                   ARG_VAL(D3DPRIMITIVETYPE, PrimitiveType),
+                   ARG_VAL(UINT, StartVertex),
+@@ -2459,6 +2542,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
+     info.max_index = draw.start + draw.count - 1;
+     info.index.resource = NULL;
+ 
++    nvx_trace_nine_draw_bounds(&info, &draw, context);
+     context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
+ }
+ 
+@@ -2489,6 +2573,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
+     info.max_index = MinVertexIndex + NumVertices - 1;
+     info.index.resource = context->idxbuf;
+ 
++    nvx_trace_nine_draw_bounds(&info, &draw, context);
+     context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
+ }
+ 
+@@ -2537,6 +2622,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
+     util_set_vertex_buffers(context->pipe, 1, false, vbuf);
+     context->changed.vtxbuf_dirty = true;
+ 
++    nvx_trace_nine_draw_bounds(&info, &draw, context);
+     context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
+ }
+ 

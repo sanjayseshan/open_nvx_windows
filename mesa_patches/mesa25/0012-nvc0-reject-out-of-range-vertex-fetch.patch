@@ -1,0 +1,248 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+index ce2c8807b2f3e..7179c84c7556e 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+@@ -24,17 +24,100 @@
+ 
+ #include "pipe/p_context.h"
+ #include "pipe/p_state.h"
++#include <limits.h>
++#include <stdint.h>
++#include <string.h>
+ #include "util/u_draw.h"
+ #include "util/u_inlines.h"
+ #include "util/format/u_format.h"
+ #include "translate/translate.h"
+ 
++#if defined(NVX_XP_WIN32_SHIMS)
++void NvxWglRecordNouveauPushbufItem(unsigned int, unsigned int,
++                                    unsigned int, unsigned int,
++                                    unsigned int, unsigned int,
++                                    unsigned int, unsigned int);
++#endif
++
+ #include "nvc0/nvc0_context.h"
+ #include "nvc0/nvc0_query_hw.h"
+ #include "nvc0/nvc0_resource.h"
+ 
+ #include "nvc0/nvc0_3d.xml.h"
+ 
++/* A few D3D9 applications provide a conservative MinVertexIndex/NumVertices
++ * range that is larger than the actual indices in the draw.  If that hint
++ * alone would make us drop a draw, inspect the bounded index slice and use
++ * its real range for the resource safety check.  This is a slow exceptional
++ * path; ordinary draws never map their index buffers here.
++ */
++static bool
++nvx_nvc0_scan_index_range(struct pipe_context *pipe,
++                          const struct pipe_draw_info *info,
++                          const struct pipe_draw_start_count_bias *draw,
++                          int64_t *first, int64_t *last)
++{
++   struct pipe_transfer *transfer = NULL;
++   const uint8_t *indices;
++   uint64_t byte_offset, byte_count;
++   uint32_t min_index = ~0U, max_index = 0;
++   uint32_t restart_index;
++   bool found = false;
++
++   if (!info->index_size || !draw->count || draw->count > (1U << 20) ||
++       (info->index_size != 1 && info->index_size != 2 &&
++        info->index_size != 4))
++      return false;
++
++   byte_offset = (uint64_t)draw->start * info->index_size;
++   byte_count = (uint64_t)draw->count * info->index_size;
++   if (byte_offset > UINT_MAX || byte_count > UINT_MAX)
++      return false;
++
++   if (info->has_user_indices) {
++      if (!info->index.user)
++         return false;
++      indices = (const uint8_t *)info->index.user + byte_offset;
++   } else {
++      if (!info->index.resource ||
++          byte_offset > info->index.resource->width0 ||
++          byte_count > info->index.resource->width0 - byte_offset)
++         return false;
++      indices = pipe_buffer_map_range(pipe, info->index.resource,
++                                      (unsigned)byte_offset,
++                                      (unsigned)byte_count, PIPE_MAP_READ,
++                                      &transfer);
++      if (!indices)
++         return false;
++   }
++
++   restart_index = info->restart_index;
++   if (info->index_size == 1)
++      restart_index &= 0xffU;
++   else if (info->index_size == 2)
++      restart_index &= 0xffffU;
++
++   for (unsigned i = 0; i < draw->count; ++i) {
++      uint32_t index = 0;
++      memcpy(&index, indices + (uint64_t)i * info->index_size,
++             info->index_size);
++      if (info->primitive_restart && index == restart_index)
++         continue;
++      min_index = MIN2(min_index, index);
++      max_index = MAX2(max_index, index);
++      found = true;
++   }
++
++   if (transfer)
++      pipe_buffer_unmap(pipe, transfer);
++   if (!found)
++      return false;
++
++   *first = (int64_t)min_index + draw->index_bias;
++   *last = (int64_t)max_index + draw->index_bias;
++   return *first >= 0 && *last >= *first;
++}
++
+ void
+ nvc0_vertex_state_delete(struct pipe_context *pipe,
+                          void *hwcso)
+@@ -1067,6 +1150,13 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
+ 
+    unsigned drawid = drawid_offset;
+ 
++   /* Reject invalid draws before vertex fetch can escape a Gallium resource.
++    * Nouveau suballocates resources from larger GART slabs, so an invalid
++    * fetch can read a neighboring resource before it reaches the slab edge.
++    */
++   const bool indexed_bounds_known =
++      !info->index_size || info->index_bounds_valid;
++
+    /* dont wanna start trippin */
+    simple_mtx_lock(&nvc0->screen->state_lock);
+ 
+@@ -1160,7 +1250,127 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
+    nvc0_state_validate_3d(nvc0, ~0);
+ 
+    for (unsigned i = 0; i < num_draws; i++) {
+-      if (indirect || (draws[i].count && info->instance_count))
++      bool vertex_range_valid = true;
++      bool actual_index_range_checked = false;
++      bool actual_index_range_valid = false;
++      int64_t actual_first_index = 0, actual_last_index = 0;
++
++      if (!indirect && indexed_bounds_known && draws[i].count &&
++          info->instance_count && nvc0->vertex) {
++         for (unsigned e = 0; e < nvc0->vertex->num_elements; e++) {
++            const struct nvc0_vertex_element *ve = &nvc0->vertex->element[e];
++            const unsigned b = ve->pipe.vertex_buffer_index;
++            const struct pipe_vertex_buffer *vb = &nvc0->vtxbuf[b];
++            const unsigned elem_size =
++               util_format_get_blocksize(ve->pipe.src_format);
++            uint64_t first_index, last_index;
++            bool index_values_valid = true;
++
++            if (!elem_size || !vb->buffer.resource ||
++                (nvc0->vbo_user & (1U << b)) ||
++                (nvc0->constant_vbos & (1U << b)))
++               continue;
++
++            if (ve->pipe.instance_divisor) {
++               first_index = (uint64_t)info->start_instance /
++                             ve->pipe.instance_divisor;
++               last_index = ((uint64_t)info->start_instance +
++                             info->instance_count - 1U) /
++                            ve->pipe.instance_divisor;
++            } else if (info->index_size) {
++               const int64_t indexed_first = (int64_t)info->min_index +
++                                             draws[i].index_bias;
++               const int64_t indexed_last = (int64_t)info->max_index +
++                                            draws[i].index_bias;
++               index_values_valid = indexed_first >= 0 &&
++                                    indexed_last >= indexed_first;
++               first_index = index_values_valid ?
++                             (uint64_t)indexed_first : 0;
++               last_index = index_values_valid ?
++                            (uint64_t)indexed_last : 0;
++            } else {
++               first_index = draws[i].start;
++               last_index = (uint64_t)draws[i].start + draws[i].count - 1U;
++            }
++
++            {
++               const uint64_t offset = (uint64_t)vb->buffer_offset +
++                                       ve->pipe.src_offset;
++               const uint64_t resource_bytes =
++                  vb->buffer.resource->width0;
++               bool range_valid = index_values_valid &&
++                  first_index <= last_index &&
++                  offset <= resource_bytes &&
++                  elem_size <= resource_bytes - offset &&
++                  (!ve->pipe.src_stride || last_index <=
++                   (resource_bytes - offset - elem_size) /
++                      ve->pipe.src_stride);
++
++               /* Nine forwards D3D9's MinVertexIndex/NumVertices hint. Some
++                * apps overstate it; before dropping the draw, derive the real
++                * range from its actual index slice, but only on this slow
++                * exceptional path. */
++               if (!range_valid && info->index_size &&
++                   !ve->pipe.instance_divisor) {
++                  if (!actual_index_range_checked) {
++                     actual_index_range_valid = nvx_nvc0_scan_index_range(
++                        pipe, info, &draws[i], &actual_first_index,
++                        &actual_last_index);
++                     actual_index_range_checked = true;
++                  }
++                  if (actual_index_range_valid) {
++                     first_index = (uint64_t)actual_first_index;
++                     last_index = (uint64_t)actual_last_index;
++                     index_values_valid = true;
++                     range_valid = offset <= resource_bytes &&
++                        elem_size <= resource_bytes - offset &&
++                        (!ve->pipe.src_stride || last_index <=
++                         (resource_bytes - offset - elem_size) /
++                            ve->pipe.src_stride);
++#if defined(NVX_XP_WIN32_SHIMS)
++                     if (range_valid)
++                        NvxWglRecordNouveauPushbufItem(33U, e,
++                           (unsigned int)actual_first_index,
++                           (unsigned int)actual_last_index,
++                           info->min_index, info->max_index,
++                           info->index_size, draws[i].start);
++#endif
++                  }
++               }
++
++               if (!range_valid) {
++                  vertex_range_valid = false;
++#if defined(NVX_XP_WIN32_SHIMS)
++                  NvxWglRecordNouveauPushbufItem(30U, b, i,
++                     (unsigned int)last_index, ve->pipe.src_stride,
++                     (unsigned int)offset, (unsigned int)resource_bytes,
++                     elem_size);
++                  /* Capture the original D3D/Gallium range and binding so a
++                   * bad range hint can be separated from a stale/sliced VB.
++                   */
++                  NvxWglRecordNouveauPushbufItem(31U, e,
++                     draws[i].start, draws[i].count,
++                     info->min_index, info->max_index,
++                     (unsigned int)draws[i].index_bias, info->index_size);
++                  NvxWglRecordNouveauPushbufItem(32U, e,
++                     vb->buffer_offset, ve->pipe.src_offset,
++                     ve->pipe.src_stride, (unsigned int)resource_bytes,
++                     b, ve->pipe.instance_divisor);
++                  NvxWglRecordNouveauPushbufItem(33U, e,
++                     actual_index_range_checked,
++                     actual_index_range_valid,
++                     (unsigned int)actual_first_index,
++                     (unsigned int)actual_last_index,
++                     info->index_size, draws[i].start);
++#endif
++                  break;
++               }
++            }
++         }
++      }
++
++      if (vertex_range_valid &&
++          (indirect || (draws[i].count && info->instance_count)))
+          nvc0_draw_single_vbo(pipe, info, drawid, indirect, &draws[i]);
+       if (info->increment_draw_id)
+          drawid++;

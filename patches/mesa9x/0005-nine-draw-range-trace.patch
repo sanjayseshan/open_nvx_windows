@@ -1,0 +1,77 @@
+diff --git a/mesa-25.1.x/src/gallium/frontends/nine/device9.c b/mesa-25.1.x/src/gallium/frontends/nine/device9.c
+index 64f6c7a3..a0feb8af 100644
+--- a/mesa-25.1.x/src/gallium/frontends/nine/device9.c
++++ b/mesa-25.1.x/src/gallium/frontends/nine/device9.c
+@@ -2979,6 +2979,62 @@ NineBeforeDraw( struct NineDevice9 *This )
+     update_managed_buffers(This);
+ }
+ 
++/* Temporary XP/Nouveau diagnostic: correlate a D3D DrawPrimitive request
++ * with the Nine vertex-buffer objects before CSMT queues the pipe draw. */
++static void
++nvx_trace_draw_primitive_range(struct NineDevice9 *This,
++                               D3DPRIMITIVETYPE PrimitiveType,
++                               UINT StartVertex, UINT PrimitiveCount)
++{
++    static volatile LONG trace_count;
++    const unsigned vertex_count =
++        prim_count_to_vertex_count(PrimitiveType, PrimitiveCount);
++    unsigned i;
++
++    if (!vertex_count)
++        return;
++
++    for (i = 0; i < This->caps.MaxStreams; ++i) {
++        struct NineVertexBuffer9 *vb = This->state.stream[i];
++        const unsigned stride = This->state.vtxstride[i];
++        const unsigned state_offset = This->state.vtxbuf[i].buffer_offset;
++        const DWORD stream_frequency = This->state.stream_freq[i];
++        unsigned resource_offset = 0;
++        struct pipe_resource *resource;
++        unsigned long long end_byte;
++        char message[256];
++
++        /* Instance-data streams advance per instance, not per vertex. */
++        if (!vb || !stride ||
++            (stream_frequency & D3DSTREAMSOURCE_INSTANCEDATA))
++            continue;
++        end_byte = (unsigned long long)state_offset +
++                   ((unsigned long long)StartVertex + vertex_count) * stride;
++        if (end_byte <= vb->base.size)
++            continue;
++
++        resource = NineVertexBuffer9_GetResource(vb, &resource_offset);
++        if (InterlockedIncrement(&trace_count) > 32)
++            return;
++
++        wsprintfA(message,
++                  "[NINE_DRAW_OOB] type=%lu start=%lu prim_count=%lu vertices=%lu stream=%lu logical_size=%lu state_offset=%lu stride=%lu resource_size=%lu resource_offset=%lu usage=%08lx pool=%lu\r\n",
++                  (unsigned long)PrimitiveType,
++                  (unsigned long)StartVertex,
++                  (unsigned long)PrimitiveCount,
++                  (unsigned long)vertex_count,
++                  (unsigned long)i,
++                  (unsigned long)vb->base.size,
++                  (unsigned long)state_offset,
++                  (unsigned long)stride,
++                  (unsigned long)(resource ? resource->width0 : 0),
++                  (unsigned long)resource_offset,
++                  (unsigned long)vb->base.base.usage,
++                  (unsigned long)vb->base.base.pool);
++        OutputDebugStringA(message);
++    }
++}
++
+ static void
+ NineAfterDraw( struct NineDevice9 *This )
+ {
+@@ -3031,6 +3087,9 @@ NineDevice9_DrawPrimitive( struct NineDevice9 *This,
+     DBG("iface %p, PrimitiveType %u, StartVertex %u, PrimitiveCount %u\n",
+         This, PrimitiveType, StartVertex, PrimitiveCount);
+ 
++    nvx_trace_draw_primitive_range(This, PrimitiveType, StartVertex,
++                                   PrimitiveCount);
++
+     /* Tracking for dynamic SYSTEMMEM */
+     for (i = 0; i < This->caps.MaxStreams; i++) {
+         unsigned stride = This->state.vtxstride[i];

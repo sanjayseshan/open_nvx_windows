@@ -1,0 +1,25 @@
+diff --git a/extra/crtfix.c b/extra/crtfix.c
+index f47ebbe..7e67a5c 100644
+--- a/extra/crtfix.c
++++ b/extra/crtfix.c
+@@ -39,19 +39,10 @@ BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature)
+ /* Don't use this on mingw 4.x.x */
+ #if __GNUC__ > 4
+ 
+-void __fastfail(unsigned int code);
+-
++/* XP has no fast-fail runtime entry point. */
+ void __cdecl __attribute__((__noreturn__)) __chk_fail(void) {
+-#ifndef WIN9XSMP
+-  if (IsProcessorFeaturePresent95(PF_FASTFAIL_AVAILABLE)) {
+-#else
+-  if (IsProcessorFeaturePresent(PF_FASTFAIL_AVAILABLE)) {
+-#endif
+-    __fastfail(FAST_FAIL_RANGE_CHECK_FAILURE);
+-  } else {
+     TerminateProcess(GetCurrentProcess(), STATUS_STACK_BUFFER_OVERRUN);
+     __builtin_unreachable();
+-  }
+ }
+ 
+ #endif

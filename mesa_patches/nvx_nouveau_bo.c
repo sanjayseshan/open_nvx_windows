@@ -420,9 +420,11 @@ nvx_nouveau_bo_flush_range(NVX_NOUVEAU_BO *bo, uint32_t offset,
    uint32_t scanned_bytes=0, uploaded_bytes=0, upload_calls=0;
    if (!bo || !bo->references)
       return 0;
-   if (!bo->map_count)
+   if (bo->direct_mapped) {
+      __sync_synchronize();
       return 1;
-   if (bo->direct_mapped)
+   }
+   if (!bo->map_count && !bo->shadow)
       return 1;
    if (!bo->shadow || !bo->shadow_base ||
        end>bo->allocation.Bytes || offset>end || (offset&3U) || (end&3U))

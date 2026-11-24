@@ -13,6 +13,12 @@
 #include "surface9.h"
 #include "pipe/p_screen.h"
 
+/* Shared with the separately built NVX Mesa ICD. */
+#include "pipe/p_state.h"
+_Static_assert(sizeof(enum mesa_prim) == 1, "Gallium ABI requires packed mesa_prim");
+_Static_assert(offsetof(struct pipe_draw_info, index_size) == 2,
+               "Gallium draw index_size must match the ICD");
+
 #include "target-helpers/inline_sw_helper.h"
 
 #include "mesa99.h"
@@ -240,7 +246,7 @@ static HRESULT d3dadapter9_context_create(struct d3dadapter9_context *ctx, struc
 	ctx->dynamic_texture_workaround = FALSE;
 	ctx->shader_inline_constants    = FALSE;
 	ctx->memfd_virtualsizelimit     = -1;
-	ctx->override_vram_size         = 128; /* in MB (!) */
+	ctx->override_vram_size         = -1; /* Use device video memory */
 	ctx->destroy                    = d3dadapter9_context_destroy;
 
 	return D3D_OK;

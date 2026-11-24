@@ -11,6 +11,11 @@ case "$NVX_D3D9_BACKEND" in
     wined3d|nine) ;;
     *) echo "NVX_D3D9_BACKEND must be wined3d or nine" >&2; exit 1 ;;
 esac
+NVX_GPU_READBACK_TRACE="${NVX_GPU_READBACK_TRACE:-0}"
+case "$NVX_GPU_READBACK_TRACE" in
+    0|1) ;;
+    *) echo "NVX_GPU_READBACK_TRACE must be 0 or 1" >&2; exit 1 ;;
+esac
 NVX_OPENGL_ICD_DLL="${NVX_OPENGL_ICD_DLL:-nvxogl64.dll}"
 NVX_MESA_APPLOCAL="${NVX_MESA_APPLOCAL:-0}"
 if [ "${1:-}" = full ]; then
@@ -427,11 +432,11 @@ if exist C:\test_accel\run_3dmark.flag (
     echo [3DMARK05] Starting automated game-test run... >> C:\test_accel.log
     echo [3DMARK05_START] > \\.\COM1
     if exist C:\test_accel\nine_backend.flag (
-        echo [D3D9_BACKEND] Gallium Nine (x86) > \\.\COM1
-        echo [3DMARK05] D3D9 backend: Gallium Nine (x86) >> C:\test_accel.log
+        echo [D3D9_BACKEND] Gallium Nine x86 > \\.\COM1
+        echo [3DMARK05] D3D9 backend: Gallium Nine x86 >> C:\test_accel.log
     ) else (
-        echo [D3D9_BACKEND] WineD3D (x86) > \\.\COM1
-        echo [3DMARK05] D3D9 backend: WineD3D (x86) >> C:\test_accel.log
+        echo [D3D9_BACKEND] WineD3D x86 > \\.\COM1
+        echo [3DMARK05] D3D9 backend: WineD3D x86 >> C:\test_accel.log
     )
     rem WineD3D performance settings to minimize CPU sync overhead
     if exist C:\test_accel\wined3d_backend.flag (
@@ -551,6 +556,12 @@ PY
 fi
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
 rm -f "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
+if [ "$NVX_GPU_READBACK_TRACE" = "1" ]; then
+    : > "$NVX_MOUNT/test_accel/nvx_gpu_readback.flag"
+    echo "[TEST-PACKAGE] bounded Nouveau vertex/shader GPU readback trace enabled"
+else
+    rm -f "$NVX_MOUNT/test_accel/nvx_gpu_readback.flag"
+fi
 if [ "${NVX_3DMARK_DIAG:-1}" = "1" ]; then
     : > "$NVX_MOUNT/test_accel/run_3dmark_diag.flag"
 else

@@ -27,4 +27,7 @@ c161d2b87e43aa4a0c18e8fe2f7ded76eb56eeb0b5fa0fd1b01a92476ca946d2  /home/sanjay/t
 f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/temp/xddm/mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
 4326dfddbf6fdfdfe819a2c3b5cb6e45beb0249d384c6cc7bae316b648ce2466  /home/sanjay/temp/xddm/mesa_patches/mesa25/0008-nouveau-xp-pushbuf-reference-limit.patch
 76717c44f662e977fc2ea9f33878aef79dac11dbfa46bd53608e617d0556aade  /home/sanjay/temp/xddm/mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
-10d96a434d22b3d2d3c412580b74e9952d30474122eaec35935d5b40c246fe50  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
+92978711ffaadea8570395e64bde67b8a3fabddb1c349a75b152b70a69dcfd70  /home/sanjay/temp/xddm/mesa_patches/mesa25/0011-nouveau-xp-fence-rotation-recovery.patch
+f04b72f996fe1ebbae8a419d52fd11e6717c054f8dbe7a6192012c6ab7bb7875  /home/sanjay/temp/xddm/mesa_patches/mesa25/0010-nvc0-gm107-vbo-dirty-barrier.patch
+3ca83a63144092b171aa260a265626894d0c8fd5e2f399f6cec4734c7782eac2  /home/sanjay/temp/xddm/mesa_patches/mesa25/0012-nvc0-reject-out-of-range-vertex-fetch.patch
+238ec512163d471083b9807b18f50d85d0d109211fb4c2d28175e11def8d66cc  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll

@@ -1,0 +1,69 @@
+--- a/src/gallium/drivers/nouveau/nouveau_fence.c
++++ b/src/gallium/drivers/nouveau/nouveau_fence.c
+@@ -21,6 +21,13 @@
+ #include "nouveau_fence.h"
+ #include "util/os_time.h"
+ 
++#if defined(NVX_XP_WIN32_SHIMS)
++void NvxWglRecordNouveauPushbufItem(unsigned int, unsigned int,
++                                    unsigned int, unsigned int,
++                                    unsigned int, unsigned int,
++                                    unsigned int, unsigned int);
++#endif
++
+ #if DETECT_OS_POSIX
+ #include <sched.h>
+ #endif
+@@ -36,7 +43,11 @@
+ nouveau_fence_new(struct nouveau_context *nv, struct nouveau_fence **fence)
+ {
+    struct nouveau_fence *new_fence = CALLOC_STRUCT(nouveau_fence);
+-   if (!new_fence)
++   if (!new_fence) {
++#if defined(NVX_XP_WIN32_SHIMS)
++      NvxWglRecordNouveauPushbufItem(29U, 0U, 1U, 0U, 0U, 0U, 0U, 0U);
++#endif
+       return false;
++   }
+ 
+    int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &new_fence->bo);
+@@ -45,4 +57,8 @@
+    if (ret) {
+       FREE(new_fence);
++#if defined(NVX_XP_WIN32_SHIMS)
++      NvxWglRecordNouveauPushbufItem(29U, 0U, 2U, (unsigned int)ret,
++                                     0U, 0U, 0U, 0U);
++#endif
+       return false;
+    }
+@@ -283,8 +299,17 @@
+ _nouveau_fence_next(struct nouveau_context *nv)
+ {
+    struct nouveau_fence_list *fence_list = &nv->screen->fence;
++   struct nouveau_fence *new_fence = NULL;
+ 
+    simple_mtx_assert_locked(&fence_list->lock);
+ 
++   /* Preserve the current fence if allocating its replacement fails. A NULL
++    * nv->fence makes the next kick dereference a null pointer here. */
++   if (!nv->fence) {
++      if (nouveau_fence_new(nv, &new_fence))
++         nv->fence = new_fence;
++      return;
++   }
++
+    if (nv->fence->state < NOUVEAU_FENCE_STATE_EMITTING) {
+       if (p_atomic_read(&nv->fence->ref) > 1)
+@@ -294,8 +329,11 @@
+       else
+          return;
+    }
+ 
++   if (!nouveau_fence_new(nv, &new_fence))
++      return;
++
+    _nouveau_fence_ref(NULL, &nv->fence);
+ 
+-   nouveau_fence_new(nv, &nv->fence);
++   nv->fence = new_fence;
+ }

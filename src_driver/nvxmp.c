@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 4.0.0.5
+ * Driver Version: 4.0.0.26
  */
 
 #include "miniport.h"
@@ -1513,11 +1513,15 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
 
 /* Nouveau retires pushbuffers from fences. Keep the miniport BO allocation
  * alive until its last queued use signals, then drop one reference per batch. */
-static VOID Nvx3dReapPendingBatches(PNVX_DEVICE_EXTENSION engine)
+static VOID Nvx3dReapPendingBatchesRange(PNVX_DEVICE_EXTENSION engine,
+                                        ULONG start,ULONG count)
 {
-    ULONG slot;
+    ULONG n;
     if(!engine) return;
-    for(slot=0;slot<NVX_3D_MAX_INFLIGHT_BATCHES;slot++) {
+    if(count>NVX_3D_MAX_INFLIGHT_BATCHES)
+        count=NVX_3D_MAX_INFLIGHT_BATCHES;
+    for(n=0;n<count;n++) {
+        ULONG slot=(start+n)%NVX_3D_MAX_INFLIGHT_BATCHES;
         ULONG64 fenceValue,clientToken,freeIds[NVX_3D_MAX_BATCH_BUFFERS];
         ULONG bufferCount=0,i,freeCount=0;
         NVX_3D_PENDING_BATCH *batch;
@@ -1569,6 +1573,22 @@ static VOID Nvx3dReapPendingBatches(PNVX_DEVICE_EXTENSION engine)
     }
 }
 
+static VOID Nvx3dReapPendingBatches(PNVX_DEVICE_EXTENSION engine)
+{
+    Nvx3dReapPendingBatchesRange(engine,0U,
+                                 NVX_3D_MAX_INFLIGHT_BATCHES);
+}
+
+/* Most submits have no reason to scan all 256 retirement entries. */
+static VOID Nvx3dReapPendingBatchesHot(PNVX_DEVICE_EXTENSION engine)
+{
+    const ULONG budget=16U;
+    ULONG start;
+    if(!engine) return;
+    start=__sync_fetch_and_add(&engine->Nvx3dBatchReapCursor,budget);
+    Nvx3dReapPendingBatchesRange(engine,start,budget);
+}
+
 static VOID Nvx3dReapPendingCopies(PNVX_DEVICE_EXTENSION engine)
 {
     static volatile ULONG s_retiredCopies;
@@ -1613,6 +1633,8 @@ static VOID Nvx3dReapPendingCopies(PNVX_DEVICE_EXTENSION engine)
                 }
             }
             engine->GspCopySlotFence[saved.CopySlot]=0;
+            if(engine->Nvx3dPendingCopyCount)
+                __sync_sub_and_fetch(&engine->Nvx3dPendingCopyCount,1U);
             VideoPortZeroMemory(&engine->Nvx3dPendingCopies[i],
                                 sizeof(engine->Nvx3dPendingCopies[i]));
             retired=TRUE;
@@ -1658,6 +1680,7 @@ static BOOLEAN Nvx3dReservePendingCopy(PNVX_DEVICE_EXTENSION engine,
                 (ULONG)(entry-engine->Nvx3dBuffers);
             engine->Nvx3dPendingCopies[freePending].BufferId=bufferId;
             engine->Nvx3dPendingCopies[freePending].ClientToken=clientToken;
+            __sync_add_and_fetch(&engine->Nvx3dPendingCopyCount,1U);
             engine->GspCopySlotFence[freeCopy]=~0ULL;
             *pendingIndex=freePending;*copySlot=freeCopy;
             Nvx3dUnlockBuffers();return TRUE;
@@ -1684,6 +1707,8 @@ static VOID Nvx3dCancelPendingCopy(PNVX_DEVICE_EXTENSION engine,
     if(!engine||pendingIndex>=NVX_3D_MAX_INFLIGHT_BATCHES||
        copySlot>=NVX_CE_ASYNC_COPY_SLOTS||!Nvx3dLockBuffers()) return;
     if(engine->Nvx3dPendingCopies[pendingIndex].State==1U) {
+        if(engine->Nvx3dPendingCopyCount)
+            __sync_sub_and_fetch(&engine->Nvx3dPendingCopyCount,1U);
         VideoPortZeroMemory(&engine->Nvx3dPendingCopies[pendingIndex],
                             sizeof(engine->Nvx3dPendingCopies[pendingIndex]));
         engine->GspCopySlotFence[copySlot]=0;
@@ -1732,16 +1757,11 @@ static BOOLEAN Nvx3dWaitBatchCopies(PNVX_DEVICE_EXTENSION engine,
     const VOID *batch,const NVX_3D_BATCH_HEADER *header)
 {
     const NVX_3D_BUFFER_REFERENCE *refs;
-    ULONG i, pendingCopies = 0;
+    ULONG i;
     if(!engine||!batch||!header) return FALSE;
     if(!header->BufferReferenceCount) return TRUE;
-    for(i=0; i<NVX_3D_MAX_INFLIGHT_BATCHES; i++) {
-        if(engine->Nvx3dPendingCopies[i].State) {
-            pendingCopies = 1;
-            break;
-        }
-    }
-    if(!pendingCopies) return TRUE;
+    if(!__sync_fetch_and_add(&engine->Nvx3dPendingCopyCount,0U))
+        return TRUE;
     refs=(const NVX_3D_BUFFER_REFERENCE *)((const UCHAR *)batch+
                                             sizeof(*header));
     for(i=0;i<header->BufferReferenceCount;i++)
@@ -1758,7 +1778,7 @@ static BOOLEAN Nvx3dReservePendingBatch(PNVX_DEVICE_EXTENSION engine,
     for(tries=0;tries<5000U;tries++) {
         ULONG i,freeSlot=NVX_3D_MAX_INFLIGHT_BATCHES;
         ULONG64 oldestFence=~0ULL;
-        Nvx3dReapPendingBatches(engine);
+        Nvx3dReapPendingBatchesHot(engine);
         if(!Nvx3dLockBuffers()) return FALSE;
         for(i=0;i<NVX_3D_MAX_INFLIGHT_BATCHES;i++) {
             NVX_3D_PENDING_BATCH *batch=&engine->Nvx3dPendingBatches[i];
@@ -1773,6 +1793,9 @@ static BOOLEAN Nvx3dReservePendingBatch(PNVX_DEVICE_EXTENSION engine,
         Nvx3dUnlockBuffers();
         if(oldestFence!=~0ULL) {
             if(!NvxGspWaitUserFence(engine,oldestFence,5000U)) return FALSE;
+            /* Queue pressure is uncommon; sweep completed entries after the
+             * wait so the next reservation can reuse the retired slots. */
+            Nvx3dReapPendingBatches(engine);
             continue;
         }
         /* Another submitter has reserved its slot and is between validation
@@ -4525,12 +4548,10 @@ validate_batch_done:
             (ULONG64)header.BufferReferenceCount*
             sizeof(NVX_3D_BUFFER_REFERENCE));
         stageStartTsc=Nvx3dReadTsc();
-        /* Trusted OpenGL/Wine client fast-path: the userspace Mesa driver
-         * produces well-formed framing and validated relocations. Skipping
-         * repetitive dword scanning saves ~37% of kernel driver CPU cycles. */
-        if(channel->ClientToken==header.ClientToken && channel->Ready) {
-            validationCycles+=Nvx3dReadTsc()-stageStartTsc;
-        } else if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
+        /* Client ownership does not make GPU addresses safe. Validate every
+         * submitted stream before the GPU sees it, including the trusted
+         * Mesa/Nine client path. */
+        if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
                 ownedAllocations,ownedCount,header.ClientToken)) {
             validationCycles+=Nvx3dReadTsc()-stageStartTsc;
             LogStr("NVX [NVC0-BATCH]: reject packet/address validation dwords=");
@@ -5241,7 +5262,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-        LogStr(" NVX Video Miniport Driver 4.0.0.5 (open-gpu-kernel-modules unified v2)\n");
+        LogStr(" NVX Video Miniport Driver 4.0.0.26 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));
