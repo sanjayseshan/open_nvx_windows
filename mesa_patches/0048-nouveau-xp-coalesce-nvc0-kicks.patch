@@ -1,0 +1,86 @@
+diff --git a/src/gallium/drivers/nouveau/nouveau_winsys.h b/src/gallium/drivers/nouveau/nouveau_winsys.h
+index cad8dc3e6201d..5afed0ebe5204 100644
+--- a/src/gallium/drivers/nouveau/nouveau_winsys.h
++++ b/src/gallium/drivers/nouveau/nouveau_winsys.h
+@@ -96,6 +96,11 @@ PUSH_KICK(struct nouveau_pushbuf *push)
+    simple_mtx_unlock(&ppush->screen->fence.lock);
+ }
+ 
++/* XP's validated miniport batch has finite reference, relocation, and dword
++ * limits. NVC0 may validate references after each draw and defer the kernel
++ * kick until this helper reports that the accumulated batch is near a limit. */
++bool nouveau_pushbuf_xp_batch_limit_reached(struct nouveau_pushbuf *push);
++
+ static inline int
+ PUSH_VAL(struct nouveau_pushbuf *push)
+ {
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+index ce2c8807b2f3e..badf28536785d 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c
+@@ -1166,7 +1166,15 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
+          drawid++;
+    }
+ 
++#if defined(NVX_XP_WIN32_SHIMS)
++   /* Validate and retain this draw's BO references before the context bins
++    * are reset below. Defer the escape until the shared push stream reaches
++    * a conservative batch limit. */
++   if (PUSH_VAL(push) || nouveau_pushbuf_xp_batch_limit_reached(push))
++      PUSH_KICK(push);
++#else
+    PUSH_KICK(push);
++#endif
+    simple_mtx_unlock(&nvc0->screen->state_lock);
+ 
+    nvc0->base.kick_notify = nvc0_default_kick_notify;
+diff --git a/src/gallium/winsys/nouveau/drm/nouveau.c b/src/gallium/winsys/nouveau/drm/nouveau.c
+index 27cbdc10033cc..e0043a04f4602 100644
+--- a/src/gallium/winsys/nouveau/drm/nouveau.c
++++ b/src/gallium/winsys/nouveau/drm/nouveau.c
+@@ -1699,6 +1699,44 @@ nouveau_pushbuf_refn(struct nouveau_pushbuf *push, struct nouveau_pushbuf_refn *refs, int nr)
+ {
+    return pushbuf_refn(push, true, refs, nr);
+ }
+ 
++bool nouveau_pushbuf_xp_batch_limit_reached(struct nouveau_pushbuf *push);
++
++/* Keep NVC0 draw references validated and retained in krec, but combine
++ * several small draw streams into one XP miniport submission. Stay below the
++ * NVX batch ABI limits with headroom for addresses discovered by the XP
++ * xf86drm translator. This is enabled only by the XP NVC0 caller. */
++bool
++nouveau_pushbuf_xp_batch_limit_reached(struct nouveau_pushbuf *push)
++{
++   struct nouveau_pushbuf_priv *nvpb;
++   struct nouveau_pushbuf_krec *krec;
++   uint64_t dwords = 0;
++   uint32_t i;
++   bool kick;
++
++   if (!push)
++      return true;
++   nvpb = nouveau_pushbuf(push);
++   krec = nvpb->krec;
++   for (i = 0; i < (uint32_t)krec->nr_push; i++) {
++      uint64_t bytes = krec->push[i].length &
++                       ~((uint64_t)NOUVEAU_GEM_PUSHBUF_NO_PREFETCH);
++      dwords += bytes / sizeof(uint32_t);
++   }
++   dwords += (uint64_t)(push->cur - nvpb->bgn);
++   kick = krec->nr_buffer >= 96 || krec->nr_reloc >= 192 ||
++          krec->nr_push >= 48 || dwords >= 12288 ||
++          (uint32_t)(push->end - push->cur) < 4096;
++#ifdef NVX_XP_WIN32_SHIMS
++   extern void NvxWglRecordNouveauCoalesceProfile(uint32_t deferred,
++      uint32_t buffers, uint32_t relocs, uint32_t pushes, uint32_t dwords);
++   NvxWglRecordNouveauCoalesceProfile(!kick, (uint32_t)krec->nr_buffer,
++      (uint32_t)krec->nr_reloc, (uint32_t)krec->nr_push,
++      dwords > UINT32_MAX ? UINT32_MAX : (uint32_t)dwords);
++#endif
++   return kick;
++}
++
+ void
+ nouveau_pushbuf_reloc(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t data,
+                       uint32_t flags, uint32_t vor, uint32_t tor)

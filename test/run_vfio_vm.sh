@@ -69,6 +69,10 @@ echo "Guest RAM: ${NVX_VM_MEMORY_MB} MB (memlock: ${NVX_MEMLOCK_KB} KB)"
 echo "Input: Dedicated Logitech keyboard and mouse (evdev)"
 echo "------------------------------------------------------------------"
 
+# Keep register sampling on its own HMP endpoint. The auto-retry controller
+# uses qemu-monitor.sock for key injection and shutdown requests.
+rm -f /tmp/qemu-monitor.sock /tmp/qemu-profile-monitor.sock
+
 qemu-system-x86_64 \
     -enable-kvm \
     -m "$NVX_VM_MEMORY_MB" \
@@ -88,4 +92,5 @@ qemu-system-x86_64 \
     -serial "file:$NVX_SERIAL_LOG" \
     -no-reboot \
     -monitor unix:/tmp/qemu-monitor.sock,server,nowait \
+    -monitor unix:/tmp/qemu-profile-monitor.sock,server,nowait \
     -monitor stdio

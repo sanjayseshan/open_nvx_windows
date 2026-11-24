@@ -6,8 +6,8 @@ mesa9x revision: 8b5428ca315c1d18341b69adce4f4b821e33338d
 257dc0a1748fdc82ba8f5de6e38f075d7e447a654c6a084bd73d8100245d6156  /home/sanjay/temp/xddm/patches/mesa9x/0006-nine-draw-range-metadata.patch
 87f63b4065537c26c649792b761cae8fe4b194a7873fcb9d05795f2f2ad058c5  /home/sanjay/temp/xddm/patches/mesa9x/0007-xp-crt-failure-termination.patch
 7e1f4a0039a56204d0a870fa9c7b4f00189bbaa3a681ef502ce865e91dff56b2  /home/sanjay/temp/xddm/patches/mesa9x/nvx-nine-build.mk
-ed2ff28b77c6a3cc51672d4758db8f124bc9c6c7a3083057a7ee532ffff59c7e  /home/sanjay/temp/xddm/mesa_patches/nine/mesa99.c
+688effbe4c2b2afc3fa1831265095c71c6b26d4ee16d08dcec5a217267296150  /home/sanjay/temp/xddm/mesa_patches/nine/mesa99.c
 6b3cb43a7c1f59609dc63bdda636f6a9846b8f87a40eb1bae54a428ed5361a13  /home/sanjay/temp/xddm/mesa_patches/nine/nine_memory_helper.c
 6bb4163e0a41ee07b7553956ecc743cabf77c7f7d0ac206632123070a56cd6ae  /home/sanjay/temp/xddm/mesa_patches/nine/nine_present.c
 f6b6bb121925ebc4661013ecf652fb54e24143f369b7cbb854c3c840c833845a  /home/sanjay/temp/xddm/mesa_patches/nine/nine_window.c
-4de7fc9123f90bbc734238b7eb87f2a4d01844cd1f053eb8b1bd879cdac813d5  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll
+dc0dbf8c2d40dfa8d2c91560ede72eb7c5c53bb0acab7ab56551ae574b44ff63  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll

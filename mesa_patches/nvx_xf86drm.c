@@ -40,6 +40,11 @@ void NvxWglRecordNouveauProfile(uint32_t total_us, uint32_t prepare_us,
                                uint32_t submit_us, uint32_t tail_us,
                                uint32_t dwords);
 void NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us);
+void NvxWglRecordNouveauShimProfile(uint32_t lock_wait_us,
+                                   uint32_t lock_hold_us,
+                                   uint32_t lookup_us,
+                                   uint32_t lookup_calls,
+                                   uint32_t translate_us);
 uint64_t nvx_wgl_present_timer(void);
 uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
@@ -832,9 +837,14 @@ nvx_drm_submit_pushbuf(int fd,
    uint64_t fence_value = 0;
    uint64_t profile_start = 0, profile_submit_start = 0;
    uint64_t profile_translate_start = 0;
+   uint64_t profile_lock_start = 0, profile_lock_hold_start = 0;
+   uint64_t profile_lookup_start = 0;
    uint32_t profile_prepare_us = 0, profile_submit_us = 0;
    uint32_t profile_translate_us = 0;
+   uint32_t profile_lock_wait_us = 0, profile_lock_hold_us = 0;
+   uint32_t profile_lookup_us = 0, profile_lookup_calls = 0;
    int valid = 0, translated = 0, submit_busy_owned = 0;
+   int profile_lock_held = 0;
    uint32_t failure_stage = 0, failure_index = 0;
 #if defined(_WIN32) || defined(_WIN64)
    struct nvx_drm_vertex_dump vertex_dumps[NVX_DRM_VERTEX_DUMP_LIMIT];
@@ -866,7 +876,11 @@ nvx_drm_submit_pushbuf(int fd,
    pushes = (struct drm_nouveau_gem_pushbuf_push *)(uintptr_t)request->push;
    memset(translated_relocations, 0, sizeof(translated_relocations));
    memset(references, 0, sizeof(references));
+   profile_lock_start = nvx_wgl_present_timer();
    nvx_drm_lock_acquire();
+   profile_lock_wait_us = nvx_wgl_present_elapsed_us(profile_lock_start);
+   profile_lock_hold_start = nvx_wgl_present_timer();
+   profile_lock_held = 1;
    failure_stage = 2U;
    device = nvx_drm_find_device_locked(fd);
    if (!device || !device->device.NouveauChannelHandle ||
@@ -880,6 +894,7 @@ nvx_drm_submit_pushbuf(int fd,
    submit_busy_owned = 1;
 
    failure_stage = 4U;
+   profile_lookup_start = nvx_wgl_present_timer();
    for (i = 0; i < request->nr_buffers; i++) {
       failure_index = i;
       struct nvx_drm_bo_slot *slot =
@@ -932,6 +947,8 @@ nvx_drm_submit_pushbuf(int fd,
              slot->bo.shadow + (uint32_t)pushes[i].offset, (size_t)bytes);
       dword_count += (uint32_t)(bytes / sizeof(uint32_t));
    }
+   profile_lookup_us += nvx_wgl_present_elapsed_us(profile_lookup_start);
+   profile_lookup_calls += request->nr_buffers + request->nr_push;
 
 #if defined(_WIN32) || defined(_WIN64)
    if (nvx_drm_gpu_readback_trace_enabled() &&
@@ -946,11 +963,14 @@ nvx_drm_submit_pushbuf(int fd,
    /* NVC0 also emits direct GPU addresses in its method streams, outside
     * request->buffers. Add references for those address operands only. */
    failure_stage = 6U;
+   profile_lookup_start = nvx_wgl_present_timer();
    if (!nvx_drm_add_nvc0_address_references(device,
           batch + sizeof(header) +
              (size_t)NVX_3D_MAX_BATCH_BUFFERS * sizeof(references[0]),
           dword_count, references, &reference_count))
       goto done;
+   profile_lookup_us += nvx_wgl_present_elapsed_us(profile_lookup_start);
+   profile_lookup_calls += reference_count;
 
    /* Flush after direct NVC0 addresses have been resolved. Nouveau vertex BOs
     * can be referenced only by VERTEX_ARRAY_START, so they are absent from
@@ -1075,6 +1095,7 @@ nvx_drm_submit_pushbuf(int fd,
     * reject OR/domain relocations until allocation domains are represented in
     * the NVX ABI. */
    failure_stage = 8U;
+   profile_lookup_start = nvx_wgl_present_timer();
    for (i = 0; i < request->nr_relocs; i++) {
       failure_index = i;
       const struct drm_nouveau_gem_pushbuf_reloc *reloc =
@@ -1146,6 +1167,8 @@ nvx_drm_submit_pushbuf(int fd,
       translated_relocations[relocation_count].Access = access;
       relocation_count++;
    }
+   profile_lookup_us += nvx_wgl_present_elapsed_us(profile_lookup_start);
+   profile_lookup_calls += request->nr_relocs * 2U;
 
    winsys = &device->device;
    client_token = device->client_token;
@@ -1153,6 +1176,8 @@ nvx_drm_submit_pushbuf(int fd,
    submit_ring_slot = winsys->NouveauBatchPushIndex %
                       NVX_WINSYS_BATCH_PUSH_SLOTS;
 #endif
+   profile_lock_hold_us = nvx_wgl_present_elapsed_us(profile_lock_hold_start);
+   profile_lock_held = 0;
    nvx_drm_lock_release();
    profile_prepare_us = nvx_wgl_present_elapsed_us(profile_start);
    profile_translate_start = nvx_wgl_present_timer();
@@ -1365,6 +1390,9 @@ nvx_drm_submit_pushbuf(int fd,
                                      failure_index, request->nr_buffers,
                                      request->nr_push, dword_count,
                                      reference_count, relocation_count);
+   NvxWglRecordNouveauShimProfile(profile_lock_wait_us,
+      profile_lock_hold_us, profile_lookup_us, profile_lookup_calls,
+      profile_translate_us);
    NvxWglRecordNouveauPushbufItem(6U, 0U,
                                   !translated ? 3U : (valid ? 1U : 2U),
                                   dword_count, reference_count,
@@ -1373,9 +1401,15 @@ nvx_drm_submit_pushbuf(int fd,
    return valid;
 
 done:
+   if (profile_lock_held)
+      profile_lock_hold_us = nvx_wgl_present_elapsed_us(
+         profile_lock_hold_start);
    if (submit_busy_owned && device)
       device->nouveau_submit_busy = 0;
    nvx_drm_lock_release();
+   NvxWglRecordNouveauShimProfile(profile_lock_wait_us,
+      profile_lock_hold_us, profile_lookup_us, profile_lookup_calls,
+      profile_translate_us);
    NvxWglRecordNouveauPushbufItem(21U, failure_stage,
                                   failure_index, request->nr_buffers,
                                   request->nr_push, dword_count,

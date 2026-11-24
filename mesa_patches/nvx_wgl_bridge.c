@@ -111,6 +111,27 @@ static volatile LONG nvx_profile_shadow_scan_kb;
 static volatile LONG nvx_profile_shadow_upload_kb;
 static volatile LONG nvx_profile_shadow_upload_calls;
 static volatile LONG nvx_profile_shadow_flushes;
+static volatile LONG nvx_profile_fence_wait_calls;
+static volatile LONG nvx_profile_fence_wait_blocking;
+static volatile LONG nvx_profile_fence_wait_polls;
+static volatile LONG nvx_profile_fence_wait_cached;
+static volatile LONG nvx_profile_fence_wait_completed;
+static volatile LONG nvx_profile_fence_wait_timeouts;
+static volatile LONG nvx_profile_fence_wait_us;
+static volatile LONG nvx_profile_fence_wait_blocking_us;
+static volatile LONG nvx_profile_fence_wait_poll_us;
+static volatile LONG nvx_profile_coalesce_checks;
+static volatile LONG nvx_profile_coalesce_deferred;
+static volatile LONG nvx_profile_coalesce_buffers;
+static volatile LONG nvx_profile_coalesce_relocs;
+static volatile LONG nvx_profile_coalesce_pushes;
+static volatile LONG nvx_profile_coalesce_dwords;
+static volatile LONG nvx_profile_shim_submits;
+static volatile LONG nvx_profile_shim_lock_wait_us;
+static volatile LONG nvx_profile_shim_lock_hold_us;
+static volatile LONG nvx_profile_shim_lookup_us;
+static volatile LONG nvx_profile_shim_lookup_calls;
+static volatile LONG nvx_profile_shim_translate_us;
 static volatile LONG nvx_profile_last_log_tick;
 static uint64_t nvx_profile_last_present_start;
 static volatile LONG nvx_bridge_nvc0_clear_count;
@@ -146,6 +167,20 @@ void NvxWglRecordNouveauKickStages(uint32_t flush_us, uint32_t validate_us);
 void NvxWglRecordNouveauWinsysProfile(uint32_t total_us, uint32_t ring_wait_us,
                                       uint32_t escape_us);
 void NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us);
+void NvxWglRecordNouveauFenceWaitProfile(uint32_t timeout_ms,
+                                         uint32_t elapsed_us,
+                                         uint32_t completed,
+                                         uint32_t cached);
+void NvxWglRecordNouveauCoalesceProfile(uint32_t deferred,
+                                        uint32_t buffers,
+                                        uint32_t relocs,
+                                        uint32_t pushes,
+                                        uint32_t dwords);
+void NvxWglRecordNouveauShimProfile(uint32_t lock_wait_us,
+                                    uint32_t lock_hold_us,
+                                    uint32_t lookup_us,
+                                    uint32_t lookup_calls,
+                                    uint32_t translate_us);
 void NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
                                       uint32_t uploaded_bytes,
                                       uint32_t upload_calls);
@@ -951,6 +986,61 @@ NvxWglRecordNouveauTranslateProfile(uint32_t elapsed_us)
 }
 
 void
+NvxWglRecordNouveauFenceWaitProfile(uint32_t timeout_ms, uint32_t elapsed_us,
+                                   uint32_t completed, uint32_t cached)
+{
+   InterlockedIncrement(&nvx_profile_fence_wait_calls);
+   InterlockedExchangeAdd(&nvx_profile_fence_wait_us, (LONG)elapsed_us);
+   if (cached)
+      InterlockedIncrement(&nvx_profile_fence_wait_cached);
+   else if (timeout_ms == 0U) {
+      InterlockedIncrement(&nvx_profile_fence_wait_polls);
+      InterlockedExchangeAdd(&nvx_profile_fence_wait_poll_us,
+                             (LONG)elapsed_us);
+   } else {
+      InterlockedIncrement(&nvx_profile_fence_wait_blocking);
+      InterlockedExchangeAdd(&nvx_profile_fence_wait_blocking_us,
+                             (LONG)elapsed_us);
+      if (completed)
+         InterlockedIncrement(&nvx_profile_fence_wait_completed);
+      else
+         InterlockedIncrement(&nvx_profile_fence_wait_timeouts);
+   }
+   (void)timeout_ms;
+}
+
+void
+NvxWglRecordNouveauCoalesceProfile(uint32_t deferred, uint32_t buffers,
+                                   uint32_t relocs, uint32_t pushes,
+                                   uint32_t dwords)
+{
+   InterlockedIncrement(&nvx_profile_coalesce_checks);
+   if (deferred)
+      InterlockedIncrement(&nvx_profile_coalesce_deferred);
+   InterlockedExchangeAdd(&nvx_profile_coalesce_buffers, (LONG)buffers);
+   InterlockedExchangeAdd(&nvx_profile_coalesce_relocs, (LONG)relocs);
+   InterlockedExchangeAdd(&nvx_profile_coalesce_pushes, (LONG)pushes);
+   InterlockedExchangeAdd(&nvx_profile_coalesce_dwords, (LONG)dwords);
+}
+
+void
+NvxWglRecordNouveauShimProfile(uint32_t lock_wait_us, uint32_t lock_hold_us,
+                               uint32_t lookup_us, uint32_t lookup_calls,
+                               uint32_t translate_us)
+{
+   InterlockedIncrement(&nvx_profile_shim_submits);
+   InterlockedExchangeAdd(&nvx_profile_shim_lock_wait_us,
+                          (LONG)lock_wait_us);
+   InterlockedExchangeAdd(&nvx_profile_shim_lock_hold_us,
+                          (LONG)lock_hold_us);
+   InterlockedExchangeAdd(&nvx_profile_shim_lookup_us, (LONG)lookup_us);
+   InterlockedExchangeAdd(&nvx_profile_shim_lookup_calls,
+                          (LONG)lookup_calls);
+   InterlockedExchangeAdd(&nvx_profile_shim_translate_us,
+                          (LONG)translate_us);
+}
+
+void
 NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
                                  uint32_t uploaded_bytes,
                                  uint32_t upload_calls)
@@ -967,7 +1057,7 @@ NvxWglRecordNouveauShadowProfile(uint32_t scanned_bytes,
 static void
 nvx_wgl_log_performance_profile(void)
 {
-   char message[224];
+   char message[384];
    LONG batches = InterlockedExchange(&nvx_profile_batches, 0);
    LONG total = InterlockedExchange(&nvx_profile_total_us, 0);
    LONG prepare = InterlockedExchange(&nvx_profile_prepare_us, 0);
@@ -991,6 +1081,27 @@ nvx_wgl_log_performance_profile(void)
    LONG shadow_upload_calls = InterlockedExchange(
       &nvx_profile_shadow_upload_calls, 0);
    LONG shadow_flushes = InterlockedExchange(&nvx_profile_shadow_flushes, 0);
+   LONG fence_wait_calls = InterlockedExchange(&nvx_profile_fence_wait_calls, 0);
+   LONG fence_wait_blocking = InterlockedExchange(&nvx_profile_fence_wait_blocking, 0);
+   LONG fence_wait_polls = InterlockedExchange(&nvx_profile_fence_wait_polls, 0);
+   LONG fence_wait_cached = InterlockedExchange(&nvx_profile_fence_wait_cached, 0);
+   LONG fence_wait_completed = InterlockedExchange(&nvx_profile_fence_wait_completed, 0);
+   LONG fence_wait_timeouts = InterlockedExchange(&nvx_profile_fence_wait_timeouts, 0);
+   LONG fence_wait_us = InterlockedExchange(&nvx_profile_fence_wait_us, 0);
+   LONG fence_wait_blocking_us = InterlockedExchange(&nvx_profile_fence_wait_blocking_us, 0);
+   LONG fence_wait_poll_us = InterlockedExchange(&nvx_profile_fence_wait_poll_us, 0);
+   LONG coalesce_checks = InterlockedExchange(&nvx_profile_coalesce_checks, 0);
+   LONG coalesce_deferred = InterlockedExchange(&nvx_profile_coalesce_deferred, 0);
+   LONG coalesce_buffers = InterlockedExchange(&nvx_profile_coalesce_buffers, 0);
+   LONG coalesce_relocs = InterlockedExchange(&nvx_profile_coalesce_relocs, 0);
+   LONG coalesce_pushes = InterlockedExchange(&nvx_profile_coalesce_pushes, 0);
+   LONG coalesce_dwords = InterlockedExchange(&nvx_profile_coalesce_dwords, 0);
+   LONG shim_submits = InterlockedExchange(&nvx_profile_shim_submits, 0);
+   LONG shim_lock_wait_us = InterlockedExchange(&nvx_profile_shim_lock_wait_us, 0);
+   LONG shim_lock_hold_us = InterlockedExchange(&nvx_profile_shim_lock_hold_us, 0);
+   LONG shim_lookup_us = InterlockedExchange(&nvx_profile_shim_lookup_us, 0);
+   LONG shim_lookup_calls = InterlockedExchange(&nvx_profile_shim_lookup_calls, 0);
+   LONG shim_translate_us = InterlockedExchange(&nvx_profile_shim_translate_us, 0);
 
    if (batches) {
       wsprintfA(message,
@@ -1034,6 +1145,34 @@ nvx_wgl_log_performance_profile(void)
          "NOUVEAU_SHADOW_PROFILE flushes=%ld scanned_kb=%ld uploaded_kb=%ld upload_calls=%ld",
          shadow_flushes, shadow_scan_kb, shadow_upload_kb,
          shadow_upload_calls);
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (fence_wait_calls) {
+      wsprintfA(message,
+         "NOUVEAU_FENCE_PROFILE calls=%ld cached=%ld polls=%ld poll_us=%ld blocking=%ld completed=%ld timeouts=%ld total_wait_us=%ld blocking_us=%ld",
+         fence_wait_calls, fence_wait_cached, fence_wait_polls,
+         fence_wait_poll_us, fence_wait_blocking, fence_wait_completed,
+         fence_wait_timeouts, fence_wait_us, fence_wait_blocking_us);
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (coalesce_checks) {
+      wsprintfA(message,
+         "NOUVEAU_COALESCE_PROFILE draw_checks=%ld deferred=%ld forced=%ld avg_buffers=%lu avg_relocs=%lu avg_pushes=%lu avg_dwords=%lu",
+         coalesce_checks, coalesce_deferred,
+         coalesce_checks - coalesce_deferred,
+         (unsigned long)(coalesce_buffers / coalesce_checks),
+         (unsigned long)(coalesce_relocs / coalesce_checks),
+         (unsigned long)(coalesce_pushes / coalesce_checks),
+         (unsigned long)(coalesce_dwords / coalesce_checks));
+      nvx_bridge_nouveau_trace(message);
+   }
+   if (shim_submits) {
+      wsprintfA(message,
+         "NOUVEAU_SHIM_PROFILE submits=%ld lock_wait_us=%ld lock_hold_us=%ld bo_lookup_us=%ld bo_lookup_calls=%ld translate_us=%ld avg_lock_hold_us=%lu avg_lookup_us=%lu",
+         shim_submits, shim_lock_wait_us, shim_lock_hold_us,
+         shim_lookup_us, shim_lookup_calls, shim_translate_us,
+         (unsigned long)(shim_lock_hold_us / shim_submits),
+         (unsigned long)(shim_lookup_us / shim_submits));
       nvx_bridge_nouveau_trace(message);
    }
 }

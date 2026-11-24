@@ -4,7 +4,13 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.28"
+NVX_TEST_VERSION="4.0.0.30"
+NVX_PERF_MODE="${NVX_PERF_MODE:-quiet}"
+case "$NVX_PERF_MODE" in
+    quiet|diagnostic) ;;
+    *) echo "NVX_PERF_MODE must be quiet or diagnostic" >&2; exit 1 ;;
+esac
+echo "==> Performance profile mode: $NVX_PERF_MODE"
 NVX_CAPTURE_NVC0_BATCHES="${NVX_CAPTURE_NVC0_BATCHES:-0}"
 case "$NVX_CAPTURE_NVC0_BATCHES" in
     0|1) ;;

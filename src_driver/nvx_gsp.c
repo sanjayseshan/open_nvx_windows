@@ -233,12 +233,16 @@ VOID NvxGspLogClientPerfSample(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" batches=");LogHex(channel->PerfSubmitCount);
     LogStr(" completed=");LogHex(channel->CompletedBatches);
     LogStr(" submit_ioctl_cycles=");LogHex(channel->PerfSubmitIoctlCycles);
+    LogStr(" submit_ioctl_count=");LogHex(channel->PerfSubmitIoctlCount);
+    LogStr(" submit_ioctl_max_cycles=");LogHex(channel->PerfSubmitIoctlMaxCycles);
     LogStr(" batch_copy_cycles=");LogHex(channel->PerfBatchCopyCycles);
     LogStr(" push_copy_cycles=");LogHex(channel->PerfPushCopyCycles);
     LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
     LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
+    LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
     LogStr(" buffer_lookup_cycles=");LogHex(channel->PerfBufferLookupCycles);
+    LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
     LogStr(" fence_wait_calls=");LogHex(channel->PerfFenceWaitCalls);
     LogStr(" fence_wait_poll_loops=");LogHex(channel->PerfFenceWaitPolls);
     LogStr(" submit_failures=");LogHex(channel->PerfSubmitFailures);

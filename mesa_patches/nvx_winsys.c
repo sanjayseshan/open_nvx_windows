@@ -15,15 +15,23 @@ extern uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 extern void NvxWglRecordNouveauWinsysProfile(uint32_t total_us,
                                              uint32_t ring_wait_us,
                                              uint32_t escape_us);
+extern void NvxWglRecordNouveauFenceWaitProfile(uint32_t timeout_ms,
+                                                uint32_t elapsed_us,
+                                                uint32_t completed,
+                                                uint32_t cached);
 #define NVX_PROFILE_TIMER() nvx_wgl_present_timer()
 #define NVX_PROFILE_ELAPSED(start) nvx_wgl_present_elapsed_us(start)
 #define NVX_RECORD_WINSYS_PROFILE(total, wait, escape) \
    NvxWglRecordNouveauWinsysProfile(total, wait, escape)
+#define NVX_RECORD_FENCE_WAIT(timeout, elapsed, completed, cached) \
+   NvxWglRecordNouveauFenceWaitProfile(timeout, elapsed, completed, cached)
 #else
 #define NVX_PROFILE_TIMER() 0U
 #define NVX_PROFILE_ELAPSED(start) ((void)(start), 0U)
 #define NVX_RECORD_WINSYS_PROFILE(total, wait, escape) \
    ((void)(total), (void)(wait), (void)(escape))
+#define NVX_RECORD_FENCE_WAIT(timeout, elapsed, completed, cached) \
+   ((void)(timeout), (void)(elapsed), (void)(completed), (void)(cached))
 #endif
 
 /* NVX_WINSYS_DEVICE values are copied into the xf86drm registry and the
@@ -513,23 +521,31 @@ NvxWinsysWaitFence(NVX_WINSYS_DEVICE *device, uint64_t fence_value,
 {
    NVX_3D_WAIT_FENCE request;
    NVX_3D_WAIT_FENCE result;
+   uint64_t profile_start = NVX_PROFILE_TIMER();
+   int completed;
 
    if (!nvx_winsys_ready(device) || !fence_value || timeout_ms > 30000U)
       return 0;
-   if (fence_value <= device->CompletedFence)
+   if (fence_value <= device->CompletedFence) {
+      NVX_RECORD_FENCE_WAIT(timeout_ms,
+         NVX_PROFILE_ELAPSED(profile_start), 1U, 1U);
       return 1;
+   }
    memset(&request, 0, sizeof(request));
    request.Size = sizeof(request);
    request.Version = NVX_3D_ABI_VERSION;
    request.FenceValue = fence_value;
    request.TimeoutMs = timeout_ms;
    memset(&result, 0, sizeof(result));
-   if (device->escape(device->opaque, NVX_ESCAPE_3D_WAIT,
+   completed = device->escape(device->opaque, NVX_ESCAPE_3D_WAIT,
                       sizeof(request), &request, sizeof(result), &result) &&
        result.Size == sizeof(result) &&
        result.Version == NVX_3D_ABI_VERSION &&
        result.Status == NVX_3D_STATUS_SUCCESS &&
-       result.FenceValue == fence_value) {
+       result.FenceValue == fence_value;
+   NVX_RECORD_FENCE_WAIT(timeout_ms,
+      NVX_PROFILE_ELAPSED(profile_start), (uint32_t)completed, 0U);
+   if (completed) {
       if (fence_value > device->CompletedFence)
          device->CompletedFence = fence_value;
       return 1;

@@ -55,6 +55,14 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
     if [ "$booted" -eq 1 ]; then
         echo "==> Driver activity confirmed (PID $VM_PID). Monitoring session..."
 
+        # PC samples help locate guest execution hotspots; per-thread host CPU
+        # deltas distinguish active vCPUs from an apparent guest-side stall.
+        PC_SAMPLE_LOG="${NVX_RUN_LOG%.log}.pc.log"
+        "$SCRIPT_DIR/sample_qemu_pc.sh" "$VM_PID" "$PC_SAMPLE_LOG" \
+            > /dev/null 2>&1 &
+        PC_SAMPLER_PID=$!
+        echo "==> QEMU PC/host-CPU samples: $PC_SAMPLE_LOG"
+
         # Monitor loop for test completion or timeout, then soft powerdown
         if [ "${NVX_RUN_3DMARK:-0}" = "1" ]; then
             TEST_TIMEOUT="${NVX_TEST_TIMEOUT:-1200}"
@@ -138,6 +146,10 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
             kill -9 "$VM_PID" 2>/dev/null || true
         fi
 
+        if kill -0 "$PC_SAMPLER_PID" 2>/dev/null; then
+            kill -TERM "$PC_SAMPLER_PID" 2>/dev/null || true
+            wait "$PC_SAMPLER_PID" 2>/dev/null || true
+        fi
         wait "$VM_PID" || true
         echo "==> Windows XP session completed."
         exit 0
