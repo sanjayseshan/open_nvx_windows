@@ -19,16 +19,41 @@ static void log_com(const char *msg);
 
 static HWND tip_window;
 static HWND main_window;
+static HWND fallback_window;
 static HWND run_button;
+static HWND first_button;
+static unsigned window_trace_count;
+static unsigned child_trace_count;
 
 static BOOL CALLBACK find_run_button(HWND hwnd, LPARAM unused) {
     (void)unused;
     if (!IsWindowVisible(hwnd)) return TRUE;
     char cls[96] = {0};
     GetClassNameA(hwnd, cls, sizeof(cls) - 1);
-    if (!lstrcmpiA(cls, "Button") && GetDlgCtrlID(hwnd) == 1) {
+    char text[192] = {0};
+    DWORD_PTR text_result = 0;
+    SendMessageTimeoutA(hwnd, WM_GETTEXT, sizeof(text), (LPARAM)text,
+                        SMTO_ABORTIFHUNG, 150, &text_result);
+    if (child_trace_count++ < 32) {
+        char msg[384];
+        snprintf(msg, sizeof(msg),
+                 "[3DMARK_DIAG_AUTO] child class='%s' id=%d text='%s'\r\n",
+                 cls, GetDlgCtrlID(hwnd), text);
+        log_com(msg);
+    }
+    if (IsWindowEnabled(hwnd) &&
+        (strstr(text, "Run") || strstr(text, "run") ||
+         strstr(text, "Start") || strstr(text, "start"))) {
         run_button = hwnd;
         return FALSE;
+    }
+    if (!lstrcmpiA(cls, "Button")) {
+        if (!first_button)
+            first_button = hwnd;
+        if (GetDlgCtrlID(hwnd) == 1) {
+            run_button = hwnd;
+            return FALSE;
+        }
     }
     return TRUE;
 }
@@ -40,7 +65,9 @@ static BOOL CALLBACK find_benchmark_window(HWND hwnd, LPARAM unused) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid != benchmark_pid) return TRUE;
     char title[256] = {0};
+    char cls[128] = {0};
     GetWindowTextA(hwnd, title, sizeof(title) - 1);
+    GetClassNameA(hwnd, cls, sizeof(cls) - 1);
     if (strstr(title, "Tip of the Day") || strstr(title, "Tip")) {
         tip_window = hwnd;
         return TRUE;
@@ -48,6 +75,19 @@ static BOOL CALLBACK find_benchmark_window(HWND hwnd, LPARAM unused) {
     if (strstr(title, "Edition")) {
         main_window = hwnd;
         return FALSE;
+    }
+    /* The Free Edition may not include "Edition" in its window caption.
+     * Keep a same-process top-level fallback and select the one that exposes
+     * the default Run button below. */
+    if (!fallback_window && strcmp(cls, "#32770") != 0 &&
+        GetWindow(hwnd, GW_OWNER) == NULL)
+        fallback_window = hwnd;
+    if (window_trace_count++ < 8) {
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "[3DMARK_DIAG_AUTO] candidate hwnd=%p class='%s' title='%s'\r\n",
+                 hwnd, cls, title);
+        log_com(msg);
     }
     return TRUE;
 }
@@ -58,21 +98,26 @@ static int auto_start_benchmark(void) {
         DWORD exit_code = STILL_ACTIVE;
         if (!GetExitCodeProcess(benchmark_process, &exit_code) || exit_code != STILL_ACTIVE)
             break;
-        tip_window = main_window = NULL;
+        tip_window = main_window = fallback_window = NULL;
         EnumWindows(find_benchmark_window, 0);
+        if (!main_window)
+            main_window = fallback_window;
         if (tip_window) {
             PostMessageA(tip_window, WM_KEYDOWN, VK_ESCAPE, 0);
             PostMessageA(tip_window, WM_KEYUP, VK_ESCAPE, 0);
         }
         if (main_window) {
             Sleep(2000);
-            run_button = NULL;
+            run_button = first_button = NULL;
             EnumChildWindows(main_window, find_run_button, 0);
+            if (!run_button)
+                run_button = first_button;
             if (run_button) {
                 char msg[256];
                 snprintf(msg, sizeof(msg),
-                         "[3DMARK_DIAG_AUTO] Posting Run click hwnd=%p pid=%lu\r\n",
-                         run_button, (unsigned long)benchmark_pid);
+                         "[3DMARK_DIAG_AUTO] Posting button click hwnd=%p id=%d pid=%lu\r\n",
+                         run_button, GetDlgCtrlID(run_button),
+                         (unsigned long)benchmark_pid);
                 log_com(msg);
                 SetForegroundWindow(main_window);
                 PostMessageA(run_button, BM_CLICK, 0, 0);

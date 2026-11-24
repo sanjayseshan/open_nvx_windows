@@ -2,30 +2,30 @@
 
 ## Current status
 
-- XP x86 hardware acceleration is now confirmed on version **4.0.0.44**. The offline image is `winxp_x32.qcow2`; its 3DMark05 installer is staged at the All Users desktop and in `C:\test_accel`.
-- The XP x86 test run passed 2D fills/blits, native OpenGL (`GL_RENDERER=NV170`), Gallium Nine D3D9 (`Mesa Nine (NV170)`), and the bounded 3D ABI suite. Proof log: `test_logs/xp_v2_20261124-140119.log`; extracted app log: `test_logs/xp_v2_20261124-140119-guest.log`.
-- Measured in that run: WGL gears **61.2 FPS**, Nine cube **77.8 FPS**. GPU solid fills/copies and completed NVC0 GPU fences appear in the serial log. The test includes no 640x480x4-bpp mode request; it used 1280x1080x32 primary and 1920x1440x32 secondary modes.
-- A targeted x86 serial DDI trace run at `.43` identified and verified the fix: `SET_CURRENT_MODE` preceded `MAP_VIDEO_MEMORY`, but the x86 driver rejected the mode when the first scanout commit found no framebuffer mapping. `src_driver/nvxmp.c` now defers that first commit until `MAP_VIDEO_MEMORY`, where the framebuffer is available. The `.44` release-style run passed with DDI serial tracing disabled by default.
-- One subtest remains limited: the optional direct native NVC0 clear packet is rejected (`NVX_NVC0_NATIVE_CLEAR_RESULT FAIL`); the overall 3D suite passes, OpenGL and Nine identify the hardware renderer, and both submit/fence paths are active. Triangle capability is intentionally not advertised in the client ABI test.
-- The x64 `.39` benchmark log remains `test_logs/v4.0.0.39-20261124-123907.log`. `vm_serial.log` has been restored to that x64 log. No VM is currently running.
+- XP x86 driver **4.0.0.44** is installed and hardware acceleration is confirmed on the RTX 3070: OpenGL reports `NV170`, Nine reports `Mesa Nine (NV170)`, and the x86 GPU-fence proof completed. Successful x86 desktop log: `test_logs/xp_v2_20261124-140119.log`.
+- 3DMark05 x86 is installed at `C:\Program Files\Futuremark\3DMark05`; its local `d3d9.dll` is the current x86 Gallium Nine DLL. The x86 caps test reports PS 3.0 and required formats/caps.
+- Actual VFIO 3DMark attempt: `test_logs/xp_v2_20261124-145620.log`. The app loads the x86 Nine DLL, `Direct3DCreate9` succeeds, and a 3DMark window is created. The captured guest VNC frame was black; there is no benchmark score or evidence that 3DMark submitted GPU draws. The existing OpenGL fence proof is from the preflight test process, not proof of 3DMark rendering.
+- Non-VFIO UI session is currently running for easier desktop control. QEMU VNC is **127.0.0.1:5912**; guest TightVNC forwarding is **127.0.0.1:5911**. The non-VFIO screen shows the XP desktop correctly. Launching 3DMark there reaches the splash but crashes at app offset `0x12e21` (`0xC0000005`, null read); this Cirrus/GDI run is only for UI diagnosis, not GPU validation.
+- The x86 diagnostic helper now traces visible child controls and is XP 5.1-subsystem compatible; compile succeeded to `/tmp/test_3dmark_launch_diag32.exe`. It has not yet been installed into a fresh VFIO run.
 
-## Build, install, and test x86
+## Next actions
 
-```sh
-./test/install_xp32_driver_and_tests.sh
-NVX_AUTO_RETRY=1 MAX_RETRIES=10 BOOT_TIMEOUT=50 ./test/run_vfio_xp32_autoretry.sh
-```
+1. Keep the non-VFIO desktop available at `127.0.0.1:5912` if UI inspection is useful. This VM is not using the RTX.
+2. To collect child-control diagnostics on hardware, stop the non-VFIO VM, run `test/prepare_xp32_3dmark.sh`, arm both flags with `guestfish` (`/test_accel/run_3dmark.flag` and `/test_accel/run_3dmark_diag.flag`), then run:
 
-The installer builds XP x86 miniport/display drivers, Mesa Nouveau WGL ICD, Gallium Nine D3D9, and test binaries; updates `winxp_x32.qcow2`; and stages Antigravity tests plus the 3DMark05 installer. `NVX_DISP_SERIAL_DIAGNOSTIC=1` opts into extra display-DDI serial traces. The VFIO test runner shuts the guest down after the desktop test suite; it does not run 3DMark automatically.
+   ```sh
+   NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1 NVX_KEEP_RUNNING=1 NVX_VNC_ENABLE=1 NVX_VNC_PORT=5911 NVX_TEST_TIMEOUT=1800 ./test/run_vfio_xp32_autoretry.sh
+   ```
 
-## Relevant code
+3. Check whether 3DMark reaches its selection screen and submits NVC0 batches from its own process. A completed preflight fence alone is not a 3DMark pass. Preserve the score screen and leave the VM running if a result appears.
 
-- `src_driver/nvxmp.c` — deferred x86 scanout commit in `IOCTL_VIDEO_SET_CURRENT_MODE`; framebuffer map then initializes native display channels.
-- `src_driver/nvx_disp_rpc.c` — native scanout setup and display-channel initialization.
-- `src_disp/enable.c`, `src_disp/opengl.c` — XP x86 display DDI and OpenGL pixel-format callbacks.
-- `test/install_xp32_driver_and_tests.sh` — x86 builds, image deployment, OpenGL ICD registration, and test staging.
-- `test/run_vfio_xp32_autoretry.sh` — real-hardware x86 test runner.
-- `mesa_patches/mesa25/0001-nvx-wgl-native-nouveau.patch`, `mesa_patches/nvx_wgl_bridge.c` — WGL to Nouveau/NVX path.
-- `mesa_patches/nine/mesa99.c`, `mesa_patches/nvx_d3d9_entry.c` — Gallium Nine D3D9 entry and screen setup.
+## Relevant files
 
-Keep this handoff as the latest concise snapshot. Bump the minor version for each new test build and preserve the `vm_serial.log` symlink target when running the x86 image.
+- `test/prepare_xp32_3dmark.sh` — copies the x64 installed 3DMark folder into the x86 image, replaces the local D3D9 DLL, stages x86 tools, and configures TightVNC.
+- `test/run_qemu_xp32_vnc.sh` — non-VFIO desktop-control VM (QEMU VNC display 12).
+- `test/run_vfio_vm_xp32.sh`, `test/run_vfio_xp32_autoretry.sh` — actual RTX x86 VFIO runner; autoretry removes a stale startup lock before boot.
+- `test/run_test_xp32_3dmark.bat`, `test/test_3dmark_launch_diag.c`, `test/watch_3dmark_text.bat` — guest launch, debugger/window automation, and score capture.
+- `test/test_3dmark_caps_eval.c` — x86 D3D9 capability check.
+- `src_driver/nvxmp.c` — x86 mode/scanout initialization; the 4.0.0.44 deferred first scanout commit fixed the earlier mode initialization issue.
+
+Keep this handoff as a concise latest snapshot. Increment the version for each new test build and restore `vm_serial.log` to the x64 log after x86 testing.

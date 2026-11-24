@@ -8,6 +8,21 @@ cd "$ROOT_DIR"
 NVX_DRIVER_ISO="${NVX_DRIVER_ISO:-$ROOT_DIR/nvx_driver_full.iso}"
 NVX_SERIAL_LOG="${NVX_SERIAL_LOG:-$ROOT_DIR/vm_serial.log}"
 NVX_VM_MEMORY_MB="${NVX_VM_MEMORY_MB:-3072}"
+NVX_VNC_ENABLE="${NVX_VNC_ENABLE:-0}"
+NVX_VNC_PORT="${NVX_VNC_PORT:-5911}"
+
+NVX_QEMU_NETWORK_ARGS=(-net none)
+if [ "$NVX_VNC_ENABLE" = "1" ]; then
+    if ! [[ "$NVX_VNC_PORT" =~ ^[0-9]+$ ]] ||
+       [ "$NVX_VNC_PORT" -lt 1024 ] || [ "$NVX_VNC_PORT" -gt 65535 ]; then
+        echo "Error: NVX_VNC_PORT must be a TCP port between 1024 and 65535." >&2
+        exit 1
+    fi
+    NVX_QEMU_NETWORK_ARGS=(
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${NVX_VNC_PORT}-:5900"
+        -device rtl8139,netdev=net0,addr=03.0
+    )
+fi
 
 NVX_QEMU_CDROM_ARGS=()
 if [ -f "$NVX_DRIVER_ISO" ]; then
@@ -68,6 +83,9 @@ echo "Driver CD: $NVX_CDROM_STATUS"
 echo "Serial log: $NVX_SERIAL_LOG"
 echo "Guest RAM: ${NVX_VM_MEMORY_MB} MB (memlock: ${NVX_MEMLOCK_KB} KB)"
 echo "Input: Dedicated Logitech Keyboard & Mouse (PS/2 mapping)"
+if [ "$NVX_VNC_ENABLE" = "1" ]; then
+    echo "Guest TightVNC forwarded locally: 127.0.0.1:${NVX_VNC_PORT} -> guest TCP 5900"
+fi
 echo "------------------------------------------------------------------"
 
 qemu-system-x86_64 \
@@ -76,7 +94,7 @@ qemu-system-x86_64 \
     -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
     -smp 4 \
     -vga none \
-    -net none \
+    "${NVX_QEMU_NETWORK_ARGS[@]}" \
     -device vfio-pci,host=01:00.0,multifunction=on,x-vga=on,addr=02.0 \
     -device vfio-pci,host=01:00.1,addr=02.1 \
     -drive file="$ROOT_DIR/winxp_x32.qcow2",format=qcow2,if=ide \
