@@ -14,6 +14,11 @@
 #include <share.h>
 #include "nvx_exception_trace.h"
 #include "../src_driver/nvx_3d_abi.h"
+#ifdef _WIN64
+#define NVX_OPENGL_ICD_NAME "nvxogl64.dll"
+#else
+#define NVX_OPENGL_ICD_NAME "nvxogl32.dll"
+#endif
 #if defined(NVX_TEST_NOUVEAU_PUSHBUF)
 #include "../mesa_patches/nvx_nouveau_pushbuf.h"
 #include "../mesa_patches/nvx_winsys_win32.h"
@@ -178,7 +183,7 @@ static void DumpMesaBridgeTrace(void)
         DWORD xf86drmLastSclass[16];
     } MESA_BRIDGE_STATUS;
     typedef BOOL (WINAPI *PFN_QUERY_BRIDGE_STATUS)(MESA_BRIDGE_STATUS *, DWORD);
-    HMODULE icd = GetModuleHandleA("nvxogl64.dll");
+    HMODULE icd = GetModuleHandleA(NVX_OPENGL_ICD_NAME);
     PFN_QUERY_BRIDGE_STATUS query = icd ?
         (PFN_QUERY_BRIDGE_STATUS)GetProcAddress(icd, "NvxQueryBridgeStatus") : NULL;
     MESA_BRIDGE_STATUS status;
@@ -488,7 +493,7 @@ static FARPROC WINAPI TraceGetProcAddress(HMODULE module, LPCSTR name)
         char *p;
         for (p = modulePath; *p; ++p)
             if (*p == '\\' || *p == '/') base = p + 1;
-        isNvxIcd = _stricmp(base, "nvxogl64.dll") == 0;
+        isNvxIcd = _stricmp(base, NVX_OPENGL_ICD_NAME) == 0;
     }
     if (name && strncmp(name, "Drv", 3) == 0) {
         char detail[96];
@@ -702,7 +707,7 @@ static unsigned ReadRawMesaTargetGreenPixels(uint32_t draw_kind,
                                                uint32_t *, uint32_t *,
                                                uint32_t *,
                                                uint64_t *, uint64_t *);
-    HMODULE icd = GetModuleHandleA("nvxogl64.dll");
+    HMODULE icd = GetModuleHandleA(NVX_OPENGL_ICD_NAME);
     PFN_READ_TARGET_RAW readTarget = icd ?
         (PFN_READ_TARGET_RAW)GetProcAddress(
             icd, "NvxXf86DrmReadDrawTargetRaw") : NULL;
@@ -1126,8 +1131,8 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
         LogMsg("-> wglCreateContext failed (err=%lu)\n", wglCreateContextErr);
         DumpMesaRuntimeTraces();
         LogMsg("-> ICD already loaded by WGL: %s\n",
-               GetModuleHandleA("nvxogl64.dll") ? "yes" : "no");
-        HMODULE icd = LoadLibraryA("nvxogl64.dll");
+               GetModuleHandleA(NVX_OPENGL_ICD_NAME) ? "yes" : "no");
+        HMODULE icd = LoadLibraryA(NVX_OPENGL_ICD_NAME);
         directIcdModule = icd;
         LogMsg("-> Direct ICD LoadLibrary: %s (err=%lu)\n",
                icd ? "success" : "failed", GetLastError());
@@ -1285,7 +1290,7 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
 
     diagnosticGetProcAddress = directGetProcAddress;
     if (!diagnosticGetProcAddress) {
-        directIcdModule = LoadLibraryA("nvxogl64.dll");
+        directIcdModule = LoadLibraryA(NVX_OPENGL_ICD_NAME);
         if (directIcdModule)
             diagnosticGetProcAddress =
                 (PFN_DIRECT_DRV_GET_PROC_ADDRESS)GetProcAddress(
@@ -1294,8 +1299,8 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
     LogMsg("-> Direct ICD GL entrypoint comparison: %s\n",
            diagnosticGetProcAddress ? "available" : "unavailable");
 
-    LogMsg("-> nvxogl64.dll loaded in process: %s\n",
-           GetModuleHandleA("nvxogl64.dll") ? "yes" : "no");
+    LogMsg("-> %s loaded in process: %s\n", NVX_OPENGL_ICD_NAME,
+           GetModuleHandleA(NVX_OPENGL_ICD_NAME) ? "yes" : "no");
 
     const char *vendor = (const char *)glGetString(GL_VENDOR);
     const char *renderer = (const char *)glGetString(GL_RENDERER);
@@ -2673,7 +2678,7 @@ end_gl_loop:
     if (mesaGpuBridgeProbe) {
         typedef ULONG_PTR (APIENTRY *PFN_ICD_CREATE_CONTEXT)(HDC);
         typedef BOOL (APIENTRY *PFN_ICD_DELETE_CONTEXT)(ULONG_PTR);
-        HMODULE icd = LoadLibraryA("nvxogl64.dll");
+        HMODULE icd = LoadLibraryA(NVX_OPENGL_ICD_NAME);
         PFN_ICD_CREATE_CONTEXT create = icd ?
             (PFN_ICD_CREATE_CONTEXT)GetProcAddress(icd, "DrvCreateContext") : NULL;
         PFN_ICD_DELETE_CONTEXT destroy = icd ?

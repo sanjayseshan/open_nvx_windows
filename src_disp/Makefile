@@ -7,10 +7,15 @@ LDFLAGS = -shared -nostdlib -Wl,-e,DrvEnableDriver -Wl,--subsystem,native:5.2 -L
 LDFLAGS32 = -shared -nostdlib -Wl,-e,_DrvEnableDriver@12 -Wl,--subsystem,native:5.1 /usr/i686-w64-mingw32/lib/libwin32k.a -lgcc
 HOSTCC ?= cc
 NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI ?= 0
+NVX_DISP_SERIAL_DIAGNOSTIC ?= 0
 
 ifeq ($(NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI),1)
 CFLAGS += -DNVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1
 CFLAGS32 += -DNVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1
+endif
+
+ifeq ($(NVX_DISP_SERIAL_DIAGNOSTIC),1)
+CFLAGS32 += -DNVX_DISP_SERIAL_DIAGNOSTIC=1
 endif
 
 OBJS = enable.o screen.o blt.o text.o diagnostic.o opengl.o

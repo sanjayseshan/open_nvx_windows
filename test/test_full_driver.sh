@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.39"
+NVX_TEST_VERSION="4.0.0.44"
 NVX_PERF_MODE="${NVX_PERF_MODE:-quiet}"
 case "$NVX_PERF_MODE" in
     quiet|diagnostic) ;;

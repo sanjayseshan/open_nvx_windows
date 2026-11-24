@@ -10,4 +10,4 @@ mesa9x revision: 8b5428ca315c1d18341b69adce4f4b821e33338d
 6b3cb43a7c1f59609dc63bdda636f6a9846b8f87a40eb1bae54a428ed5361a13  /home/sanjay/temp/xddm/mesa_patches/nine/nine_memory_helper.c
 6bb4163e0a41ee07b7553956ecc743cabf77c7f7d0ac206632123070a56cd6ae  /home/sanjay/temp/xddm/mesa_patches/nine/nine_present.c
 f6b6bb121925ebc4661013ecf652fb54e24143f369b7cbb854c3c840c833845a  /home/sanjay/temp/xddm/mesa_patches/nine/nine_window.c
-43482f4c63c7e5a074d7e8fd05d86515a264ba0d02f7f30984c02c791c189e3b  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll
+77be2eb36794bcc449fafd0f7144c7d4341495d556acc6d2e0b9cc3d2c67bd96  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll

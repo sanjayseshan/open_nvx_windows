@@ -6,6 +6,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 QCOW="$ROOT_DIR/winxp_x32.qcow2"
+NVX_VERSION="4.0.0.44"
+NVX_DISP_SERIAL_DIAGNOSTIC="${NVX_DISP_SERIAL_DIAGNOSTIC:-0}"
 
 # guestfish edits the offline image; refuse if QEMU still holds its write lock.
 if ! qemu-img info "$QCOW" >/dev/null 2>&1; then
@@ -18,17 +20,37 @@ echo " Deploying Antigravity Drivers & Test Suite to WinXP 32-bit"
 echo " Target Disk: $QCOW"
 echo "=========================================================="
 
-# 1. Build latest 32-bit driver & display DLL
+# 1. Build the current XP x86 miniport and display DDI. The OpenGL DDI flag is
+# required for XP to choose our ICD instead of GDI Generic. Clean first because
+# GNU make does not track changes to the feature define in CFLAGS.
 make -C "$ROOT_DIR/src_driver" full32
-make -C "$ROOT_DIR/src_disp" nvxdisp32.dll
+make -C "$ROOT_DIR/src_disp" clean
+make -C "$ROOT_DIR/src_disp" NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1 \
+    NVX_DISP_SERIAL_DIAGNOSTIC="$NVX_DISP_SERIAL_DIAGNOSTIC" nvxdisp32.dll
+
+# 2. Build native x86 Mesa WGL ICD and the x86 Gallium Nine D3D9 runtime.
+NVX_MESA_ARCH=x86 "$ROOT_DIR/test/build_mesa_xp32.sh"
+"$ROOT_DIR/build_d3d9_nine.sh"
+sed -i -E "s|^DriverVer[[:space:]]*=.*|DriverVer   = 11/24/2026, $NVX_VERSION|" \
+    "$ROOT_DIR/dist32/nvx.inf"
+sed -i -E "s|^DriverVer[[:space:]]*=.*|DriverVer   = 11/24/2026, $NVX_VERSION|" \
+    "$ROOT_DIR/dist_full/nvx.inf"
+
+# Check the architecture of each user-mode component before changing the image.
+for dll in "$ROOT_DIR/dist_full/nvxogl32.dll" "$ROOT_DIR/dist_full/x86/d3d9.dll"; do
+    file "$dll" | grep -q 'PE32 executable.*Intel 80386' || {
+        echo "Expected an x86 PE DLL: $dll" >&2
+        exit 1
+    }
+done
 
 cp "$ROOT_DIR/src_driver/nvxmp32.sys" "$ROOT_DIR/dist32/nvxmp.sys"
 cp "$ROOT_DIR/src_disp/nvxdisp32.dll" "$ROOT_DIR/dist32/nvxdisp.dll"
 
-# 2. Build XP-compatible 32-bit ucrtbase shim and test binaries
+# 3. Build XP-compatible 32-bit ucrtbase shim and test binaries
 i686-w64-mingw32-gcc -O2 -shared -static-libgcc "$ROOT_DIR/test/ucrtbase_xp.c" "$ROOT_DIR/test/ucrtbase.def" -o "$ROOT_DIR/test/ucrtbase32.dll" -lm
-i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 "$ROOT_DIR/test/test_gpu_accel.c" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$ROOT_DIR/test/test_gpu_accel32.exe"
-i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 "$ROOT_DIR/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$ROOT_DIR/test/3d_tests/wglgears32.exe"
+i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 "$ROOT_DIR/test/test_gpu_accel.c" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,1 -o "$ROOT_DIR/test/test_gpu_accel32.exe"
+i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 -I"$ROOT_DIR/src_driver" "$ROOT_DIR/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,1 -o "$ROOT_DIR/test/3d_tests/wglgears32.exe"
 
 # 3. Create test runner batch script for 32-bit Windows XP
 RUN_TEST_BAT="$(mktemp /tmp/run_test32.XXXXXX.bat)"
@@ -45,7 +67,10 @@ if exist C:\test_accel\wglgears.exe (
     wglgears.exe -seconds 10 >> C:\test_accel.log 2>&1
     echo [TEST] 32-bit wglgears Return Code: %ERRORLEVEL% >> C:\test_accel.log
 )
-echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
+if exist C:\test_accel\3DMark05_v130_1901.exe (
+    echo [TEST] 3DMark05 x86 installer is staged on the desktop for manual install/run. >> C:\test_accel.log
+)
+echo [ALL_BENCHMARKS_FINISHED] Status: COMPLETE >> C:\test_accel.log
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
 unix2dos "$RUN_TEST_BAT"
@@ -61,19 +86,27 @@ upload "$ROOT_DIR/src_driver/nvxmp32.sys" /WINDOWS/system32/drivers/nvxmp.sys
 upload "$ROOT_DIR/src_disp/nvxdisp32.dll" /WINDOWS/system32/nvxdisp.dll
 upload "$ROOT_DIR/dist32/nvx.inf" /WINDOWS/inf/nvx.inf
 
-# 2. Setup C:\test_accel test environment with 32-bit binaries
+# 2. Install the x86 OpenGL ICD and Gallium Nine D3D9 runtime system-wide.
+upload "$ROOT_DIR/dist_full/nvxogl32.dll" /WINDOWS/system32/nvxogl32.dll
+upload "$ROOT_DIR/dist_full/x86/d3d9.dll" /WINDOWS/system32/d3d9.dll
+
+# 3. Setup C:\test_accel test environment with 32-bit binaries
 mkdir-p /test_accel
 upload "$ROOT_DIR/test/test_gpu_accel32.exe" /test_accel/test_gpu_accel.exe
 upload "$ROOT_DIR/test/3d_tests/wglgears32.exe" /test_accel/wglgears.exe
 upload "$RUN_TEST_BAT" /test_accel/run_test.bat
 upload "$ROOT_DIR/test/ucrtbase32.dll" /test_accel/ucrtbase.dll
 upload "$ROOT_DIR/test/libgcc_s_dw2-1.dll" /test_accel/libgcc_s_dw2-1.dll
+upload "$ROOT_DIR/dist_full/nvxogl32.dll" /test_accel/nvxogl32.dll
+upload "$ROOT_DIR/dist_full/x86/d3d9.dll" /test_accel/d3d9.dll
+upload "$ROOT_DIR/test/3d_tests/3DMark05_v130_1901.exe" /test_accel/3DMark05_v130_1901.exe
+upload "$ROOT_DIR/test/3d_tests/3DMark05_v130_1901.exe" "/Documents and Settings/All Users/Desktop/3DMark05_v130_1901.exe"
 
-# 3. System-wide DLLs
+# 4. System-wide DLLs
 upload "$ROOT_DIR/test/ucrtbase32.dll" /WINDOWS/system32/ucrtbase.dll
 upload "$ROOT_DIR/test/libgcc_s_dw2-1.dll" /WINDOWS/system32/libgcc_s_dw2-1.dll
 
-# 4. Desktop shortcuts and Startup auto-runner
+# 5. Desktop shortcuts and Startup auto-runner
 upload "$ROOT_DIR/test/test_gpu_accel32.exe" "/Documents and Settings/All Users/Desktop/test_gpu_accel.exe"
 upload "$RUN_TEST_BAT" "/Documents and Settings/All Users/Start Menu/Programs/Startup/run_accel_test.bat"
 
@@ -101,6 +134,12 @@ Windows Registry Editor Version 5.00
 
 [\Microsoft\Windows\CurrentVersion\Run]
 "GPUAccelTest"="C:\\test_accel\\run_test.bat"
+
+[\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp]
+"Dll"="nvxogl32.dll"
+"Version"=dword:00000002
+"DriverVersion"=dword:00010000
+"Flags"=dword:00000001
 EOF
 
 hivexregedit --merge "$TMP_REG_SOFT" /tmp/reg32_update_soft.reg

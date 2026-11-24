@@ -52,16 +52,11 @@ DrvEnableDriver(
 #ifdef _WIN64
     pded->iDriverVersion = DDI_DRIVER_VERSION_NT5_01;
 #else
-    /*
-     * Windows XP 32-bit win32k!ldevInitDrivers specifically checks:
-     *   cmpl $0x30101, pded->iDriverVersion
-     *   ja failure
-     *   cmpl $0x20000, pded->iDriverVersion
-     *   jb failure
-     * Official Microsoft 32-bit display drivers (vga.dll, vga64k.dll, cirrus.dll)
-     * all return DDI_DRIVER_VERSION_NT4 (0x00020000).
-     */
-    pded->iDriverVersion = DDI_DRIVER_VERSION_NT4;
+    /* The OpenGL DDI callbacks (DescribePixelFormat, SetPixelFormat,
+       SwapBuffers) are NT 5.x entries. XP x86 accepts DDI versions through
+       NT5_01_SP1; advertising NT4 makes GDI ignore those callback indexes and
+       silently selects the generic pixel formats/renderer. */
+    pded->iDriverVersion = DDI_DRIVER_VERSION_NT5_01;
 #endif
 
     NvxDispLogEvent(16,TRUE,pded->c,pded->iDriverVersion);

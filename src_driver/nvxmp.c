@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 4.0.0.39
+ * Driver Version: 4.0.0.44
  */
 
 #include "miniport.h"
@@ -3297,6 +3297,18 @@ BOOLEAN NTAPI HwVidStartIO(
         LogHex(requested);
         LogStr("\n");
         if (restoreNativeDual || !vbeOk) {
+#if !defined(_WIN64) && !defined(__VXDKERNEL__)
+            /* On XP x86, GDI calls SET_CURRENT_MODE before MAP_VIDEO_MEMORY.
+               Native scanout needs the mapped framebuffer address, so trying
+               to commit here rejects the mode and prevents GDI from ever
+               issuing the later map request. Defer the first commit; the map
+               path below initializes channels and commits scanout once the
+               primary framebuffer mapping exists. */
+            if (!devExt->FramebufferVirtual) {
+                LogStr("NVX [NATIVE]: deferring initial scanout commit until framebuffer mapping.\n");
+            } else
+#endif
+            {
             if(!NvxNativeSetSecondaryScanout(devExt)) {
                 status=ERROR_DEVICE_NOT_READY;
                 if(!vbeOk) {
@@ -3305,6 +3317,7 @@ BOOLEAN NTAPI HwVidStartIO(
                     devExt->ActiveFreq=oldFreq;
                 }
                 LogStr("NVX [NATIVE]: mode request failed; scanout was not committed.\n");
+            }
             }
         } else if (devExt->Modes[requested].VisScreenWidth >= 1920 &&
                    devExt->Modes[requested].VisScreenHeight >= 1080 &&
@@ -5268,7 +5281,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 4.0.0.39 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 4.0.0.44 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

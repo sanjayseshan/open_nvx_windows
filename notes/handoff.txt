@@ -2,28 +2,30 @@
 
 ## Current status
 
-- Mesa 25.1.6 + Gallium Nine on RTX 3070 is the active D3D9 path. Last user-reported 3DMark05 score: **3,249**. The `.39` VFIO VM remains running; leave it alive and preserve the score screen.
-- `.39` test log: `test_logs/v4.0.0.39-20261124-123907.log` (`vm_serial.log` points here). OpenGL checks reported `NV170`; Nine emitted NVC0 draw and submit records.
-- The `.39` NVC0 sample for process `0x55c` reports 1,276 submits, 72 average dwords/batch, 7,600 average packet-validation TSC cycles/batch, 51,600 average total submit-IOCTL TSC cycles/batch, and 1,232 timed fence-wait calls / 72,226 poll iterations. Wait-call counts do not prove long stalls; sample lacks per-call-site elapsed time. Miniport validation/copy/kick totals do not by themselves explain 16 FPS.
-- Nine CSMT is not established as active: `device9.c` disables it when `buffer_map_persistent_coherent` is absent. D3D9 entry requests CSMT, but that gate overrides the request; WGL adapter path also sets `csmt_force = FALSE`. Do not claim or force CSMT without validating mapping/coherency semantics.
-- Commit `7f7ed8f` contains the current NVC0 validation/BO-lookup changes, reduced trace overhead, the external Mesa9x dirty-range patch, and version `.39` package metadata. No test was run after that commit; the `.39` VM was already running and remains untouched.
-- Repository cleanup removed stale scratch parsers/layout probes, generated screenshots, and the unused `wine-nine-standalone` submodule. Benchmark text logs were retained. Mesa9x customizations remain in the external patch series under `patches/mesa9x/`.
+- XP x86 hardware acceleration is now confirmed on version **4.0.0.44**. The offline image is `winxp_x32.qcow2`; its 3DMark05 installer is staged at the All Users desktop and in `C:\test_accel`.
+- The XP x86 test run passed 2D fills/blits, native OpenGL (`GL_RENDERER=NV170`), Gallium Nine D3D9 (`Mesa Nine (NV170)`), and the bounded 3D ABI suite. Proof log: `test_logs/xp_v2_20261124-140119.log`; extracted app log: `test_logs/xp_v2_20261124-140119-guest.log`.
+- Measured in that run: WGL gears **61.2 FPS**, Nine cube **77.8 FPS**. GPU solid fills/copies and completed NVC0 GPU fences appear in the serial log. The test includes no 640x480x4-bpp mode request; it used 1280x1080x32 primary and 1920x1440x32 secondary modes.
+- A targeted x86 serial DDI trace run at `.43` identified and verified the fix: `SET_CURRENT_MODE` preceded `MAP_VIDEO_MEMORY`, but the x86 driver rejected the mode when the first scanout commit found no framebuffer mapping. `src_driver/nvxmp.c` now defers that first commit until `MAP_VIDEO_MEMORY`, where the framebuffer is available. The `.44` release-style run passed with DDI serial tracing disabled by default.
+- One subtest remains limited: the optional direct native NVC0 clear packet is rejected (`NVX_NVC0_NATIVE_CLEAR_RESULT FAIL`); the overall 3D suite passes, OpenGL and Nine identify the hardware renderer, and both submit/fence paths are active. Triangle capability is intentionally not advertised in the client ABI test.
+- The x64 `.39` benchmark log remains `test_logs/v4.0.0.39-20261124-123907.log`. `vm_serial.log` has been restored to that x64 log. No VM is currently running.
 
-## Highest-value next work
+## Build, install, and test x86
 
-1. Attribute fence waits by caller and record elapsed cycles/time, distinguishing map/readback, dirty upload, push-ring reuse, pending-copy reuse, and pending-batch pressure. Current aggregate wait counters are ambiguous.
-2. Check if full shadow readbacks are on the frame path. `NvxNouveauBoRefreshRead` downloads a full BO and merges it word-by-word; instrument bytes and duration before changing semantics.
-3. Profile the guest render thread / NVC0 client path. Current miniport counters indicate low average per-submit CPU work; likely cost is in Nine/Gallium command generation or actual GPU workload. Aggregate CPU can hide one busy thread on six vCPUs.
-4. Consider batching more work per kick only after the profile shows submission-bound frames. Preserve packet and BO ownership validation.
-5. Treat CSMT as a separate, opt-in investigation. The NVC0 persistent-coherent capability is currently not established; falsely advertising it risks races/corruption.
+```sh
+./test/install_xp32_driver_and_tests.sh
+NVX_AUTO_RETRY=1 MAX_RETRIES=10 BOOT_TIMEOUT=50 ./test/run_vfio_xp32_autoretry.sh
+```
 
-## Relevant files
+The installer builds XP x86 miniport/display drivers, Mesa Nouveau WGL ICD, Gallium Nine D3D9, and test binaries; updates `winxp_x32.qcow2`; and stages Antigravity tests plus the 3DMark05 installer. `NVX_DISP_SERIAL_DIAGNOSTIC=1` opts into extra display-DDI serial traces. The VFIO test runner shuts the guest down after the desktop test suite; it does not run 3DMark automatically.
 
-- `submodules/mesa9x/mesa-25.1.x/src/gallium/frontends/nine/device9.c` — CSMT capability gate.
-- `mesa_patches/nvx_d3d9_entry.c`, `mesa_patches/nine/mesa99.c` — Nine context flags.
-- `mesa_patches/nvx_nouveau_bo.c` — BO map, shadow readback, dirty upload, fence waits.
-- `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_xf86drm.c` — Nouveau winsys submission and DRM shims.
-- `src_driver/nvxmp.c`, `src_driver/nvx_gsp.c` — miniport validation, batch tracking, GPU submission and fence waits.
-- `test/run_perf_mode.sh`, `test/sample_qemu_pc.sh` — quiet/diagnostic run modes and QEMU sampling.
+## Relevant code
 
-Use `NVX_AUTO_RETRY=1` for VFIO runs. Bump version for each test build. Keep this handoff as a concise current snapshot.
+- `src_driver/nvxmp.c` — deferred x86 scanout commit in `IOCTL_VIDEO_SET_CURRENT_MODE`; framebuffer map then initializes native display channels.
+- `src_driver/nvx_disp_rpc.c` — native scanout setup and display-channel initialization.
+- `src_disp/enable.c`, `src_disp/opengl.c` — XP x86 display DDI and OpenGL pixel-format callbacks.
+- `test/install_xp32_driver_and_tests.sh` — x86 builds, image deployment, OpenGL ICD registration, and test staging.
+- `test/run_vfio_xp32_autoretry.sh` — real-hardware x86 test runner.
+- `mesa_patches/mesa25/0001-nvx-wgl-native-nouveau.patch`, `mesa_patches/nvx_wgl_bridge.c` — WGL to Nouveau/NVX path.
+- `mesa_patches/nine/mesa99.c`, `mesa_patches/nvx_d3d9_entry.c` — Gallium Nine D3D9 entry and screen setup.
+
+Keep this handoff as the latest concise snapshot. Bump the minor version for each new test build and preserve the `vm_serial.log` symlink target when running the x86 image.

@@ -30,4 +30,4 @@ f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/t
 76717c44f662e977fc2ea9f33878aef79dac11dbfa46bd53608e617d0556aade  /home/sanjay/temp/xddm/mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
 92978711ffaadea8570395e64bde67b8a3fabddb1c349a75b152b70a69dcfd70  /home/sanjay/temp/xddm/mesa_patches/mesa25/0011-nouveau-xp-fence-rotation-recovery.patch
 3ca83a63144092b171aa260a265626894d0c8fd5e2f399f6cec4734c7782eac2  /home/sanjay/temp/xddm/mesa_patches/mesa25/0012-nvc0-reject-out-of-range-vertex-fetch.patch
-9925907a97ea78e488b750091abe6a002916057e0770d04bf8733cf845c6c86c  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
+1896dd4d11b14551b5b29a5368f5dfc3b8da0f5f20df857042d46044af6e64e9  /home/sanjay/temp/xddm/dist_full/nvxogl32.dll
