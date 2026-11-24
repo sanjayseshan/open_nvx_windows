@@ -3,8 +3,8 @@
 ## Current state
 
 - Mesa 25.1.6 / XP x64 / RTX 3070. Gallium Nine x86 and Nouveau WGL x86/x64 reach NV170 hardware.
-- Version 4.0.0.26 fixes the 3DMark geometry corruption. User confirms the current game scene renders correctly. The full 3DMark run is still active; no final score yet. Serial log: `test_logs/v4.0.0.26-20261123-193953.log`; runner output: `/tmp/nvx-v26-test.log`.
-- .26 cube/gears and Nine readback smoke checks passed. 3DMark has >1.17M submissions, >1.16M completed, zero submit failures at the last sample.
+- Version 4.0.0.26 fixes the 3DMark geometry corruption; user confirms the game scene renders correctly. User reports 3DMark05 score 1870, GT1/GT3 about 10 FPS, GT2 about 4 FPS, CPU tests about 1 FPS. Serial log: `test_logs/v4.0.0.26-20261123-193953.log`; runner output: `/tmp/nvx-v26-test.log`.
+- .26 cube/gears and Nine readback smoke checks passed. The live counter sample passed 1.5M submissions with zero failures.
 
 ## Corruption root cause and fix
 
@@ -17,9 +17,11 @@ Nine was built without `HAVE_FUNC_ATTRIBUTE_PACKED`, while the Mesa ICD used it.
 
 ## Performance status
 
-The .26 live counters show a sustained high volume of small submissions: roughly 4,000 batches per 4,096-sample interval, with about 37,600 TSC cycles per miniport submit IOCTL; stream validation averages ~10,500 cycles and buffer lookup ~1,160 cycles per batch. About 0.82 timed fence waits and 5.7 poll iterations per batch are recorded. These counters show per-submit CPU overhead and frequent synchronization, but do not measure GPU utilization or the game’s frame time directly. The scene is correct; the remaining performance cause is not yet isolated.
+The .26 live counters show many small submissions: about 37,600 TSC cycles per miniport submit IOCTL, including ~10,500 cycles validating each stream and ~1,160 cycles of buffer lookup. Roughly 0.8 timed fence waits and 7 poll iterations per wait are recorded. This indicates avoidable CPU submission overhead, but these counters do not measure GPU utilization or frame duration, so they do not yet explain the full graphics slowdown.
 
-Next: let 3DMark finish and record its score/game FPS. Then profile a short repeat with diagnostic logging disabled and compare time spent in Nine/user-mode translation, miniport validation, and GPU fence/presentation. Do not infer GPU saturation from successful batch completion alone.
+The reported 1870 score is consistent with the reported game-test rates: 3DMark05 computes the overall score from the geometric mean of GT1/GT2/GT3 FPS (250 × cube root of their product), giving ~1,842 for 10/4/10 FPS. CPU tests are separate and excluded from that score; Futuremark’s white paper says they force software vertex processing to measure CPU performance. Their ~1 FPS result therefore points at the guest CPU/virtualized software-vertex workload, not the RTX 3070 path.
+
+Next: profile per-frame time and batches for each game test, and separate Nine command generation, miniport submit/validation, fence waits, and GPU execution. Compare one run with diagnostic logging disabled. Do not infer GPU saturation from successful batch completion alone.
 
 ## Test and build
 
