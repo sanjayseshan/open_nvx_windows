@@ -2,30 +2,26 @@
 
 ## Current status
 
-- XP x86 driver **4.0.0.44** is installed and hardware acceleration is confirmed on the RTX 3070: OpenGL reports `NV170`, Nine reports `Mesa Nine (NV170)`, and the x86 GPU-fence proof completed. Successful x86 desktop log: `test_logs/xp_v2_20261124-140119.log`.
-- 3DMark05 x86 is installed at `C:\Program Files\Futuremark\3DMark05`; its local `d3d9.dll` is the current x86 Gallium Nine DLL. The x86 caps test reports PS 3.0 and required formats/caps.
-- Actual VFIO 3DMark attempt: `test_logs/xp_v2_20261124-145620.log`. The app loads the x86 Nine DLL, `Direct3DCreate9` succeeds, and a 3DMark window is created. The captured guest VNC frame was black; there is no benchmark score or evidence that 3DMark submitted GPU draws. The existing OpenGL fence proof is from the preflight test process, not proof of 3DMark rendering.
-- Non-VFIO UI session is currently running for easier desktop control. QEMU VNC is **127.0.0.1:5912**; guest TightVNC forwarding is **127.0.0.1:5911**. The non-VFIO screen shows the XP desktop correctly. Launching 3DMark there reaches the splash but crashes at app offset `0x12e21` (`0xC0000005`, null read); this Cirrus/GDI run is only for UI diagnosis, not GPU validation.
-- The x86 diagnostic helper now traces visible child controls and is XP 5.1-subsystem compatible; compile succeeded to `/tmp/test_3dmark_launch_diag32.exe`. It has not yet been installed into a fresh VFIO run.
+- RTX 3070 GA104 is the only validated GPU. XP x64 is the primary development target; a separate native XP x86 build is now also exercised.
+- User reports a completed **5,409 3DMark05** result with the current x86 Gallium Nine path. Earlier x86 runs had black-screen behavior; the new score establishes that a benchmark completed, but this install package has not yet been tested from `dist32/install.bat`.
+- The x86 D3D9 implementation is Gallium Nine from Mesa 25.1.6. It uses the Nouveau/NVC0 path and is distinct from WineD3D. WineD3D supplies D3D8 and DirectDraw in the native x86 package.
+- `dist32/install.bat` now targets native XP x86 only, rejects WoW64, backs up replaced files, installs the x86 miniport/display driver, Mesa OpenGL ICD, Nine D3D9 and WineD3D runtime components, registers the ICD, and stages optional tests.
+- `README.md` now separates XP x64 WoW64 applications from the native XP x86 architecture and documents the x86 package assembly/install flow.
+- The `vm_serial.log` symlink still points at `test_logs/xp_v2_20261124-145620.log`; it is a prior diagnostic log, not a live feed from the latest user-reported benchmark. No QEMU process was active at last inspection.
 
-## Next actions
+## Next steps
 
-1. Keep the non-VFIO desktop available at `127.0.0.1:5912` if UI inspection is useful. This VM is not using the RTX.
-2. To collect child-control diagnostics on hardware, stop the non-VFIO VM, run `test/prepare_xp32_3dmark.sh`, arm both flags with `guestfish` (`/test_accel/run_3dmark.flag` and `/test_accel/run_3dmark_diag.flag`), then run:
-
-   ```sh
-   NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1 NVX_KEEP_RUNNING=1 NVX_VNC_ENABLE=1 NVX_VNC_PORT=5911 NVX_TEST_TIMEOUT=1800 ./test/run_vfio_xp32_autoretry.sh
-   ```
-
-3. Check whether 3DMark reaches its selection screen and submits NVC0 batches from its own process. A completed preflight fence alone is not a 3DMark pass. Preserve the score screen and leave the VM running if a result appears.
+1. Assemble `dist32/` using the README commands after building the current x86 driver, Mesa ICD, WineD3D and Nine outputs.
+2. Review and test `dist32/install.bat` on native XP x86; it has only been statically reviewed so far.
+3. Capture a fresh serial log on the next VFIO run and record whether 5,409 is the final score and which game tests completed.
 
 ## Relevant files
 
-- `test/prepare_xp32_3dmark.sh` — copies the x64 installed 3DMark folder into the x86 image, replaces the local D3D9 DLL, stages x86 tools, and configures TightVNC.
-- `test/run_qemu_xp32_vnc.sh` — non-VFIO desktop-control VM (QEMU VNC display 12).
-- `test/run_vfio_vm_xp32.sh`, `test/run_vfio_xp32_autoretry.sh` — actual RTX x86 VFIO runner; autoretry removes a stale startup lock before boot.
-- `test/run_test_xp32_3dmark.bat`, `test/test_3dmark_launch_diag.c`, `test/watch_3dmark_text.bat` — guest launch, debugger/window automation, and score capture.
-- `test/test_3dmark_caps_eval.c` — x86 D3D9 capability check.
-- `src_driver/nvxmp.c` — x86 mode/scanout initialization; the 4.0.0.44 deferred first scanout commit fixed the earlier mode initialization issue.
+- `dist32/install.bat` — native XP x86 installer.
+- `dist32/nvx.inf` — x86 display adapter INF.
+- `test/install_xp32_driver_and_tests.sh` — offline image deployment path.
+- `test/run_vfio_vm_xp32.sh`, `test/run_vfio_xp32_autoretry.sh` — x86 VFIO runners. Always use `NVX_AUTO_RETRY=1` for VFIO starts.
+- `mesa_patches/nine/mesa99.c`, `mesa_patches/nine/nine_present.c` — x86 Gallium Nine adapter and present bridge.
+- `README.md` — architecture, build and install instructions.
 
-Keep this handoff as a concise latest snapshot. Increment the version for each new test build and restore `vm_serial.log` to the x64 log after x86 testing.
+Increment the driver version for each new test build. Restore `vm_serial.log` to the x64 log after x86 testing.

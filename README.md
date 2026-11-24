@@ -1,6 +1,8 @@
 # NVIDIA Modern GPU Display Drivers for Windows 2000/XP (x86 & x64) & Windows 98SE/ME
 
-This project develops display drivers for modern NVIDIA GPUs on legacy Windows. The XP miniport uses code and policy adapted from NVIDIA’s Open GPU Kernel Modules (`open-gpu-kernel-modules`) and boots NVIDIA GSP-RM firmware. Hardware validation is primarily on an RTX 3070 (GA104); related GPU families are not yet validated. Full 2D acceleration is present. OpenGL hardware rendering works through Mesa/Nouveau, and the x86 Gallium Nine D3D9 path has rendered 3DMark05 in the XP x64 guest. Performance and broader application compatibility remain under investigation.
+This project develops display drivers for modern NVIDIA GPUs on legacy Windows. The XP miniport uses code and policy adapted from NVIDIA’s Open GPU Kernel Modules (`open-gpu-kernel-modules`) and boots NVIDIA GSP-RM firmware.
+Hardware support is for GA104 (Nvidia GeForce RTX 3070, 3060 series).
+Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works through Mesa/Nouveau. The x86 Gallium Nine D3D9 (DirectX 9) path has been validated and has rendered 3DMark05 under XP x64 WoW64 and native XP x86; the latest score is 5,409 (comparable to GeForce 6800 GT). Better acceleration and broader compatibility remain further work.
 
 ### Operating System Support
 * **Windows XP Professional x64 Edition (NT 5.2):** Main development and hardware-validation target; tested with an RTX 3070, including VFIO passthrough.
@@ -8,15 +10,11 @@ This project develops display drivers for modern NVIDIA GPUs on legacy Windows. 
 * **Windows 98 Second Edition (SE, 4.10):** Experimental VxD/DIB path tested in a VFIO guest.
 * **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated. Compatibility should not be assumed.
 
-### Hardware Validation & Target GPUs
+### Hardware Validation & GPU Scope
 * **Host Platform:** AMD AM5 (Ryzen 9000 series, IOMMU / VFIO passthrough)
-* **Tested GPU:** NVIDIA GeForce RTX 3070 (Ampere GA104)
+* **Validated GPU:** NVIDIA GeForce RTX 3070, GA104, PCI device ID `10DE:2488`.
 * **Tested Displays:** Dual-monitor setup (1x 2560×1440 @ 32bpp True Color + 1x 1920×1080 @ 32bpp True Color)
-* **Potential GPU families for this firmware generation (only GA104 tested):**
-  * GTX 16 series (Turing TU10x, untested)
-  * RTX 20 series (Turing TU10x, untested)
-  * RTX 30 series (Ampere GA10x, tested GA104)
-  * RTX 40 series (Ada Lovelace AD10x, untested)
+* **Code target devices:** GeForce RTX 3070, RTX 3070 Laptop GPU, RTX 3070 Ti Laptop GPU, RTX 3060 Ti, RTX 3060, and RTX 3060 GA104.
 
 ---
 
@@ -28,37 +26,85 @@ This project develops display drivers for modern NVIDIA GPUs on legacy Windows. 
 | **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
 | **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0) & `nvx2.drv` (Head 1) (16-bit NE) |
 | **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | Partial Acceleration (DIB Engine RAM shadow buffer + burst VRAM flush) |
-| **3D Acceleration Engine** | Native x86 guest path not yet validated | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Software rasterization |
+| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Software rasterization |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
 | **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Dual display drivers (`nvx.drv` + `nvx2.drv`) & desktop extension via `attach_sec.exe` |
-| **Tested Resolutions** | 1920×1080 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 1920×1080 + 2560×1440 @ 32bpp True Color |
+| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 1920×1080 + 2560×1440 @ 32bpp True Color |
 
 ---
 ## Architecture
 
-The diagrams show the implemented data flow and current boundaries. XP x64 is the primary target. OpenGL and x86 D3D9 can use Mesa/Nouveau hardware rendering; the x64 D3D9 and D3D8/DirectDraw compatibility paths use WineD3D. Hardware validation is focused on an RTX 3070, and successful rendering does not imply broad API coverage or mature performance.
+The diagrams show the implemented data flow and current boundaries. XP x64 is the primary target; its diagram includes both native x64 applications and 32-bit applications running under WoW64. Native XP x86 is a separate build. OpenGL uses Mesa/Nouveau; x86 D3D9 can use Gallium Nine, while WineD3D supplies the compatibility paths. Hardware validation is focused on an RTX 3070 (GA104, `10DE:2488`); successful rendering does not imply broad API coverage or mature performance.
 
 ### Windows XP x64
 
 ```mermaid
 flowchart TB
   subgraph User[User mode]
-    APP[OpenGL application]
-    D3D9[32-bit D3D9 application]
-    D3DOther[x64 D3D9 or D3D8 / DirectDraw application]
-    OGL[XP OpenGL loader / WGL]
-    ICD[Mesa WGL ICD<br/>nvxogl64.dll]
-    NINE[Gallium Nine<br/>x86 d3d9.dll]
-    WD[WineD3D<br/>D3D9 / D3D8 / DirectDraw to OpenGL]
+    APP64[64-bit OpenGL application]
+    APP32[32-bit OpenGL application<br/>under WoW64]
+    D3D932[32-bit D3D9 application<br/>under WoW64]
+    D3D964[64-bit D3D9 application]
+    D3DOther[64-bit D3D8 / DirectDraw application]
+    OGL64[XP x64 OpenGL loader / WGL]
+    OGL32[WoW64 OpenGL loader / WGL]
+    ICD64[Mesa WGL ICD<br/>nvxogl64.dll]
+    ICD32[Mesa WGL ICD<br/>nvxogl32.dll]
+    NINE[Gallium Nine<br/>x86 d3d9.dll, selected backend]
+    WD32[WineD3D x86<br/>alternative D3D9 backend;<br/>also D3D8 / DirectDraw]
+    WD64[WineD3D x64<br/>D3D9 / D3D8 / DirectDraw to OpenGL]
     GDI[GDI / XDDM display calls]
-    APP --> OGL --> ICD
-    D3D9 --> NINE
-    D3DOther --> WD --> OGL
+    APP64 --> OGL64 --> ICD64
+    APP32 --> OGL32 --> ICD32
+    D3D932 --> NINE
+    D3D932 -. alternative .-> WD32
+    D3D964 --> WD64
+    D3DOther --> WD64
+    WD32 --> OGL32
+    WD64 --> OGL64
     GDI --> DDI
   end
   subgraph Kernel[Windows XP x64 kernel]
-    DDI[nvxdisp.dll<br/>XDDM display DDI]
-    MP[nvxmp.sys<br/>XDDM video miniport]
+    DDI[nvxdisp.dll<br/>64-bit XDDM display DDI]
+    DDI32[nvxdisp32.dll<br/>32-bit WoW64 display interface]
+    MP[nvxmp.sys<br/>64-bit XDDM video miniport]
+    DDI -->|DDI / escape requests| MP
+    DDI32 -->|WoW64 display calls| MP
+    ICD64 -->|NVX winsys ABI / escapes| MP
+    ICD32 -->|NVX winsys ABI / escapes| MP
+    NINE -->|Gallium Nouveau winsys / escapes| MP
+  end
+  subgraph GPU[RTX GPU]
+    RM[GSP-RM firmware<br/>RPC-managed resources]
+    CE[Copy Engine / display scanout]
+    GR[3D engine<br/>channel and submission path]
+    RM --> CE
+    RM --> GR
+  end
+  MP -->|DMA, RM RPC, channel submission| RM
+  NINE -->|Gallium NVC0 command stream| GR
+```
+
+The miniport owns device setup, memory mappings, RM/GSP communication, display modes, and the user/kernel submission ABI. The x64 and WoW64 display interfaces both reach the same x64 miniport. Mesa's WGL ICD and Nouveau winsys use that ABI for OpenGL. The selected x86 Gallium Nine `d3d9.dll` submits through Gallium/Nouveau; x86 WineD3D is an alternative D3D9 backend and supplies D3D8/DirectDraw. x64 D3D applications use WineD3D. On XP x64, all 32-bit user-mode DLLs shown here install in `SysWOW64`. Build and install the intended x86 D3D9 backend explicitly because both backends provide `d3d9.dll`.
+
+### Windows XP x86 (native 32-bit)
+
+This section describes only a native 32-bit Windows XP installation. It does not describe 32-bit applications running under WoW64 on XP x64.
+
+```mermaid
+flowchart TB
+  subgraph User[User mode - native 32-bit]
+    APPGL[32-bit OpenGL application] --> WGL[XP OpenGL loader / WGL]
+    WGL --> ICD[Mesa WGL ICD<br/>nvxogl32.dll]
+    APP9[32-bit D3D9 application] --> NINE[Gallium Nine<br/>d3d9.dll, selected backend]
+    APP8[32-bit D3D8 / DirectDraw application] --> WD[WineD3D x86<br/>D3D8 / DirectDraw to OpenGL]
+    WD --> WGL
+    GDI[GDI / XDDM display calls]
+    GDI --> DDI
+  end
+  subgraph Kernel[Windows XP x86 kernel]
+    DDI[nvxdisp.dll<br/>32-bit XDDM display DDI]
+    MP[nvxmp.sys<br/>32-bit XDDM video miniport]
     DDI -->|DDI / escape requests| MP
     ICD -->|NVX winsys ABI / escapes| MP
     NINE -->|Gallium Nouveau winsys / escapes| MP
@@ -74,38 +120,7 @@ flowchart TB
   NINE -->|Gallium NVC0 command stream| GR
 ```
 
-The miniport owns device setup, memory mappings, RM/GSP communication, display modes, and the user/kernel submission ABI. `nvxdisp.dll` provides the XP XDDM display interface. Mesa's WGL ICD and Nouveau winsys use that ABI for OpenGL. For 32-bit D3D9, the selected Gallium Nine `d3d9.dll` submits through Gallium/Nouveau to the miniport; it does not route D3D9 through WineD3D. WineD3D remains the D3D9 compatibility path for x64 applications and supplies the D3D8 and DirectDraw paths. Build and install the intended x86 D3D9 backend explicitly because both backends provide a `d3d9.dll`.
-
-### 32-bit applications and Windows XP x86
-
-```mermaid
-flowchart TB
-  subgraph XP64[Windows XP x64]
-    A32[32-bit application under WOW64] --> ICD32[nvxogl32.dll<br/>OpenGL]
-    A32 --> NINE32[Gallium Nine x86 d3d9.dll<br/>D3D9 when selected]
-    A32 --> WD32[WineD3D x86<br/>D3D9 / D3D8 / DirectDraw]
-    WD32 --> ICD32
-    ICD32 --> DDI32[nvxdisp32.dll<br/>32-bit display interface]
-    NINE32 --> MP64[nvxmp.sys<br/>64-bit miniport]
-    DDI32 --> MP64
-    A64[64-bit application] --> ICD64[nvxogl64.dll<br/>OpenGL]
-    A64 --> WD64[WineD3D x64<br/>D3D9 / D3D8 / DirectDraw]
-    WD64 --> ICD64
-    ICD64 --> DDI64[nvxdisp.dll<br/>64-bit display interface]
-    DDI64 --> MP64
-  end
-  subgraph XP32[Native Windows XP x86 build]
-    A32N[32-bit application] --> ICD32N[nvxogl32.dll]
-    A32N --> NINE32N[Gallium Nine x86 d3d9.dll]
-    ICD32N --> DDI32N[nvxdisp.dll<br/>32-bit display interface]
-    NINE32N --> MP32[nvxmp.sys<br/>32-bit miniport]
-    DDI32N --> MP32
-  end
-  MP64 --> HW[RTX GPU / GSP-RM]
-  MP32 --> HW
-```
-
-On XP x64, x86 and x64 user-mode DLLs belong in separate system directories and OpenGL registry views; both use the x64 kernel miniport. The x86 build is a separate native-OS target; do not infer that native x86 rendering has been validated from the WOW64 result. Build outputs use `nvxmp32.sys` and `nvxdisp32.dll` names before staging as `nvxmp.sys` and `nvxdisp.dll` for a native x86 guest. Gallium Nine currently supplies only the x86 D3D9 frontend.
+The x86 diagram is the same graphics route without WoW64: every application and user-mode DLL is 32-bit, and the kernel miniport is also 32-bit. The build outputs `nvxmp32.sys` and `nvxdisp32.dll` are staged under the standard package names `nvxmp.sys` and `nvxdisp.dll`; all user-mode graphics DLLs install under `Windows\\System32`. Gallium Nine supplies D3D9; WineD3D supplies D3D8 and DirectDraw. The latest user-reported 3DMark05 run on this path scored 5,409.
 
 ### Windows 98 SE (experimental)
 
@@ -220,7 +235,7 @@ Gallium Nine is built as an x86 `d3d9.dll` from Mesa 25.1.6 bundled in `submodul
 ./build_d3d9_nine.sh
 ```
 
-The script checks the Mesa 25.1.6 pin, applies the external Mesa9x compatibility patches and root-owned Nine shims, builds `mesa99.dll`, checks the x86 PE format and `Direct3DCreate9` exports, then stages it as `dist_full/x86/d3d9.dll`. The x86 Nine path has rendered the 3DMark05 game tests in the XP x64 guest; the latest user-reported score was 3,249. Performance remains well below the target, and CSMT is gated off when Nouveau does not advertise persistent coherent mappings. Nine does not replace x64 WineD3D or the x86 D3D8/DirectDraw DLLs. The full test runner selects Nine by default and avoids rebuilding WineD3D over its x86 `d3d9.dll`; set `NVX_D3D9_BACKEND=wined3d` to select WineD3D instead.
+The script checks the Mesa 25.1.6 pin, applies the external Mesa9x compatibility patches and root-owned Nine shims, builds `mesa99.dll`, checks the x86 PE format and `Direct3DCreate9` exports, then stages it as `dist_full/x86/d3d9.dll`. The x86 Nine path has rendered the 3DMark05 game tests; the latest user-reported score is 5,409. Performance remains below the 10,000-point target, and CSMT is gated off when Nouveau does not advertise persistent coherent mappings. Nine does not replace x64 WineD3D or the x86 D3D8/DirectDraw DLLs. The full test runner selects Nine by default and avoids rebuilding WineD3D over its x86 `d3d9.dll`; set `NVX_D3D9_BACKEND=wined3d` to select WineD3D instead.
 
 ### Build Windows XP x86 driver binaries
 
@@ -233,7 +248,23 @@ install -D src_driver/nvxmp32.sys dist32/nvxmp.sys
 install -D src_disp/nvxdisp32.dll dist32/nvxdisp.dll
 ```
 
-Include `dist32/nvx.inf` in the package. The x86 Mesa ICD can be built with `NVX_MESA_ARCH=x86 ./test/build_mesa_xp64.sh`; for XP x64, it is installed in `SysWOW64` for 32-bit applications. For a native x86 guest, use the 32-bit driver and matching ICD only.
+Include `dist32/nvx.inf` in the package. Build the 32-bit Mesa ICD with `NVX_MESA_ARCH=x86 ./test/build_mesa_xp64.sh` and stage `dist_full/nvxogl32.dll` in `dist32/` as shown below. Every binary in this native x86 package must be 32-bit.
+
+Assemble the native XP x86 installer package after building the x86 Mesa ICD, WineD3D, and Gallium Nine. Build WineD3D first, then Nine so Nine remains the selected `d3d9.dll`:
+
+```sh
+install -D -m 0644 dist_full/gsp_ga104.bin dist32/gsp_ga104.bin
+install -D -m 0644 dist_full/nvxogl32.dll dist32/nvxogl32.dll
+install -D -m 0644 dist_full/x86/d3d9.dll dist32/d3d9.dll
+for dll in d3d8 ddraw wined3d libwine; do
+  install -D -m 0644 "dist_full/x86/$dll.dll" "dist32/$dll.dll"
+done
+install -D -m 0644 test/test_gpu_accel32.exe dist32/test_gpu_accel32.exe
+install -D -m 0644 test/3d_tests/wglgears32.exe dist32/wglgears32.exe
+install -D -m 0644 dist_full/x86/test_3dmark_launch_diag.exe dist32/test_3dmark_launch_diag.exe
+```
+
+The resulting `dist32/` package includes `install.bat`. Run it as Administrator inside native Windows XP x86. It rejects WoW64, backs up replaced files, installs the x86 driver, Mesa OpenGL ICD, Gallium Nine D3D9 and WineD3D D3D8/DirectDraw components, registers the ICD, and stages optional test tools.
 
 ### Build Windows 98 SE components
 
@@ -249,33 +280,35 @@ The output files are placed in `dist_win98/`.
 
 ## Installation & Usage
 
+The steps below assume you are installing from a downloaded ZIP on the Windows XP machine. Download the full release ZIP for the XP edition you have, copy it to the guest, and extract it to a simple directory such as `C:\nvx_driver`. Do not install the XP x64 package on native XP x86 or vice versa. If you built the package from source, use the assembled `dist_full/` (XP x64) or `dist32/` (native XP x86) folder; `src_driver/` by itself is source code, not a complete graphics-runtime package.
+
+The full release package includes the miniport, display driver, firmware, INF, OpenGL ICD, and DirectX runtime components. A driver-only ZIP made from miniport/display build outputs can install the display driver, but does not include Mesa OpenGL or WineD3D/Gallium Nine DirectX components; use the full package when you want 3D acceleration.
+
 ### Windows XP x64
 
-`dist_full/` is the full integration bundle. For OpenGL and DirectX support it must contain `nvxmp.sys`, `nvxdisp.dll`, `gsp_ga104.bin`, `nvxmesa.dll`, `nvxogl64.dll`, `nvxogl32.dll`, the five x64 WineD3D DLLs (`d3d9.dll`, `d3d8.dll`, `ddraw.dll`, `wined3d.dll`, `libwine.dll`) at its root, the matching five x86 DLLs under `x86/`, and `nvx.inf`. Test programs can also be included. Native x64 DLLs go in `System32`; x86 DLLs for WOW64 applications go in `SysWOW64`.
+1. Extract the XP x64 full ZIP on the guest, for example to `C:\nvx_driver`.
+2. Open the extracted folder and run `install.bat` as an Administrator. The package installer backs up replaced files, copies the x64 miniport and display driver, installs the x64 and WoW64 OpenGL/DirectX components, and stages the INF and diagnostic tools.
+3. Open **Device Manager** (`devmgmt.msc`). Under **Display adapters** (or **Other devices** if the card is not yet bound), select the NVIDIA adapter and choose **Update Driver** -> **Install from a list or specific location** -> **Don't search** -> **Have Disk...**. Browse to `C:\nvx_driver\nvx.inf`, select the matching NVIDIA entry, and accept the driver warning if shown.
+4. Reboot Windows XP.
 
-For the repository's prepared XP x64 guest image, shut the VM down and run the rootless offline updater. It selects Gallium Nine for x86 D3D9 by default; use `NVX_D3D9_BACKEND=wined3d` to install WineD3D for x86 D3D9 instead:
-
-```sh
-./test/update_disk_driver_user.sh full
-```
-
-This updates `winxp_x64.qcow2`, installs the miniport, display DDI, firmware and INF, both Mesa ICDs, and x64 WineD3D runtime files, updates OpenGL registry entries, and stages available test binaries. It also installs the selected x86 D3D9 DLL (Nine by default) plus the x86 WineD3D D3D8/DirectDraw support files. Build both Mesa ICDs, Nine if selected, and the required WineD3D DLLs first; the updater rejects an incomplete package. It requires working libguestfs/guestmount support. For a mounted physical XP partition, the mounted-volume updater only rebuilds and copies the x64 miniport and display DLL; it does not install the OpenGL or DirectX runtimes:
-
-```sh
-XP_MOUNT=/mnt/xp ./test/update_xp_driver.sh
-```
-
-The current `dist_full/install.bat` installs the WineD3D D3D9 backend in both architectures. To install Nine for x86 D3D9, use the offline updater with its default `NVX_D3D9_BACKEND=nine` selection or manually copy `dist_full/x86/d3d9.dll` into `SysWOW64` after running the installer. The batch installer checks the miniport, display DDI, firmware, Mesa frontends, both OpenGL ICDs, and WineD3D runtime files; it backs up replaced system DLLs, installs runtimes into `System32` and `SysWOW64`, stages tests, registers both OpenGL ICDs, and runs the INF/PnP setup. Reboot after it completes. For a driver-only installation, use Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...** and select `nvx.inf`; that path alone does not install OpenGL or DirectX support. Back up the guest before installing because the package replaces system D3D runtime DLLs.
-
-After reboot, verify the renderer using the included test tools and logs. `GDI Generic` means the application fell back to software OpenGL. Successful installation does not prove that all OpenGL or Direct3D workloads are supported; 3D performance/correctness remains under active validation.
+On XP x64, x64 user-mode DLLs install in `System32`; 32-bit WoW64 DLLs install in `SysWOW64`. The x86 `d3d9.dll` included at `x86\d3d9.dll` is the selected D3D9 backend for 32-bit apps. Gallium Nine and WineD3D both provide this filename, so the package must contain the backend you intend to use. Keep the rest of the x86 WineD3D DLLs (`d3d8.dll`, `ddraw.dll`, `wined3d.dll`, `libwine.dll`) alongside it when using Nine for D3D9.
 
 ### Windows XP x86
 
-Build or stage `dist32/nvxmp.sys` and `dist32/nvxdisp.dll` as described above and include `dist32/nvx.inf`. In XP x86, open Device Manager -> **Display Adapters** -> **Update Driver** -> **Have Disk...**, select the INF, and reboot. An x64 ICD cannot be loaded by an x86 process; install the matching `nvxogl32.dll` if using OpenGL. To deploy the driver and test binaries to the repository's offline `winxp_x32.qcow2` image, shut down the VM and run:
+This applies only to a native 32-bit Windows XP installation, not 32-bit apps running under WoW64 on XP x64.
 
-```sh
-./test/install_xp32_driver_and_tests.sh
-```
+1. Extract the native XP x86 full ZIP on the guest, for example to `C:\nvx_driver`.
+2. Run its `install.bat` as an Administrator. It checks that this is native x86 XP, backs up replaced files, installs the 32-bit miniport, display driver, OpenGL ICD, Gallium Nine D3D9 and WineD3D D3D8/DirectDraw components, and stages the INF and tests.
+3. In **Device Manager**, use **Display adapters** (or **Other devices**) -> **Update Driver** -> **Install from a list or specific location** -> **Don't search** -> **Have Disk...** and choose `C:\nvx_driver\nvx.inf`. Select the NVIDIA entry and accept the warning if shown.
+4. Reboot Windows XP.
+
+### Driver-only ZIP
+
+If you have only the miniport/display-driver ZIP from a `src_driver` build, extract it on XP and use Device Manager -> **Update Driver** -> **Have Disk...** with the included `nvx.inf`. That package does not install the Mesa ICD or DirectX translation DLLs, so it is suitable for binding/updating the display driver but does not by itself provide the full accelerated OpenGL/DirectX stack. For full 3D support, use the matching full release ZIP or build and assemble `dist_full/` / `dist32/` as described above.
+
+After reboot, verify the OpenGL renderer with the included test tools. `GDI Generic` means the application fell back to software OpenGL. Successful installation does not prove that every OpenGL or Direct3D workload is supported; 3D performance and compatibility remain under development. Back up the XP installation before installing because the full package replaces system DirectX runtime DLLs.
+
+Repository-maintainer instructions for updating the offline QEMU images are in [test/README.md](test/README.md); they are not needed for a normal installation from a release ZIP.
 
 ### Windows 98 SE
 
@@ -288,7 +321,7 @@ Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist
 ```
 ├── README.md           # Project overview and build instructions
 ├── dist_full/           # XP x64 integration bundle: driver, firmware, ICDs, tests, and WineD3D DLLs
-├── dist32/              # Windows XP x86 release package (nvxmp.sys, nvxdisp.dll, nvx.inf)
+├── dist32/              # Native Windows XP x86 package and install.bat
 ├── dist_win98/          # Windows 98 SE release package (nvx.drv, nvx2.drv, nvx.vxd, nvx.inf, attach_sec.exe)
 ├── src_driver/          # Unified GA104 miniport engine, GSP/RPC/MMU/Display code, and OpenRM HAL shim
 ├── src_disp/            # Windows XP GDI display driver (both 64-bit and 32-bit builds)
