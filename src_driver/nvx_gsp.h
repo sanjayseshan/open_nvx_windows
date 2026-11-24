@@ -362,6 +362,9 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG64 PerfPushCopyCycles;
     ULONG64 PerfBatchCopyCycles, PerfBatchPendingCycles;
     ULONG64 PerfBatchValidationCycles;
+    ULONG64 PerfNvc0PacketValidationCycles;
+    ULONG64 PerfNvc0BindingValidationCycles;
+    ULONG64 PerfBufferReferenceCount, PerfRelocationCount;
     ULONG64 PerfLastPerfReport;
     ULONG64 PerfFenceWaitPolls, PerfFenceWaitMaxPolls;
     ULONG64 PerfFenceWaitCalls;

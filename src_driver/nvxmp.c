@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 4.0.0.30
+ * Driver Version: 4.0.0.31
  */
 
 #include "miniport.h"
@@ -4409,6 +4409,7 @@ validate_batch_done:
         ULONG64 lookupSlotScans=0,lookupStartTsc;
         ULONG64 submitIoctlStartTsc,stageStartTsc;
         ULONG64 batchCopyCycles=0,pendingWaitCycles=0,validationCycles=0;
+        ULONG64 packetValidationCycles=0,bindingValidationCycles=0;
         ULONG64 submitIoctlCycles;
         ULONG64 fenceValue;
         BOOLEAN submitted=FALSE,clientReserved=FALSE,batchSlotReserved=FALSE;
@@ -4553,7 +4554,8 @@ validate_batch_done:
          * Mesa/Nine client path. */
         if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
                 ownedAllocations,ownedCount,header.ClientToken)) {
-            validationCycles+=Nvx3dReadTsc()-stageStartTsc;
+            packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
+            validationCycles+=packetValidationCycles;
             LogStr("NVX [NVC0-BATCH]: reject packet/address validation dwords=");
             LogHex(header.DwordCount);LogStr(" refs=");
             LogHex(header.BufferReferenceCount);LogStr(" owned=");
@@ -4569,7 +4571,8 @@ validate_batch_done:
             LogStr("\n");
             status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
         }
-        validationCycles+=Nvx3dReadTsc()-stageStartTsc;
+        packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
+        validationCycles+=packetValidationCycles;
         {
             uint32_t bindingFailSubchannel=0xffffffffU,bindingFailValue=0;
             BOOLEAN bindingsValid;
@@ -4583,7 +4586,8 @@ validate_batch_done:
                     header.DwordCount,classIds,
                     FALSE, /* Private queue setup already bound 3D. */
                     &bindingFailSubchannel,&bindingFailValue);
-            validationCycles+=Nvx3dReadTsc()-stageStartTsc;
+            bindingValidationCycles=Nvx3dReadTsc()-stageStartTsc;
+            validationCycles+=bindingValidationCycles;
             if(!bindingsValid) {
                 LogStr("NVX [NVC0-BATCH]: reject class bindings boundToken=");
                 LogHex(channel->Channel);LogStr(" client=");
@@ -4665,6 +4669,10 @@ submit_batch_done:
             channel->PerfBatchCopyCycles+=batchCopyCycles;
             channel->PerfBatchPendingCycles+=pendingWaitCycles;
             channel->PerfBatchValidationCycles+=validationCycles;
+            channel->PerfNvc0PacketValidationCycles+=packetValidationCycles;
+            channel->PerfNvc0BindingValidationCycles+=bindingValidationCycles;
+            channel->PerfBufferReferenceCount+=header.BufferReferenceCount;
+            channel->PerfRelocationCount+=header.RelocationCount;
             if(status!=NO_ERROR) channel->PerfSubmitFailures++;
             if(channel->PerfSubmitCount-channel->PerfLastPerfReport>=4096U) {
                 channel->PerfLastPerfReport=channel->PerfSubmitCount;
@@ -5262,7 +5270,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-        LogStr(" NVX Video Miniport Driver 4.0.0.30 (open-gpu-kernel-modules unified v2)\n");
+        LogStr(" NVX Video Miniport Driver 4.0.0.31 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

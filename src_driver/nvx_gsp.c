@@ -198,6 +198,10 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" push_copy_cycles=");LogHex(channel->PerfPushCopyCycles);
     LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
     LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
+    LogStr(" packet_validation_cycles=");LogHex(channel->PerfNvc0PacketValidationCycles);
+    LogStr(" binding_validation_cycles=");LogHex(channel->PerfNvc0BindingValidationCycles);
+    LogStr(" refs_total=");LogHex(channel->PerfBufferReferenceCount);
+    LogStr(" relocs_total=");LogHex(channel->PerfRelocationCount);
     LogStr(" submit_failures=");LogHex(channel->PerfSubmitFailures);
     LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
     LogStr(" submit_max_cycles=");LogHex(channel->PerfSubmitMaxCycles);
@@ -239,9 +243,13 @@ VOID NvxGspLogClientPerfSample(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" push_copy_cycles=");LogHex(channel->PerfPushCopyCycles);
     LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
     LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
+    LogStr(" packet_validation_cycles=");LogHex(channel->PerfNvc0PacketValidationCycles);
+    LogStr(" binding_validation_cycles=");LogHex(channel->PerfNvc0BindingValidationCycles);
     LogStr(" buffer_lookup_slots=");LogHex(channel->PerfSubmitLookupSlots);
     LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
     LogStr(" buffer_lookup_cycles=");LogHex(channel->PerfBufferLookupCycles);
+    LogStr(" refs_total=");LogHex(channel->PerfBufferReferenceCount);
+    LogStr(" relocs_total=");LogHex(channel->PerfRelocationCount);
     LogStr(" submit_lock_poll_10us=");LogHex(channel->PerfSubmitLockPolls);
     LogStr(" fence_wait_calls=");LogHex(channel->PerfFenceWaitCalls);
     LogStr(" fence_wait_poll_loops=");LogHex(channel->PerfFenceWaitPolls);

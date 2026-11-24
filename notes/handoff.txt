@@ -7,6 +7,13 @@
 - Run log: `test_logs/v4.0.0.30-20261123-212911.log`; register/host CPU sidecar: `test_logs/v4.0.0.30-20261123-212911.pc.log`.
 - The external Mesa patch `0048-nouveau-xp-coalesce-nvc0-kicks.patch` defers NVC0 kicks to conservative batch limits while retaining per-draw reference validation. Patch series application and the full package build passed. The 3219 score is the first benchmark result with the patch; no comparable before/after run isolates its effect.
 
+## Profiling follow-up in progress
+
+- The .30 log already has useful counters: validation is about 34.2B cycles, submit IOCTL about 1.88B, buffer lookup about 1.09B, and pending waits about 0.70B across the session. These are cumulative session totals, not game-only frame costs.
+- Added miniport counters to split NVC0 packet/address validation from object-binding validation, plus cumulative buffer-reference and relocation totals. These will appear in the next build's `NVC0-PERF` and 4096-submit `NVC0-PERF-SAMPLE` records.
+- Existing `NOUVEAU_COALESCE_PROFILE` is from the WGL bridge and must not be attributed to the Nine/3DMark path. Miniport process-ID and per-submit samples are the current source for Nine kick/dword/reference behavior.
+- No validation, ownership, or fence checks have been removed. Optimize after the next profile identifies which validation stage dominates. Buffer lookup and fence waiting already have counters; the previous totals alone do not justify changing their correctness-sensitive behavior.
+
 ## CPU and submission evidence
 
 - QEMU `info cpus` maps guest CPU 2 to host thread 76937 and CPU 5 to 76940. Recent samples show CPU 2 using nearly a full host core and CPU 5 also busy; aggregate vCPU work is roughly two or more host cores. Other vCPUs often sample at the XP idle `HLT` instruction.
