@@ -1,0 +1,47 @@
+diff --git a/mesa-25.1.x/src/gallium/drivers/nouveau/nouveau_buffer.c b/mesa-25.1.x/src/gallium/drivers/nouveau/nouveau_buffer.c
+--- a/mesa-25.1.x/src/gallium/drivers/nouveau/nouveau_buffer.c
++++ b/mesa-25.1.x/src/gallium/drivers/nouveau/nouveau_buffer.c
+@@ -20,6 +20,10 @@
+ #include "nouveau_buffer.h"
+ #include "nouveau_mm.h"
+ 
++#ifdef NVX_XP_WIN32_SHIMS
++#include <xf86drm.h>
++#endif
++
+ struct nouveau_transfer {
+    struct pipe_transfer base;
+ 
+@@ -536,6 +540,15 @@ nouveau_buffer_transfer_flush_region(struct pipe_context *pipe,
+-   if (tx->map)
++   if (tx->map) {
++#ifdef NVX_XP_WIN32_SHIMS
++      if (buf->bo) {
++         struct nouveau_context *nv = nouveau_context(pipe);
++         struct nouveau_drm *drm = nouveau_drm(&nv->screen->device->object);
++         NvxXf86DrmMarkBufferDirtyRange(drm->fd, buf->bo->handle,
++            buf->offset + tx->base.box.x + box->x, box->width);
++      }
++#endif
+       nouveau_transfer_write(nouveau_context(pipe), tx, box->x, box->width);
++   }
+ 
+    util_range_add(&buf->base, &buf->valid_buffer_range,
+                   tx->base.box.x + box->x,
+                   tx->base.box.x + box->x + box->width);
+@@ -557,6 +570,14 @@ nouveau_buffer_transfer_unmap(struct pipe_context *pipe,
+-         if (tx->map)
++         if (tx->map) {
++#ifdef NVX_XP_WIN32_SHIMS
++            if (buf->bo) {
++               struct nouveau_drm *drm = nouveau_drm(&nv->screen->device->object);
++               NvxXf86DrmMarkBufferDirtyRange(drm->fd, buf->bo->handle,
++                  buf->offset + tx->base.box.x, tx->base.box.width);
++            }
++#endif
+             nouveau_transfer_write(nv, tx, 0, tx->base.box.width);
++         }
+ 
+          util_range_add(&buf->base, &buf->valid_buffer_range,
+                         tx->base.box.x, tx->base.box.x + tx->base.box.width);
+       }

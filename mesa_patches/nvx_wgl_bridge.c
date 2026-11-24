@@ -32,6 +32,7 @@ uint64_t nvx_wgl_present_timer(void);
 uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
 static void nvx_bridge_nouveau_trace(const char *message);
+static int nvx_wgl_timing_trace_enabled(void);
 int NvxXf86DrmWaitBufferFence(int fd, uint32_t handle);
 int nvx_wgl_xf86drm_fd(void);
 int nvx_wgl_wait_gpu_buffer(uint32_t handle);
@@ -42,12 +43,14 @@ nvx_wgl_wait_gpu_buffer(uint32_t handle)
    static volatile LONG success_trace_count;
    static volatile LONG failure_trace_count;
    static volatile LONG timing_sample_count;
-   uint64_t wait_start = nvx_wgl_present_timer();
+   int trace_timing = nvx_wgl_timing_trace_enabled() &&
+      ((InterlockedIncrement(&timing_sample_count) % 300) == 1);
+   uint64_t wait_start = trace_timing ? nvx_wgl_present_timer() : 0;
    int fd = nvx_wgl_xf86drm_fd();
    int result = fd > 0 && handle &&
                 NvxXf86DrmWaitBufferFence(fd, handle);
 
-   if ((InterlockedIncrement(&timing_sample_count) % 30) == 1) {
+   if (trace_timing) {
       char timing[96];
       wsprintfA(timing, "PRESENT_TIMING fence_wait_us=%lu result=%lu",
                 (unsigned long)nvx_wgl_present_elapsed_us(wait_start),
@@ -742,12 +745,34 @@ void
 nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us)
 {
    static volatile LONG sample_count;
-   if ((InterlockedIncrement(&sample_count) % 30) == 1) {
+   if (nvx_wgl_timing_trace_enabled() &&
+       (InterlockedIncrement(&sample_count) % 300) == 1) {
       char timing[112];
       wsprintfA(timing, "PRESENT_TIMING stage_blit_us=%lu flush_us=%lu",
                 (unsigned long)blit_us, (unsigned long)flush_us);
       nvx_bridge_nouveau_trace(timing);
    }
+}
+
+/* Per-frame timing used to reopen and append the guest trace file every few
+ * dozen frames. Keep aggregate ten-second profiles enabled, but require an
+ * explicit opt-in for these sampled present-path records. */
+static int
+nvx_wgl_timing_trace_enabled(void)
+{
+   static volatile LONG enabled = -1;
+   LONG value = InterlockedCompareExchange(&enabled, -1, -1);
+   if (value < 0) {
+      char setting[8];
+      LONG requested = GetEnvironmentVariableA("NVX_WGL_TRACE_TIMING",
+                                                setting,
+                                                sizeof(setting)) &&
+                       setting[0] == '1';
+      value = InterlockedCompareExchange(&enabled, requested, -1);
+      if (value < 0)
+         value = requested;
+   }
+   return value != 0;
 }
 
 int

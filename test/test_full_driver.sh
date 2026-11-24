@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.31"
+NVX_TEST_VERSION="4.0.0.39"
 NVX_PERF_MODE="${NVX_PERF_MODE:-quiet}"
 case "$NVX_PERF_MODE" in
     quiet|diagnostic) ;;
@@ -138,6 +138,11 @@ i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
     "$NVX_ROOT/test/test_3dmark_launch_diag.c" -lpsapi \
     -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 \
     -o "$NVX_ROOT/test/test_3dmark_launch_diag.exe"
+i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
+    -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 \
+    "$NVX_ROOT/test/run_3dmark_full.c" -luser32 \
+    -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 \
+    -o "$NVX_ROOT/test/run_3dmark_full.exe"
 x86_64-w64-mingw32-gcc -x c -O2 -static-libgcc -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -o "$NVX_ROOT/test/3d_tests/wglgears.exe"
 i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$NVX_ROOT/test/3d_tests/wglgears32.exe"
 x86_64-w64-mingw32-gcc -O2 -shared -static-libgcc "$NVX_ROOT/test/ucrtbase_xp.c" "$NVX_ROOT/test/ucrtbase.def" -o "$NVX_ROOT/test/ucrtbase.dll" -lm
@@ -208,7 +213,7 @@ if [ "${NVX_GR_CHANNEL_PROBE:-0}" = "1" ]; then
     fi
 else
     NVX_DRIVER_BUILD_TARGET=full
-    NVX_DRIVER_BUILD_ARGS=("NVX_TRACE_HOTPATH=0")
+    NVX_DRIVER_BUILD_ARGS=("NVX_TRACE_HOTPATH=0" "NVX_NVC0_PERF_SAMPLE_INTERVAL=${NVX_NVC0_PERF_SAMPLE_INTERVAL:-16384}")
 fi
 if [ "$NVX_CAPTURE_NVC0_BATCHES" = "1" ]; then
     NVX_DRIVER_BUILD_ARGS+=("NVX_CAPTURE_NVC0_BATCHES=1")

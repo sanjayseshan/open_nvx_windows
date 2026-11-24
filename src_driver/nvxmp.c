@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 4.0.0.31
+ * Driver Version: 4.0.0.39
  */
 
 #include "miniport.h"
@@ -13,6 +13,9 @@
 
 #define NV_VENDOR_ID 0x10DE
 #define NVX_3D_INTERNAL_CHANNEL_ALLOCATION_TOKEN UINT64_C(0x47524348414e0000)
+#ifndef NVX_NVC0_PERF_SAMPLE_INTERVAL
+#define NVX_NVC0_PERF_SAMPLE_INTERVAL 16384U
+#endif
 
 /* Compare the video-port callback's process context with the user-mode NVX
  * client token during XP channel bring-up diagnostics. */
@@ -4548,47 +4551,25 @@ validate_batch_done:
         dwords=(uint32_t *)((PUCHAR)copiedInput+sizeof(header)+
             (ULONG64)header.BufferReferenceCount*
             sizeof(NVX_3D_BUFFER_REFERENCE));
+        classIds[0]=channel->ClassIds[0];
+        classIds[1]=channel->ClassIds[1];
+        classIds[2]=channel->ClassIds[2];
+        classIds[3]=channel->ClassIds[3];
+        classIds[4]=channel->ClassIds[4];
         stageStartTsc=Nvx3dReadTsc();
         /* Client ownership does not make GPU addresses safe. Validate every
          * submitted stream before the GPU sees it, including the trusted
          * Mesa/Nine client path. */
-        if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
-                ownedAllocations,ownedCount,header.ClientToken)) {
-            packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
-            validationCycles+=packetValidationCycles;
-            LogStr("NVX [NVC0-BATCH]: reject packet/address validation dwords=");
-            LogHex(header.DwordCount);LogStr(" refs=");
-            LogHex(header.BufferReferenceCount);LogStr(" owned=");
-            LogHex(ownedCount);
-            if(!Nvx3dValidateNvc0AddressMethods((const uint8_t *)dwords,
-                    header.DwordCount,
-                    (const uint8_t *)copiedInput+sizeof(header),
-                    header.BufferReferenceCount,ownedAllocations,ownedCount,
-                    header.ClientToken,&addressFailMethod,&addressFailVa)) {
-                LogStr(" addressMethod=");LogHex(addressFailMethod);
-                LogStr(" address=");LogHex(addressFailVa);
-            } else LogStr(" addressMethods=PASS");
-            LogStr("\n");
-            status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
-        }
-        packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
-        validationCycles+=packetValidationCycles;
         {
             uint32_t bindingFailSubchannel=0xffffffffU,bindingFailValue=0;
-            BOOLEAN bindingsValid;
-            classIds[0]=channel->ClassIds[0];
-            classIds[1]=channel->ClassIds[1];
-            classIds[2]=channel->ClassIds[2];
-            classIds[3]=channel->ClassIds[3];
-            classIds[4]=channel->ClassIds[4];
-            stageStartTsc=Nvx3dReadTsc();
-            bindingsValid=Nvx3dValidateNvc0ObjectBindingsEx((const uint8_t *)dwords,
-                    header.DwordCount,classIds,
-                    FALSE, /* Private queue setup already bound 3D. */
-                    &bindingFailSubchannel,&bindingFailValue);
-            bindingValidationCycles=Nvx3dReadTsc()-stageStartTsc;
-            validationCycles+=bindingValidationCycles;
-            if(!bindingsValid) {
+            BOOLEAN valid=Nvx3dValidateNvc0BatchEx(copiedInput,requiredBytes,
+                    ownedAllocations,ownedCount,header.ClientToken,classIds,
+                    &bindingFailSubchannel,&bindingFailValue,
+                    &addressFailMethod,&addressFailVa);
+            if(!valid) {
+            packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
+            validationCycles+=packetValidationCycles;
+            if(bindingFailSubchannel!=0xffffffffU) {
                 LogStr("NVX [NVC0-BATCH]: reject class bindings boundToken=");
                 LogHex(channel->Channel);LogStr(" client=");
                 LogHex(header.ClientToken);LogStr(" ids=");
@@ -4596,8 +4577,24 @@ validate_batch_done:
                 LogStr(" subchannel=");LogHex(bindingFailSubchannel);
                 LogStr(" value=");LogHex(bindingFailValue);
                 LogStr("\n");
-                status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
+            } else {
+                LogStr("NVX [NVC0-BATCH]: reject packet/address validation dwords=");
+                LogHex(header.DwordCount);LogStr(" refs=");
+                LogHex(header.BufferReferenceCount);LogStr(" owned=");
+                LogHex(ownedCount);
+                if(addressFailMethod!=0xffffffffU) {
+                LogStr(" addressMethod=");LogHex(addressFailMethod);
+                LogStr(" address=");LogHex(addressFailVa);
+                }
+                LogStr("\n");
             }
+            status=ERROR_INVALID_PARAMETER;goto release_batch_buffers;
+            }
+        }
+        packetValidationCycles=Nvx3dReadTsc()-stageStartTsc;
+        validationCycles+=packetValidationCycles;
+        bindingValidationCycles=0;
+        {
             fenceValue=engine->Nvx3dLastFence+1U;
             if(!fenceValue||fenceValue>0xffffffffULL) {
                 status=ERROR_DEVICE_NOT_READY;goto release_batch_buffers;
@@ -4674,7 +4671,8 @@ submit_batch_done:
             channel->PerfBufferReferenceCount+=header.BufferReferenceCount;
             channel->PerfRelocationCount+=header.RelocationCount;
             if(status!=NO_ERROR) channel->PerfSubmitFailures++;
-            if(channel->PerfSubmitCount-channel->PerfLastPerfReport>=4096U) {
+            if(channel->PerfSubmitCount-channel->PerfLastPerfReport>=
+               NVX_NVC0_PERF_SAMPLE_INTERVAL) {
                 channel->PerfLastPerfReport=channel->PerfSubmitCount;
                 reportPerfSample=TRUE;
             }
@@ -5270,7 +5268,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-        LogStr(" NVX Video Miniport Driver 4.0.0.31 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 4.0.0.39 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

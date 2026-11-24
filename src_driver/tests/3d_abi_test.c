@@ -108,9 +108,15 @@ test_nvc0_batch_validator(void)
                   6*sizeof(uint32_t)+
                   2*sizeof(NVX_3D_RELOCATION)];
     NVX_3D_ALLOC_BUFFER allocation={0};
+    NVX_3D_ALLOC_BUFFER addressAllocations[2]={{0},{0}};
     NVX_3D_BATCH_HEADER header;
     NVX_3D_BUFFER_REFERENCE reference;
+    NVX_3D_BUFFER_REFERENCE addressReferences[2]={{0},{0}};
     NVX_3D_RELOCATION reloc;
+    uint8_t bindingInput[sizeof(NVX_3D_BATCH_HEADER)+2*sizeof(uint32_t)];
+    uint32_t bindingDwords[2];
+    uint32_t classIds[5]={0x0000c797U,0,0,0,0};
+    uint32_t failureSubchannel,failureValue;
     uint32_t dword,inputBytes;
     uint32_t referenceOffset=(uint32_t)sizeof(header);
     uint32_t relocOffset=(uint32_t)(sizeof(header)+
@@ -125,6 +131,58 @@ test_nvc0_batch_validator(void)
     allocation.ClientToken=token;
     inputBytes=build_test_batch(input,&allocation);
     assert(Nvx3dValidateNvc0Batch(input,inputBytes,&allocation,1,token));
+
+    /* Exercise both the aligned reference/BO fast path and the generic
+     * reordered-allocation fallback. Both must enforce access and range. */
+    addressAllocations[0]=allocation;
+    addressAllocations[1]=allocation;
+    addressAllocations[1].BufferId=18;
+    addressAllocations[1].GpuVa=0x24000000ULL;
+    addressReferences[0].BufferId=allocation.BufferId;
+    addressReferences[0].Access=NVX_3D_RELOC_WRITE;
+    addressReferences[1].BufferId=addressAllocations[1].BufferId;
+    addressReferences[1].Access=NVX_3D_RELOC_WRITE;
+    assert(Nvx3dNvc0AddressIsOwned(0x23000010ULL,
+            &Nvx3dNvc0AddressPairs[0],(const uint8_t *)addressReferences,2,
+            addressAllocations,2,token));
+    {
+        NVX_3D_ALLOC_BUFFER swap=addressAllocations[0];
+        addressAllocations[0]=addressAllocations[1];
+        addressAllocations[1]=swap;
+    }
+    assert(Nvx3dNvc0AddressIsOwned(0x23000010ULL,
+            &Nvx3dNvc0AddressPairs[0],(const uint8_t *)addressReferences,2,
+            addressAllocations,2,token));
+    addressReferences[0].Access=NVX_3D_RELOC_READ;
+    assert(!Nvx3dNvc0AddressIsOwned(0x23000010ULL,
+            &Nvx3dNvc0AddressPairs[0],(const uint8_t *)addressReferences,2,
+            addressAllocations,2,token));
+
+    /* The submit validator checks object binding during the same packet walk
+     * as framing/address validation, and preserves binding diagnostics. */
+    memset(&header,0,sizeof(header));
+    header.Size=sizeof(header);
+    header.Version=NVX_3D_ABI_VERSION;
+    header.DwordCount=2;
+    header.ClientToken=token;
+    bindingDwords[0]=Nvx3dNvc0SeqHeader(0U,1U);
+    bindingDwords[1]=classIds[0];
+    memcpy(bindingInput,&header,sizeof(header));
+    memcpy(bindingInput+sizeof(header),bindingDwords,sizeof(bindingDwords));
+    failureSubchannel=0xffffffffU;
+    failureValue=0;
+    assert(Nvx3dValidateNvc0BatchEx(bindingInput,sizeof(bindingInput),NULL,0,
+            token,classIds,&failureSubchannel,&failureValue,NULL,NULL));
+    classIds[0]=0x0000c7c0U;
+    assert(!Nvx3dValidateNvc0BatchEx(bindingInput,sizeof(bindingInput),NULL,0,
+            token,classIds,&failureSubchannel,&failureValue,NULL,NULL));
+    assert(failureSubchannel==0U&&failureValue==0x0000c797U);
+    classIds[0]=0x0000c797U;
+    bindingDwords[0]=Nvx3dNvc0NonIncHeader(0U,1U);
+    memcpy(bindingInput+sizeof(header),bindingDwords,sizeof(bindingDwords));
+    assert(!Nvx3dValidateNvc0BatchEx(bindingInput,sizeof(bindingInput),NULL,0,
+            token,classIds,&failureSubchannel,&failureValue,NULL,NULL));
+    assert(failureSubchannel==0U);
 
     inputBytes=build_test_batch(input,&allocation);
     dword=Nvx3dNvc0IncOnceHeader(0x0100U,2U);

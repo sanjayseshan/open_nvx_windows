@@ -34,16 +34,17 @@ static BOOL CALLBACK EnumTipChildProc(HWND hwnd, LPARAM lParam) {
 
 static BOOL CALLBACK EnumChildProc(HWND hwnd, LPARAM lParam) {
     (void)lParam;
-    char text[256] = {0};
     char cls[128] = {0};
     GetClassNameA(hwnd, cls, sizeof(cls) - 1);
-    GetWindowTextA(hwnd, text, sizeof(text) - 1);
     int id = GetDlgCtrlID(hwnd);
 
-    if (IsWindowVisible(hwnd) && lstrcmpiA(cls, "Button") == 0) {
-        if (strstr(text, "Run 3DMark") || strstr(text, "Run Benchmark") || strstr(text, "Run") || id == 1) {
-            g_hRunBtn = hwnd;
-        }
+    /* Avoid WM_GETTEXT across process threads here. 3DMark may be busy in
+     * its renderer, and GetWindowTextA can synchronously wait for its UI
+     * thread; that previously stranded this helper after the main-window
+     * discovery message. The default push button is conventionally ID 1. */
+    if (IsWindowVisible(hwnd) && lstrcmpiA(cls, "Button") == 0 && id == 1) {
+        g_hRunBtn = hwnd;
+        return FALSE;
     }
     return TRUE;
 }
@@ -136,12 +137,15 @@ int main(int argc, char **argv) {
     if (!g_hMainWnd) {
         log_com("[3DMARK_AUTOMATION] Timed out waiting for main window!\r\n");
     } else {
+        snprintf(buf, sizeof(buf), "[3DMARK_AUTOMATION] Activating main window hwnd=%p...\r\n", g_hMainWnd);
+        log_com(buf);
         SetForegroundWindow(g_hMainWnd);
         SetActiveWindow(g_hMainWnd);
         SetFocus(g_hMainWnd);
         Sleep(2000);
 
         g_hRunBtn = NULL;
+        log_com("[3DMARK_AUTOMATION] Looking for default Run button by control ID...\r\n");
         EnumChildWindows(g_hMainWnd, EnumChildProc, 0);
         if (g_hRunBtn) {
             log_com("[3DMARK_AUTOMATION] Posting one 'Run 3DMark' button click...\r\n");
@@ -152,11 +156,14 @@ int main(int argc, char **argv) {
                 return 2;
             }
         } else {
-            log_com("[3DMARK_AUTOMATION] No Run button found; sending Alt+R fallback once...\r\n");
+            log_com("[3DMARK_AUTOMATION] No default Run button found; sending Alt+R then Enter...\r\n");
             keybd_event(VK_MENU, 0, 0, 0);
             keybd_event('R', 0, 0, 0);
             keybd_event('R', 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+            Sleep(500);
+            keybd_event(VK_RETURN, 0, 0, 0);
+            keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0);
         }
     }
 

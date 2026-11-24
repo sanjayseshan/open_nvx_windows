@@ -9,6 +9,7 @@ PATCHES=(
     "$ROOT/patches/mesa9x/0004-nine-window-fullscreen-robustness.patch"
     "$ROOT/patches/mesa9x/0005-nine-draw-range-trace.patch"
     "$ROOT/patches/mesa9x/0006-nine-draw-range-metadata.patch"
+    "$ROOT/patches/mesa9x/0008-nouveau-transfer-dirty-range.patch"
 )
 
 for PATCH in "${PATCHES[@]}"; do

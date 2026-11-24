@@ -22,7 +22,7 @@ eb6dffc7867e1e1ec4ad78a84aa05af34668978a87fc17c7ab6c4b5ddb0bdd1c  /home/sanjay/t
 05b288c77d915081977f9b3c7a2c9164534153eb7a5e80e49b2517a027bec9b2  /home/sanjay/temp/xddm/mesa_patches/0035-nouveau-xp-submission-profile.patch
 206f9bbaafcb471341fcfa480862d742b13bc2efb7eeb955133a1dc9118d0035  /home/sanjay/temp/xddm/mesa_patches/0048-nouveau-xp-coalesce-nvc0-kicks.patch
 f34e7be1579cfc41e1219cc6e09bf5c0338a8013450189d68c7ce0a378996ae0  /home/sanjay/temp/xddm/mesa_patches/0037-nouveau-xp-async-fence-shadow.patch
-721a124b3f2932692f063876ded21dc12372e7ecf0bcd801a5898f893c13bb33  /home/sanjay/temp/xddm/mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
+27a04a0cb8802faca3807385ec94d365301a7488bd93296d1d7c1834faf5ddca  /home/sanjay/temp/xddm/mesa_patches/0039-nouveau-buffer-transfer-dirty-range.patch
 9c87ffe8a86b2e2553edc2676ee90a7105b9b505491614e7e593bcf82800d36d  /home/sanjay/temp/xddm/mesa_patches/0040-nouveau-xp-coarsen-pushbuf-threshold.patch
 c161d2b87e43aa4a0c18e8fe2f7ded76eb56eeb0b5fa0fd1b01a92476ca946d2  /home/sanjay/temp/xddm/mesa_patches/0043-nir-lower-reg-intrinsics-bounds-check.patch
 f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/temp/xddm/mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
@@ -30,4 +30,4 @@ f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/t
 76717c44f662e977fc2ea9f33878aef79dac11dbfa46bd53608e617d0556aade  /home/sanjay/temp/xddm/mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
 92978711ffaadea8570395e64bde67b8a3fabddb1c349a75b152b70a69dcfd70  /home/sanjay/temp/xddm/mesa_patches/mesa25/0011-nouveau-xp-fence-rotation-recovery.patch
 3ca83a63144092b171aa260a265626894d0c8fd5e2f399f6cec4734c7782eac2  /home/sanjay/temp/xddm/mesa_patches/mesa25/0012-nvc0-reject-out-of-range-vertex-fetch.patch
-a8a3b96e2ef0ad7932dea473771f837723ec0c3e459f6e9b28cba3230614da45  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+647689f49aa740aef4237824428e51a8a62ab4d0a7c748fc00d91ca806c6cec1  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

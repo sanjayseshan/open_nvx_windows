@@ -1,50 +1,28 @@
-# NVX handoff — 2026-11-23
+# NVX handoff — 2026-11-24
 
 ## Current status
 
-- Windows XP x64, Mesa 25.1.6, RTX 3070; driver/test version 4.0.0.30. Mesa ICDs, Nine, and driver package built successfully and the VFIO guest booted with auto-retry.
-- User reports 3DMark05 score 3219: Game 1 about 14 FPS, Game 2 about 10 FPS, Game 3 about 15 FPS. Hardware rendering remains active (`NV170`). The serial capture ends with `^C` during the later D3D9 smoke sequence and has no 3DMark score marker, so the score/FPS are user-reported rather than verified from this serial log.
-- Run log: `test_logs/v4.0.0.30-20261123-212911.log`; register/host CPU sidecar: `test_logs/v4.0.0.30-20261123-212911.pc.log`.
-- The external Mesa patch `0048-nouveau-xp-coalesce-nvc0-kicks.patch` defers NVC0 kicks to conservative batch limits while retaining per-draw reference validation. Patch series application and the full package build passed. The 3219 score is the first benchmark result with the patch; no comparable before/after run isolates its effect.
+- Mesa 25.1.6 + Gallium Nine on RTX 3070 is the active D3D9 path. Last user-reported 3DMark05 score: **3,249**. The `.39` VFIO VM remains running; leave it alive and preserve the score screen.
+- `.39` test log: `test_logs/v4.0.0.39-20261124-123907.log` (`vm_serial.log` points here). OpenGL checks reported `NV170`; Nine emitted NVC0 draw and submit records.
+- The `.39` NVC0 sample for process `0x55c` reports 1,276 submits, 72 average dwords/batch, 7,600 average packet-validation TSC cycles/batch, 51,600 average total submit-IOCTL TSC cycles/batch, and 1,232 timed fence-wait calls / 72,226 poll iterations. Wait-call counts do not prove long stalls; sample lacks per-call-site elapsed time. Miniport validation/copy/kick totals do not by themselves explain 16 FPS.
+- Nine CSMT is not established as active: `device9.c` disables it when `buffer_map_persistent_coherent` is absent. D3D9 entry requests CSMT, but that gate overrides the request; WGL adapter path also sets `csmt_force = FALSE`. Do not claim or force CSMT without validating mapping/coherency semantics.
+- Worktree has many pre-existing changes and untracked files. Do not commit unrelated work.
 
-## Profiling follow-up in progress
+## Highest-value next work
 
-- The .30 log already has useful counters: validation is about 34.2B cycles, submit IOCTL about 1.88B, buffer lookup about 1.09B, and pending waits about 0.70B across the session. These are cumulative session totals, not game-only frame costs.
-- Added miniport counters to split NVC0 packet/address validation from object-binding validation, plus cumulative buffer-reference and relocation totals. These will appear in the next build's `NVC0-PERF` and 4096-submit `NVC0-PERF-SAMPLE` records.
-- Existing `NOUVEAU_COALESCE_PROFILE` is from the WGL bridge and must not be attributed to the Nine/3DMark path. Miniport process-ID and per-submit samples are the current source for Nine kick/dword/reference behavior.
-- No validation, ownership, or fence checks have been removed. Optimize after the next profile identifies which validation stage dominates. Buffer lookup and fence waiting already have counters; the previous totals alone do not justify changing their correctness-sensitive behavior.
+1. Attribute fence waits by caller and record elapsed cycles/time, distinguishing map/readback, dirty upload, push-ring reuse, pending-copy reuse, and pending-batch pressure. Current aggregate wait counters are ambiguous.
+2. Check if full shadow readbacks are on the frame path. `NvxNouveauBoRefreshRead` downloads a full BO and merges it word-by-word; instrument bytes and duration before changing semantics.
+3. Profile the guest render thread / NVC0 client path. Current miniport counters indicate low average per-submit CPU work; likely cost is in Nine/Gallium command generation or actual GPU workload. Aggregate CPU can hide one busy thread on six vCPUs.
+4. Consider batching more work per kick only after the profile shows submission-bound frames. Preserve packet and BO ownership validation.
+5. Treat CSMT as a separate, opt-in investigation. The NVC0 persistent-coherent capability is currently not established; falsely advertising it risks races/corruption.
 
-## CPU and submission evidence
+## Relevant files
 
-- QEMU `info cpus` maps guest CPU 2 to host thread 76937 and CPU 5 to 76940. Recent samples show CPU 2 using nearly a full host core and CPU 5 also busy; aggregate vCPU work is roughly two or more host cores. Other vCPUs often sample at the XP idle `HLT` instruction.
-- The miniport log reports `RealAddDevice=fffffadfa97430e0`. The XP-specific VideoPort offset used in `src_driver/nvxmp.c` derives `videoprt.sys` base `fffffadfa971b000`; the successful `VpIsMultiFunctionSupported` patch at base+`0x25ad0` confirms that base calculation. Sampled RIP `fffffadfa974fd83` is at offset `0x33d83` in that image. This identifies the module area, not the exact function; a matching XP symbol map is still needed. RIPs `fffff8000081043a` and `fffff97fff0d2357` also recur, but are not symbol-resolved yet.
-- The PC sidecar spans boot and the full session, not only each timed 3DMark scene. Its 1,168 idle samples and active RIP counts cannot be treated as a game-only profile. The most common active address is `fffff8000081043a` (137 samples); VideoPort RIPs are much less frequent. Resolve module bases and sample only while the benchmark process is active before selecting a function to optimize.
-- At the latest serial sample, there were 815,104 submitted batches and 813,954 completed (1,150 pending), with zero submit failures. The queue is not persistently far behind, though this snapshot alone cannot rule out transient stalls.
-- Cumulative miniport counters at that point: validation 34.2 billion cycles, submit 1.88 billion, buffer lookup 1.09 billion, pending-wait 0.70 billion; fence polls about 14.4 million across 773,776 calls. Kernel-side measured work is not enough to explain all host vCPU use, so user-mode Nine/Mesa/app cost and VideoPort/graphics-kernel dispatch remain candidates. Do not claim a specific hot function without symbols or a profiler.
-- Coalescing/fence/shim timing callbacks are WGL-bridge instrumentation; the 3DMark/Nine log has no `NOUVEAU_COALESCE_PROFILE` samples. Add equivalent counters at the Nine/miniport boundary before drawing conclusions about step 4–7 costs in D3D9.
-- WGL trace records are buffered and dumped after calls, not printed for every frame. The PC sampler now normalizes host-thread CPU against the measured wall interval rather than assuming every sample interval is exactly two seconds. Register snapshots are still samples, not a profile, and monitor queries may perturb timing slightly.
+- `submodules/mesa9x/mesa-25.1.x/src/gallium/frontends/nine/device9.c` — CSMT capability gate.
+- `mesa_patches/nvx_d3d9_entry.c`, `mesa_patches/nine/mesa99.c` — Nine context flags.
+- `mesa_patches/nvx_nouveau_bo.c` — BO map, shadow readback, dirty upload, fence waits.
+- `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_xf86drm.c` — Nouveau winsys submission and DRM shims.
+- `src_driver/nvxmp.c`, `src_driver/nvx_gsp.c` — miniport validation, batch tracking, GPU submission and fence waits.
+- `test/run_perf_mode.sh`, `test/sample_qemu_pc.sh` — quiet/diagnostic run modes and QEMU sampling.
 
-## Performance plan
-
-1. **Push-buffer write cost:** write-combined MDL alias and per-submit copy timing are implemented; current counters show copy cost is not the dominant measured miniport term.
-2. **NVC0 barrier behavior:** removed the custom GM107+ VBO barrier patch from the active patch series; retain upstream Mesa behavior.
-3. **Nine submission threading:** threaded submit is enabled; CSMT remains gated by persistent coherent mapping, which NVC0 does not advertise.
-4. **Batch coalescing:** implemented experimentally in patch 0048. Verify actual Nine kick reduction and image correctness with counters emitted from the Nine path.
-5. **Validation cost:** counters exist in the miniport. Add per-stage/per-method attribution and avoid repeating expensive allocation lookups where safe; continue validating submitted command streams.
-6. **Buffer lookup:** counters exist. Add a bounded client/GPU-VA lookup structure only if lookup remains material after step 5.
-7. **Lock scope:** WGL shim timing exists but is not yet reported for the 3DMark Nine path. Measure the Nine path before changing lock ownership.
-8. **Async completion:** normal submissions remain asynchronous; preserve waits required for reuse, readback, and teardown.
-9. **Diagnostic overhead:** quiet/diagnostic run modes are prepared. Compare identical benchmarks with driver per-call logs disabled and aggregate counters retained.
-
-## Next actions
-
-1. Map the loaded XP `ntoskrnl`, `videoprt`, `win32k`, and display/miniport image bases to symbols, then resolve repeated RIPs from the sidecar. Do not use the repository's `src_driver/videoprt.sys` as the XP symbol image; it is a separate build and too small for the hard-coded XP offset.
-2. Add low-overhead Nine-side counters for draws, push-buffer kicks, dwords/refs per kick, fence polls/waits, and CPU time per frame. Current WGL bridge profiles do not cover 3DMark's Nine execution path.
-3. Compare kicks/submissions per frame with the prior build and verify patch 0048 coalesces meaningfully. If VideoPort dispatch dominates, reduce miniport escape frequency through a safe shared submission queue rather than relaxing validation.
-4. Retest geometry and score after each submission change. 10k+ 3DMarks is a target, not a result or guaranteed consequence of these changes.
-
-## Build/test notes
-
-- Always use `NVX_AUTO_RETRY=1` for VFIO runs. Current harness: `NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1 NVX_3DMARK_DIAG=0 NVX_BUILD_MESA_ICD=1 NVX_D3D9_BACKEND=nine NVX_NINE_DEBUG=0 NVX_NINE_ONLY=0 ./test/test_full_driver.sh`.
-- Preserve the dirty working tree under `submodules/mesa9x`; project-owned Nine changes belong in `mesa_patches/nine/` and `patches/mesa9x/`.
-- Version 4.0.0.27 work is committed. 4.0.0.30 is the current build/run. Do not stage unrelated ABI scratch files or `wine_patches/README.md` edits.
+Use `NVX_AUTO_RETRY=1` for VFIO runs. Bump version for each test build. Keep this handoff as a concise current snapshot.

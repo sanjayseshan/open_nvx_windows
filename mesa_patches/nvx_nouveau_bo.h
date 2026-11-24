@@ -59,6 +59,9 @@ int NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo);
  * retain the GPU's current contents. */
 int NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset,
                            uint64_t bytes);
+/* Publish a reported dirty span; retain full comparison as the fallback for
+ * CPU writes which bypass Gallium's transfer-range notification. */
+int NvxNouveauBoFlushDirty(NVX_NOUVEAU_BO *bo);
 int NvxNouveauBoUnmap(NVX_NOUVEAU_BO *bo);
 int NvxNouveauBoDestroy(NVX_NOUVEAU_BO *bo);
 void NvxNouveauBoPoolEnable(int enable);

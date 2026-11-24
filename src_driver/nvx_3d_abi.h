@@ -629,6 +629,34 @@ Nvx3dNvc0AddressIsOwned(uint64_t address,
      * zero GPUVA as invalid too; otherwise a null base can bypass the BO
      * reference and access checks below. */
     if(!address||!pair) return 0;
+
+    /* The miniport resolves ownedAllocations from the batch reference list
+     * in the same order.  Most submitted address pairs therefore need only
+     * one aligned BO lookup per reference.  Keep the general lookup below as
+     * a fallback for callers that provide an independently ordered list.
+     * The fast path still checks the reference access, BO id, client token,
+     * overflow-safe range, and address containment before accepting it. */
+    if(referenceCount==ownedAllocationCount) {
+        for(i=0;i<referenceCount;i++) {
+            NVX_3D_BUFFER_REFERENCE reference;
+            const NVX_3D_ALLOC_BUFFER *allocation=&ownedAllocations[i];
+            uint64_t end;
+            memcpy(&reference,references+(uint64_t)i*sizeof(reference),
+                   sizeof(reference));
+            if((reference.Access&pair->Access)!=pair->Access||
+               allocation->BufferId!=reference.BufferId||
+               allocation->ClientToken!=clientToken||!allocation->GpuVa||
+               !allocation->Bytes||
+               allocation->GpuVa>UINT64_MAX-allocation->Bytes)
+                continue;
+            end=allocation->GpuVa+allocation->Bytes;
+            if(address>=allocation->GpuVa&&address<end) return 1;
+        }
+    }
+
+    /* Preserve support for arbitrary allocation ordering and duplicate IDs
+     * in standalone validator callers. Batch validation rejects duplicates,
+     * so the hot driver path normally returns above. */
     for(i=0;i<referenceCount;i++) {
         NVX_3D_BUFFER_REFERENCE reference;
         memcpy(&reference,references+(uint64_t)i*sizeof(reference),
@@ -739,41 +767,111 @@ Nvx3dValidateNvc0AddressMethods(const uint8_t *dwords,
     return 1;
 }
 
+/* Validate addresses in one already-framed packet. The batch validator calls
+ * this from its framing walk so address checks do not parse the full stream a
+ * second time. */
 static inline int
-Nvx3dBatchWordIsPayload(const uint8_t *dwords, uint32_t dwordCount,
-                        uint32_t targetWord)
+Nvx3dValidateNvc0AddressPacket(const uint8_t *dwords, uint32_t cursor,
+                               uint32_t packetHeader,
+                               const uint8_t *references,
+                               uint32_t referenceCount,
+                               const NVX_3D_ALLOC_BUFFER *ownedAllocations,
+                               uint32_t ownedAllocationCount,
+                               uint64_t clientToken,
+                               uint32_t *failureMethod,
+                               uint64_t *failureAddress)
 {
-    uint32_t cursor=0;
-    while(cursor<dwordCount) {
-        uint32_t header=Nvx3dBatchReadDword(dwords,cursor);
-        uint32_t packetType=header&0xe0000000U;
-        if(packetType==0x80000000U)
-            cursor++;
-        else if(packetType==0x20000000U||packetType==0x60000000U||
-                packetType==0xa0000000U) {
-            uint32_t count=(header>>16)&0x1fffU;
-            if(!count||count>dwordCount-cursor-1U) return 0;
-            if(targetWord>cursor&&targetWord<=cursor+count) return 1;
-            cursor+=count+1U;
-        } else return 0;
+    uint32_t packetType=packetHeader&0xe0000000U;
+    uint32_t subchannel=(packetHeader>>13)&7U;
+    uint32_t count,method,i;
+    if(packetType==0x80000000U) {
+        method=(packetHeader&0x1fffU)<<2;
+        if(Nvx3dNvc0AddressMethodKind(subchannel,method,NULL,NULL)) {
+            if(failureMethod) *failureMethod=method;
+            return 0;
+        }
+        return 1;
     }
-    return 0;
+    count=(packetHeader>>16)&0x1fffU;
+    method=(packetHeader&0x1fffU)<<2;
+    if(!count) return 0;
+    for(i=0;i<count;i++) {
+        uint32_t currentMethod=packetType==0x20000000U?
+            method+i*4U:
+            (packetType==0xa0000000U&&i?method+4U:method);
+        uint32_t pairIndex,arrayIndex;
+        int kind=Nvx3dNvc0AddressMethodKind(subchannel,currentMethod,
+                                           &pairIndex,&arrayIndex);
+        if(kind==2) {
+            if(failureMethod) *failureMethod=currentMethod;
+            if(failureAddress)
+                *failureAddress=Nvx3dBatchReadDword(dwords,cursor+1U+i);
+            return 0;
+        }
+        if(kind==1) {
+            const NVX_3D_NVC0_ADDRESS_PAIR *pair=
+                &Nvx3dNvc0AddressPairs[pairIndex];
+            uint32_t high,low,expectedLow;
+            uint64_t address;
+            if((packetType!=0x20000000U&&packetType!=0xa0000000U)||
+               i+1U>=count) {
+                if(failureMethod) *failureMethod=currentMethod;
+                return 0;
+            }
+            expectedLow=pair->LowMethod+arrayIndex*pair->IndexStride;
+            if(currentMethod>0x7ff8U||currentMethod+4U!=expectedLow) {
+                if(failureMethod) *failureMethod=currentMethod;
+                return 0;
+            }
+            high=Nvx3dBatchReadDword(dwords,cursor+1U+i);
+            low=Nvx3dBatchReadDword(dwords,cursor+2U+i);
+            if(high>0xffU) {
+                if(failureMethod) *failureMethod=currentMethod;
+                if(failureAddress) *failureAddress=(uint64_t)high<<32;
+                return 0;
+            }
+            address=((uint64_t)high<<32)|low;
+            if(!Nvx3dNvc0AddressIsOwned(address,pair,references,
+                    referenceCount,ownedAllocations,
+                    ownedAllocationCount,clientToken)) {
+                if(failureMethod) *failureMethod=currentMethod;
+                if(failureAddress) *failureAddress=address;
+                return 0;
+            }
+            i++;
+        }
+    }
+    return 1;
 }
 
 /* Validate packet framing, client-owned BO references, known direct address
  * pairs, and resource-relative relocations. This still does not enforce a
  * complete C797 method/subchannel allowlist or authorize command execution. */
 static inline int
-Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
-                       const NVX_3D_ALLOC_BUFFER *ownedAllocations,
-                       uint32_t ownedAllocationCount,
-                       uint64_t expectedClientToken)
+Nvx3dValidateNvc0BatchEx(const void *input, uint32_t inputBytes,
+                         const NVX_3D_ALLOC_BUFFER *ownedAllocations,
+                         uint32_t ownedAllocationCount,
+                         uint64_t expectedClientToken,
+                         const uint32_t classEngineIds[5],
+                         uint32_t *failureSubchannel,
+                         uint32_t *failureValue,
+                         uint32_t *failureMethod,
+                         uint64_t *failureAddress)
 {
     NVX_3D_BATCH_HEADER header;
     const uint8_t *bytes=(const uint8_t *)input;
     const uint8_t *references,*dwords,*relocations;
     uint32_t requiredBytes;
-    uint32_t cursor=0,i,j;
+    uint32_t cursor=0,i,j,relocationCursor=0;
+    /* CommandWord is bounded by NVX_3D_MAX_PUSH_DWORDS, so a sorted 16-bit
+     * index list is enough to validate all relocation payload locations
+     * during the packet walk without reparsing the stream per relocation. */
+    uint16_t relocationWords[NVX_3D_MAX_BATCH_RELOCATIONS];
+
+    if(failureSubchannel) *failureSubchannel=0xffffffffU;
+    if(failureValue) *failureValue=0;
+    if(failureMethod) *failureMethod=0xffffffffU;
+    if(failureAddress) *failureAddress=0;
 
     if(!input||inputBytes<sizeof(header)||
        ownedAllocationCount>NVX_3D_MAX_BATCH_BUFFERS||
@@ -794,6 +892,27 @@ Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
     dwords=references+(uint64_t)header.BufferReferenceCount*
                       sizeof(NVX_3D_BUFFER_REFERENCE);
     relocations=dwords+(uint64_t)header.DwordCount*sizeof(uint32_t);
+
+    /* Sort only the relocation command-word indices. The batch is capped at
+     * 256 relocations; insertion sort is bounded and avoids a larger stack
+     * allocation or heap call in the miniport hot path. */
+    for(i=0;i<header.RelocationCount;i++) {
+        NVX_3D_RELOCATION relocation;
+        uint32_t insert;
+        memcpy(&relocation,relocations+(uint64_t)i*sizeof(relocation),
+               sizeof(relocation));
+        if(relocation.CommandWord>=header.DwordCount) return 0;
+        insert=i;
+        while(insert&&relocationWords[insert-1U]>relocation.CommandWord) {
+            relocationWords[insert]=relocationWords[insert-1U];
+            insert--;
+        }
+        if(insert&&relocationWords[insert-1U]==relocation.CommandWord)
+            return 0;
+        if(insert<i&&relocationWords[insert]==relocation.CommandWord)
+            return 0;
+        relocationWords[insert]=(uint16_t)relocation.CommandWord;
+    }
 
     for(i=0;i<header.BufferReferenceCount;i++) {
         NVX_3D_BUFFER_REFERENCE reference;
@@ -821,10 +940,16 @@ Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
     }
 
     while(cursor<header.DwordCount) {
+        uint32_t packetStart=cursor;
         uint32_t packetHeader=Nvx3dBatchReadDword(dwords,cursor);
         uint32_t packetType=packetHeader&0xe0000000U;
+        uint32_t packetEnd=cursor;
         if(packetType==0x80000000U) {
             /* Type-8 immediate methods encode their value in the header. */
+            if(!Nvx3dValidateNvc0AddressPacket(dwords,cursor,packetHeader,
+                    references,header.BufferReferenceCount,ownedAllocations,
+                    ownedAllocationCount,header.ClientToken,failureMethod,
+                    failureAddress)) return 0;
             cursor++;
         } else if(packetType==0x20000000U||packetType==0x60000000U||
                   packetType==0xa0000000U) {
@@ -832,36 +957,56 @@ Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
             uint32_t method=packetHeader&0x1fffU;
             if(!count||count>header.DwordCount-cursor-1U)
                 return 0;
+            packetEnd=cursor+count;
             /* Incrementing packets must not roll the 13-bit method field
              * into the subchannel bits. Non-incrementing packets repeatedly
              * address one method and therefore do not advance this field. */
             if((packetType==0x20000000U&&count>0x2000U-method)||
                (packetType==0xa0000000U&&count>1U&&method==0x1fffU))
                 return 0;
+            if(classEngineIds&&method==0U) {
+                uint32_t subchannel=(packetHeader>>13)&7U;
+                uint32_t objectClass;
+                if(packetType!=0x20000000U||count!=1U||subchannel>=5U) {
+                    if(failureSubchannel) *failureSubchannel=subchannel;
+                    if(failureValue)
+                        *failureValue=Nvx3dBatchReadDword(dwords,cursor+1U);
+                    return 0;
+                }
+                objectClass=Nvx3dBatchReadDword(dwords,cursor+1U);
+                if(!classEngineIds[subchannel]||
+                   objectClass!=classEngineIds[subchannel]) {
+                    if(failureSubchannel) *failureSubchannel=subchannel;
+                    if(failureValue) *failureValue=objectClass;
+                    return 0;
+                }
+            }
+            if(!Nvx3dValidateNvc0AddressPacket(dwords,cursor,packetHeader,
+                    references,header.BufferReferenceCount,ownedAllocations,
+                    ownedAllocationCount,header.ClientToken,failureMethod,
+                    failureAddress)) return 0;
             cursor+=count+1U;
         } else return 0;
+
+        /* Relocation targets must be payload words, never packet headers.
+         * The sorted targets advance monotonically with this framing walk,
+         * replacing one full packet-stream rescan per relocation. */
+        if(relocationCursor<header.RelocationCount&&
+           relocationWords[relocationCursor]<packetStart)
+            return 0;
+        while(relocationCursor<header.RelocationCount&&
+              relocationWords[relocationCursor]<=packetEnd) {
+            if(relocationWords[relocationCursor]==packetStart)
+                return 0;
+            relocationCursor++;
+        }
     }
-
-    if(!Nvx3dValidateNvc0AddressMethods(dwords,header.DwordCount,
-            references,header.BufferReferenceCount,ownedAllocations,
-            ownedAllocationCount,header.ClientToken,NULL,NULL))
-        return 0;
-
+    if(relocationCursor!=header.RelocationCount) return 0;
     for(i=0;i<header.RelocationCount;i++) {
         NVX_3D_RELOCATION relocation;
         uint32_t matches=0;
         memcpy(&relocation,relocations+
                (uint64_t)i*sizeof(relocation),sizeof(relocation));
-        if(!Nvx3dBatchWordIsPayload(dwords,header.DwordCount,
-                                    relocation.CommandWord))
-            return 0;
-        for(j=0;j<i;j++) {
-            NVX_3D_RELOCATION previous;
-            memcpy(&previous,relocations+
-                   (uint64_t)j*sizeof(previous),sizeof(previous));
-            if(previous.CommandWord==relocation.CommandWord)
-                return 0;
-        }
         for(j=0;j<ownedAllocationCount;j++) {
             const NVX_3D_ALLOC_BUFFER *allocation=&ownedAllocations[j];
             if(allocation->BufferId!=relocation.BufferId) continue;
@@ -883,6 +1028,16 @@ Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
         if(matches!=1U) return 0;
     }
     return 1;
+}
+
+static inline int
+Nvx3dValidateNvc0Batch(const void *input, uint32_t inputBytes,
+                       const NVX_3D_ALLOC_BUFFER *ownedAllocations,
+                       uint32_t ownedAllocationCount,
+                       uint64_t expectedClientToken)
+{
+    return Nvx3dValidateNvc0BatchEx(input,inputBytes,ownedAllocations,
+            ownedAllocationCount,expectedClientToken,NULL,NULL,NULL,NULL,NULL);
 }
 
 typedef struct NVX_3D_FREE_BUFFER {

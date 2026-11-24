@@ -522,6 +522,30 @@ NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset, uint64_t bytes)
 }
 
 int
+NvxNouveauBoFlushDirty(NVX_NOUVEAU_BO *bo)
+{
+   uint32_t offset, end;
+
+   if (!bo || !bo->references)
+      return 0;
+   if (!bo->dirty)
+      return NvxNouveauBoFlush(bo);
+
+   offset = bo->dirty_offset;
+   end = bo->dirty_end;
+   if (offset >= end || end > bo->allocation.Bytes || (offset & 3U) ||
+       (end & 3U))
+      return 0;
+   if (!nvx_nouveau_bo_flush_range(bo, offset, end))
+      return 0;
+
+   bo->dirty = 0;
+   bo->dirty_offset = 0;
+   bo->dirty_end = 0;
+   return 1;
+}
+
+int
 NvxNouveauBoUnmap(NVX_NOUVEAU_BO *bo)
 {
    int result = 1;
@@ -533,11 +557,14 @@ NvxNouveauBoUnmap(NVX_NOUVEAU_BO *bo)
       return 1;
    }
    if (bo->direct_mapped) {
+      result = NvxNouveauBoFlushDirty(bo);
+      if (!result)
+         return 0;
       bo->map_count = 0;
       bo->map_access = 0;
       return 1;
    }
-   result = NvxNouveauBoFlush(bo);
+   result = NvxNouveauBoFlushDirty(bo);
    if (!result) return 0;
    bo->map_count = 0;
 

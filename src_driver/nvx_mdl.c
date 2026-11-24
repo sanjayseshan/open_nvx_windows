@@ -73,17 +73,12 @@ void NvxMdlUnmapUser(void *mdlHandle, void *userVirtual)
         MmUnmapLockedPages(userVirtual, mdl);
 }
 
+#if defined(_M_ARM) || defined(_M_ARM64) || defined(_ARM_) || defined(_ARM64_)
 void NvxMdlFlushGartBacking(void *mdlHandle, int deviceWrites)
 {
-    /* KeFlushIoBuffers is a documented no-op on the driver's x86/x64
-     * targets. Keep the call for other architectures supported by WDM. */
-#if defined(_M_ARM) || defined(_M_ARM64) || defined(_ARM_) || defined(_ARM64_)
     if (mdlHandle) {
         KeFlushIoBuffers((PMDL)mdlHandle,
                          deviceWrites ? TRUE : FALSE, TRUE);
     }
-#else
-    (void)mdlHandle;
-    (void)deviceWrites;
-#endif
 }
+#endif

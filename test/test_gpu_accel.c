@@ -258,6 +258,7 @@ typedef struct OPENGL_TRACE_EVENT {
 } OPENGL_TRACE_EVENT;
 
 static OPENGL_TRACE_EVENT openGlTrace[1024];
+static BOOL traceOpenGlCalls;
 
 static void TraceOpenGlCall(enum OPENGL_TRACE_KIND kind, LONG result,
                             const char *detail)
@@ -602,31 +603,44 @@ static void InstallOpenGl32TraceHooks(void)
     BOOL ok = TRUE;
     char wrapValue[2];
     char getProcTraceValue[2];
+    char dispatchTraceValue[2];
+    BOOL traceGetProcAddress;
     traceWrapIcdCallbacks = GetEnvironmentVariableA(
         "NVX_TRACE_WRAP_ICD_CALLBACKS", wrapValue, sizeof(wrapValue)) > 0;
-    if (GetEnvironmentVariableA("NVX_TRACE_GETPROCADDRESS",
-                                getProcTraceValue,
-                                sizeof(getProcTraceValue)) > 0
+    traceGetProcAddress = GetEnvironmentVariableA(
+        "NVX_TRACE_GETPROCADDRESS", getProcTraceValue,
+        sizeof(getProcTraceValue)) > 0 && getProcTraceValue[0] == '1';
+    traceOpenGlCalls = GetEnvironmentVariableA(
+        "NVX_TRACE_WGL_DISPATCH", dispatchTraceValue,
+        sizeof(dispatchTraceValue)) > 0 && dispatchTraceValue[0] == '1';
 #if defined(NVX_TRACE_ICD_CALLBACKS)
-        || TRUE
+    traceWrapIcdCallbacks = TRUE;
 #endif
-        ) {
-#if defined(NVX_TRACE_ICD_CALLBACKS)
-        traceWrapIcdCallbacks = TRUE;
-#endif
+    traceOpenGlCalls = traceOpenGlCalls || traceGetProcAddress ||
+                       traceWrapIcdCallbacks;
+    if (!traceOpenGlCalls) {
+        LogMsg("-> WGL dispatcher import tracing: disabled (set NVX_TRACE_WGL_DISPATCH=1 to enable)\n");
+        return;
+    }
+    if (traceGetProcAddress || traceWrapIcdCallbacks) {
         ok &= HookOpenGl32Import("KERNEL32.dll", "GetProcAddress",
                                  (FARPROC)TraceGetProcAddress,
                                  (FARPROC *)&realGetProcAddress);
     }
-    ok &= HookOpenGl32Import("KERNEL32.dll", "LoadLibraryW",
-                             (FARPROC)TraceLoadLibraryW, (FARPROC *)&realLoadLibraryW);
-    ok &= HookOpenGl32Import("ADVAPI32.dll", "RegOpenKeyExW",
-                             (FARPROC)TraceRegOpenKeyExW, (FARPROC *)&realRegOpenKeyExW);
-    ok &= HookOpenGl32Import("ADVAPI32.dll", "RegQueryValueExW",
-                             (FARPROC)TraceRegQueryValueExW, (FARPROC *)&realRegQueryValueExW);
-    ok &= HookOpenGl32Import("GDI32.dll", "ExtEscape",
-                             (FARPROC)TraceExtEscape, (FARPROC *)&realExtEscape);
-    LogMsg("-> WGL dispatcher import tracing: %s\n", ok ? "installed" : "partial");
+    if (traceOpenGlCalls && GetEnvironmentVariableA(
+            "NVX_TRACE_WGL_DISPATCH", dispatchTraceValue,
+            sizeof(dispatchTraceValue)) > 0 && dispatchTraceValue[0] == '1') {
+        ok &= HookOpenGl32Import("KERNEL32.dll", "LoadLibraryW",
+                                 (FARPROC)TraceLoadLibraryW, (FARPROC *)&realLoadLibraryW);
+        ok &= HookOpenGl32Import("ADVAPI32.dll", "RegOpenKeyExW",
+                                 (FARPROC)TraceRegOpenKeyExW, (FARPROC *)&realRegOpenKeyExW);
+        ok &= HookOpenGl32Import("ADVAPI32.dll", "RegQueryValueExW",
+                                 (FARPROC)TraceRegQueryValueExW, (FARPROC *)&realRegQueryValueExW);
+        ok &= HookOpenGl32Import("GDI32.dll", "ExtEscape",
+                                 (FARPROC)TraceExtEscape, (FARPROC *)&realExtEscape);
+    }
+    LogMsg("-> WGL dispatcher import tracing: %s\n",
+           ok ? (traceOpenGlCalls ? "installed" : "disabled") : "partial");
 }
 
 static void DumpOpenGlTrace(unsigned start)
@@ -634,6 +648,8 @@ static void DumpOpenGlTrace(unsigned start)
     static const char *kindNames[] = { "?", "LoadLibraryW", "RegOpenKeyExW",
         "RegQueryValueExW", "ExtEscape", "GetProcAddress" };
     unsigned i;
+    if (!traceOpenGlCalls)
+        return;
     for (i = start; i < openGlTraceCount; ++i) {
         OPENGL_TRACE_EVENT *event = &openGlTrace[i];
         LogMsg("-> WGL trace %s result=%ld detail=%s\n",
