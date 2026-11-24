@@ -7,9 +7,6 @@
 [submodule "wine"]
 	path = wine
 	url = https://github.com/wine-mirror/wine.git
-[submodule "wine-nine-standalone"]
-	path = wine-nine-standalone
-	url = https://github.com/iXit/wine-nine-standalone.git
 [submodule "submodules/mesa9x"]
 	path = submodules/mesa9x
 	url = https://github.com/JHRobotics/mesa9x.git

@@ -859,8 +859,8 @@ Ampere GA104 (GeForce RTX 3070) hardware:
 CONFIRMED v186 XP x64 PHYSICAL RESULT:
 The user reports that v186 works on bare metal with AMD Ryzen AM5 and an
 RTX 3070: primary 1920x1080 remains correct and the 2560x1440 secondary now
-activates as an extended desktop. Photo 20261104_205049.jpg shows both physical
-monitors displaying the XP x64 desktop and is embedded in README.md.
+activates as an extended desktop. The user confirmed both physical monitors
+displayed the XP x64 desktop during that run.
 The successful version includes explicit display command/notifier cache-line
 publication and both v169/client-aware RAMHT buckets. The combined change is
 confirmed working; this test does not isolate which individual change was

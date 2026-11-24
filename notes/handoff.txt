@@ -6,7 +6,8 @@
 - `.39` test log: `test_logs/v4.0.0.39-20261124-123907.log` (`vm_serial.log` points here). OpenGL checks reported `NV170`; Nine emitted NVC0 draw and submit records.
 - The `.39` NVC0 sample for process `0x55c` reports 1,276 submits, 72 average dwords/batch, 7,600 average packet-validation TSC cycles/batch, 51,600 average total submit-IOCTL TSC cycles/batch, and 1,232 timed fence-wait calls / 72,226 poll iterations. Wait-call counts do not prove long stalls; sample lacks per-call-site elapsed time. Miniport validation/copy/kick totals do not by themselves explain 16 FPS.
 - Nine CSMT is not established as active: `device9.c` disables it when `buffer_map_persistent_coherent` is absent. D3D9 entry requests CSMT, but that gate overrides the request; WGL adapter path also sets `csmt_force = FALSE`. Do not claim or force CSMT without validating mapping/coherency semantics.
-- Worktree has many pre-existing changes and untracked files. Do not commit unrelated work.
+- Commit `7f7ed8f` contains the current NVC0 validation/BO-lookup changes, reduced trace overhead, the external Mesa9x dirty-range patch, and version `.39` package metadata. No test was run after that commit; the `.39` VM was already running and remains untouched.
+- Repository cleanup removed stale scratch parsers/layout probes, generated screenshots, and the unused `wine-nine-standalone` submodule. Benchmark text logs were retained. Mesa9x customizations remain in the external patch series under `patches/mesa9x/`.
 
 ## Highest-value next work
 
