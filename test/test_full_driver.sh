@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="4.0.0.26"
+NVX_TEST_VERSION="4.0.0.27"
 NVX_CAPTURE_NVC0_BATCHES="${NVX_CAPTURE_NVC0_BATCHES:-0}"
 case "$NVX_CAPTURE_NVC0_BATCHES" in
     0|1) ;;

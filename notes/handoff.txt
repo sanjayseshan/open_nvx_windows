@@ -2,31 +2,32 @@
 
 ## Current state
 
-- Mesa 25.1.6 / XP x64 / RTX 3070. Gallium Nine x86 and Nouveau WGL x86/x64 reach NV170 hardware.
-- Version 4.0.0.26 fixes the 3DMark geometry corruption; user confirms the game scene renders correctly. User reports 3DMark05 score 1870, GT1/GT3 about 10 FPS, GT2 about 4 FPS, CPU tests about 1 FPS. Serial log: `test_logs/v4.0.0.26-20261123-193953.log`; runner output: `/tmp/nvx-v26-test.log`.
-- .26 cube/gears and Nine readback smoke checks passed. The live counter sample passed 1.5M submissions with zero failures.
+- Mesa 25.1.6, Windows XP x64, RTX 3070. Gallium Nine x86 and Nouveau WGL x86/x64 reach NV170 hardware.
+- Version 4.0.0.26 fixes the 3DMark geometry corruption; user confirms the game scene is clean. Reported 3DMark05 score: 1870; GT1/GT3 about 10 FPS, GT2 about 4 FPS, CPU tests about 1 FPS. Log: `test_logs/v4.0.0.26-20261123-193953.log`.
+- That run measured about 12k–18k submissions per sampling window, with 379–456 us average in the miniport escape. The Nouveau-side ring-fence wait counter was zero. This points to CPU submit/escape cost; it does not prove GPU idle time.
+- CPU tests use software vertex processing and are separate from the graphics score. The reported graphics rates are consistent with the 1870 score.
 
-## Corruption root cause and fix
+## Performance plan (nine steps)
 
-Nine was built without `HAVE_FUNC_ATTRIBUTE_PACKED`, while the Mesa ICD used it. Consequently `enum mesa_prim` was 4 bytes in Nine and 1 byte in the ICD; `pipe_draw_info.index_size` was at offset 4 vs offset 2. Equal overall struct sizes concealed the ABI mismatch, and indexed draws were read with the wrong fields. Cross-compiled layout probes confirmed the mismatch and the corrected layout. The .26 user visual pass confirms the fix on hardware.
+1. **Reduce push-buffer memory-write cost and measure it.** Use matching write-combined aliases for the MDL-backed GART buffer and record time spent copying the command stream. **Implemented for 4.0.0.27; hardware result pending.**
+2. **Remove the extra GM107+ VBO serialize/memory-barrier patch.** Keep Nouveau's upstream NVC0 barrier logic and verify image correctness. **Removed from the active Mesa 25 patch series for .27; patch file retained as historical reference.**
+3. **Decouple Nine submission/presentation from the app thread.** Enable Nine threaded swapchain submission. CSMT remains guarded by `buffer_map_persistent_coherent`; NVC0 does not advertise that capability, so do not force multi-context CSMT until persistent-map coherency and shared-winsys concurrency are proven. **Threaded submit enabled for .27; CSMT investigation remains open.**
+4. **Increase work per escape.** Trace flush/kick causes and coalesce compatible push-buffer batches while preserving ordering and fence semantics.
+5. **Reduce repeated kernel validation cost.** Profile packet/address validation by method; cache only immutable per-client allocation metadata and retain validation of submitted command streams.
+6. **Reduce buffer lookup cost.** Replace repeated linear scans with a bounded client/GPU-VA lookup structure if profile samples show lookup is material.
+7. **Shorten global critical sections.** Measure lock hold/wait time, then move parsing/copying outside locks where ownership rules allow.
+8. **Keep completion asynchronous.** Retire BOs through fences and avoid CPU waits on ordinary submits; wait only for explicit readback, reuse, or teardown dependencies.
+9. **Separate diagnostic overhead from workload cost.** Compare quiet and diagnostic runs, retain failure-only logging, and report CPU submit, fence wait, GPU execution, and frame time separately.
 
-- `build_d3d9_nine.sh` loads `patches/mesa9x/nvx-nine-build.mk`, forces the packed-enum define, and invalidates cached generated objects when ABI flags change.
-- `mesa_patches/nine/mesa99.c` has compile-time ABI assertions.
-- `patches/mesa9x/0007-xp-crt-failure-termination.patch` keeps the clean Nine rebuild XP-compatible; the apply script handles nested winpthreads.
-- `patches/mesa9x/0005-nine-draw-range-trace.patch` and `0006-nine-draw-range-metadata.patch` are external Nine diagnostics and are applied by `test/apply_mesa9x_25_patches.sh`.
+## 4.0.0.27 changes and test
 
-## Performance status
+- Kernel GART backing now requests `MmWriteCombined` for its system alias, matching `NvxMdlMapUser`; this replaces the prior conflicting NC/WC aliases. A per-submit TSC counter records command-copy cycles alongside IOCTL and validation counters.
+- The external `0010-nvc0-gm107-vbo-dirty-barrier.patch` is no longer applied by `test/mesa25_patch_series.txt`; Mesa's upstream NVC0 logic remains authoritative.
+- Nine's `thread_submit` is enabled. Nine CSMT is still disabled by the upstream capability gate because NVC0 does not advertise persistent coherent buffer mapping. Do not claim CSMT is active unless the guest log proves it.
+- Pending one auto-retry VFIO run of version 4.0.0.27, including the cube/gears path and 3DMark05 if the scripted run reaches it. Check renderer, scene correctness, score/FPS, `push_copy_cycles`, `submit_ioctl_cycles`, validation, and failures. Update this file with measured results after the run.
 
-The .26 live counters show many small submissions: about 37,600 TSC cycles per miniport submit IOCTL, including ~10,500 cycles validating each stream and ~1,160 cycles of buffer lookup. Roughly 0.8 timed fence waits and 7 poll iterations per wait are recorded. This indicates avoidable CPU submission overhead, but these counters do not measure GPU utilization or frame duration, so they do not yet explain the full graphics slowdown.
+## Build/test notes
 
-The reported 1870 score is consistent with the reported game-test rates: 3DMark05 computes the overall score from the geometric mean of GT1/GT2/GT3 FPS (250 × cube root of their product), giving ~1,842 for 10/4/10 FPS. CPU tests are separate and excluded from that score; Futuremark’s white paper says they force software vertex processing to measure CPU performance. Their ~1 FPS result therefore points at the guest CPU/virtualized software-vertex workload, not the RTX 3070 path.
-
-Next: profile per-frame time and batches for each game test, and separate Nine command generation, miniport submit/validation, fence waits, and GPU execution. Compare one run with diagnostic logging disabled. Do not infer GPU saturation from successful batch completion alone.
-
-## Test and build
-
-Always use `NVX_AUTO_RETRY=1` for VFIO tests. Current run command:
-
-`NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1 NVX_D3D9_BACKEND=nine NVX_NINE_DEBUG=1 NVX_NINE_ONLY=0 ./test/test_full_driver.sh`
-
-Patches must remain in the root-owned `patches/` and `mesa_patches/` directories so a fresh clone can reproduce submodule builds. Current version: 4.0.0.26.
+- Preserve the dirty working tree in `submodules/mesa9x`; do not restore or stage it wholesale. Project-owned Nine changes live under `mesa_patches/nine/` and patches under `patches/mesa9x/`.
+- Always use `NVX_AUTO_RETRY=1` for VFIO tests. Intended command: `NVX_AUTO_RETRY=1 NVX_RUN_3DMARK=1 NVX_D3D9_BACKEND=nine NVX_NINE_DEBUG=1 NVX_NINE_ONLY=0 ./test/test_full_driver.sh`.
+- Version 4.0.0.27 is the current test build. Existing .26 driver/geometry/performance results are committed; untracked ABI/layout scratch files and unrelated Wine notes are not part of this work.

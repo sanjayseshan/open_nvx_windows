@@ -27,5 +27,4 @@ mesa_patches/0044-nvc0-clear-surface-description-adapter.patch
 mesa_patches/mesa25/0008-nouveau-xp-pushbuf-reference-limit.patch
 mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
 mesa_patches/mesa25/0011-nouveau-xp-fence-rotation-recovery.patch
-mesa_patches/mesa25/0010-nvc0-gm107-vbo-dirty-barrier.patch
 mesa_patches/mesa25/0012-nvc0-reject-out-of-range-vertex-fetch.patch

@@ -28,9 +28,10 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
         return 0;
     }
 
-    /* Match existing VideoPort common buffers, requested uncached by this
-     * miniport. The cached alias fed the GPU stale shader bytes through GART. */
-    systemVirtual = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached,
+    /* The user mapping below is write-combined. Use the same cache policy
+     * for the kernel alias; conflicting cache types for the same pages make
+     * CPU writes and device visibility undefined on x86/x64. */
+    systemVirtual = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmWriteCombined,
                                                   NULL, FALSE,
                                                   NormalPagePriority);
     if (!systemVirtual) {

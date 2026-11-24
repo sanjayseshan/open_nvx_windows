@@ -239,7 +239,9 @@ static HRESULT d3dadapter9_context_create(struct d3dadapter9_context *ctx, struc
 	ctx->throttling                 = FALSE;
 	ctx->throttling_value           = 0;
 	ctx->vblank_mode                = 1;
-	ctx->thread_submit              = FALSE;
+	/* Keep presentation work off the application's render thread. Nine's
+	 * separate CSMT path remains gated by Nouveau's persistent-coherent cap. */
+	ctx->thread_submit              = TRUE;
 	ctx->discard_delayed_release    = FALSE;
 	ctx->tearfree_discard           = FALSE;
 	ctx->csmt_force                 = FALSE;

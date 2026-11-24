@@ -195,6 +195,7 @@ VOID NvxGspLogClientSubmissionStats(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" submit_ioctl_cycles=");LogHex(channel->PerfSubmitIoctlCycles);
     LogStr(" submit_ioctl_max_cycles=");LogHex(channel->PerfSubmitIoctlMaxCycles);
     LogStr(" batch_copy_cycles=");LogHex(channel->PerfBatchCopyCycles);
+    LogStr(" push_copy_cycles=");LogHex(channel->PerfPushCopyCycles);
     LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
     LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
     LogStr(" submit_failures=");LogHex(channel->PerfSubmitFailures);
@@ -233,6 +234,7 @@ VOID NvxGspLogClientPerfSample(PVOID HwDeviceExtension,ULONG64 clientToken)
     LogStr(" completed=");LogHex(channel->CompletedBatches);
     LogStr(" submit_ioctl_cycles=");LogHex(channel->PerfSubmitIoctlCycles);
     LogStr(" batch_copy_cycles=");LogHex(channel->PerfBatchCopyCycles);
+    LogStr(" push_copy_cycles=");LogHex(channel->PerfPushCopyCycles);
     LogStr(" pending_wait_cycles=");LogHex(channel->PerfBatchPendingCycles);
     LogStr(" validation_cycles=");LogHex(channel->PerfBatchValidationCycles);
     LogStr(" submit_cycles=");LogHex(channel->PerfSubmitCycles);
@@ -4176,7 +4178,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     volatile ULONG64 *fifo;
     PULONG push;
     ULONG put,wait,lockPolls,tailCount=5U,pushBytesNeeded,totalDwords;
-    ULONG64 fenceVa,pushVa,fifoEntry,submitStartTsc,submitCycles;
+    ULONG64 fenceVa,pushVa,fifoEntry,submitStartTsc,submitCycles,copyStartTsc;
     ULONG fenceSlot;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        (!allocations&&allocationCount)||
@@ -4232,9 +4234,11 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     pushVa=pushGpuVa;
     fenceVa=channel->GpuVa+0x5000+fenceSlot*sizeof(ULONG);
     VideoPortZeroMemory((PVOID)fence,sizeof(ULONG));
+    copyStartTsc=NvxGspReadTsc();
     VideoPortMoveMemory(push,(PVOID)nvc0Dwords,
                         dwordCount*sizeof(ULONG));
     __sync_synchronize();
+    channel->PerfPushCopyCycles+=NvxGspReadTsc()-copyStartTsc;
     /* The release is the per-batch completion point. Like Nouveau's normal
        pushbuf path, queue it and let fence waits/BO retirement observe it. */
     push[dwordCount+0]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|
