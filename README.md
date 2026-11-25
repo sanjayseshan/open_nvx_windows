@@ -24,12 +24,12 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 | :--- | :--- | :--- | :--- |
 | **Driver Architecture** | Windows 2000/XP Display Driver Model (XDDM 32-bit) | Windows XP Display Driver Model (XDDM 64-bit) | Hybrid Ring 0 VxD + 16-bit GDI Display Driver |
 | **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
-| **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0) & `nvx2.drv` (Head 1) (16-bit NE) |
+| **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0); optional `nvx2.drv` Head 1 build |
 | **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | GPU-backed 32bpp GDI solid fills via VxD/OpenRM; CPU fallback for other operations |
-| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Software rasterization |
+| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | No NVX GPU 3D client connected yet |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
-| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Dual display drivers (`nvx.drv` + `nvx2.drv`) & desktop extension via `attach_sec.exe` |
-| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 1920×1080 + 2560×1440 @ 32bpp True Color |
+| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Single-head package tested; optional `nvx2.drv`/`attach_sec.exe` path builds but is not runtime validated |
+| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 1920×1080 @ 32bpp primary; QHD head 1 is not yet runtime validated |
 
 ---
 ## Architecture
@@ -333,7 +333,8 @@ Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist
 ├── mesa_patches/        # XP compatibility shims and Nouveau/Softpipe winsys integration (Mesa submodule stays clean)
 ├── patches/mesa9x/      # External, reproducible compatibility patch series for Mesa9x
 ├── mesa/                # Pinned Mesa 25.1.6 source used for the WGL ICD
-├── submodules/mesa9x/   # Mesa9x build integration with bundled Mesa 25.1.6 and Nine
+├── submodules/mesa9x/   # Mesa9x integration with bundled Mesa 25.1.6 and Gallium Nine
+├── submodules/wine9x/   # Win9x DirectX switchers; D3D9 can route to Mesa Nine
 ├── wine/                # Pinned Wine source used to build XP WineD3D DLLs
 ├── wine_patches/        # External Wine compatibility patches used by the build script
 ├── test/                # Automated test infrastructure, regression runners, and QEMU/VFIO scripts
