@@ -116,7 +116,7 @@ void solid_rect(SURF *d, SHORT x, SHORT y, SHORT w, SHORT h, DWORD phys, BYTE ro
         }
         fill_count++;
         if (g.svga && (DWORD)w * h >= 2048 && svga_fill(pix, x, y, w, h)) return;
-        if (Bpp == 4 && !g.xf && !g.in_background && !lut_hc &&
+        if (g.ini_gpufill && Bpp == 4 && !g.xf && !g.in_background && !lut_hc &&
             nvx_accel_fill_rect(x, y, w, h, pix)) {
             /* Keep GDI's RAM shadow coherent; the VxD has already filled the
                GPU scanout. Do not fall through to the CPU framebuffer copy. */

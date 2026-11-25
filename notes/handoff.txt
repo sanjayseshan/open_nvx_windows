@@ -5,10 +5,10 @@
 - RTX 3070 GA104 is the only validated GPU.
 - XP x64 OpenGL/Nouveau is the mature path. Native XP x86 Gallium Nine completed 3DMark05; latest user-reported score: 5,409. Clean release installation still needs validation.
 - Win98 SE has a hardware 2D path for eligible 32bpp GDI solid fills. Commit `abbffc4` added the BitBlt → VxD PM → shared miniport/OpenRM/GSP route.
-- The running guest is `win98_small.img`, log `test_logs/win98-20261125-095608.log` (`vm_serial.log` points there). It reached the desktop at 1920x1080x32 with GPU solid fills active. User reports partial stripes, slow window dragging, and a 1080p mode limit. Keep this VM running; do not update its image or reboot without coordinating because the current desktop is restored.
-- Drag latency traced to the GDI solid-fill route: it queried scanout VA on every rectangle, then performed one synchronous CE fill and fence wait per row, with serial logging on each query. Source now caches the stable scanout VA, batches a pitched rectangle into one CE launch/fence, and samples success logs. `src_win98/build.sh` completed and refreshed `dist_win98/nvx.drv`/`nvx.vxd`; this candidate is not installed in the running guest or hardware-tested yet.
-- Striping remains unresolved. Solid fills keep the software shadow coherent; other GDI operations use CPU fallback. Need compare a fresh screenshot with a solid-fill-only probe after the candidate is installed, and verify 2D color/stride before calling it fixed.
-- Other GDI operations still use CPU fallback. The guest running above has not tested this new VxD build.
+- Latest A/B log: `test_logs/win98-20261125-102423.log` (`vm_serial.log` points there). With `[WINVBE] GpuFill=0`, the user confirms the desktop is visible and window movement is smooth. The same driver with GPU fills enabled produced a black screen with a small blue rectangle. This isolates the regression to the CE solid-fill path, not VBE modeset or CPU/shadow presentation.
+- The CE path did complete its commands without timeout, so its defect is in visible fill behavior/coherency rather than submission acceptance. `GpuFill` is now opt-in and defaults to 0; CPU/shadow GDI rendering is the safe default. Driver package version is 2.0.0.4. Re-enable GPU fills only for targeted tests after fixing the CE rectangle output.
+- This confirms stable desktop presentation on the A/B configuration; it does not establish 2D GPU-fill correctness or any Win98 3D acceleration.
+- Other GDI operations still use CPU/shadow writes. The `ATTACH_SEC` helper in the ISO is unrelated to the single-head desktop and repeatedly fails to enumerate a second display.
 
 ## 1440p
 
@@ -46,4 +46,4 @@ D3D9 app -> Wine9x D3D9 switcher (`nine`) -> Mesa Gallium Nine (`mesa99.dll`)
 - Shared GPU ABI: `src_driver/miniport.h`, `nvxmp.c`, `nvx_gsp.h`; Win9x transport: `src_win98/shim/videoprt_shim.c`, `mesa_patches/nvx_winsys_win9x.c/.h`, `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_wgl_bridge.c`.
 - 3D frontends: `submodules/wine9x/`, `submodules/mesa9x/win9x/nine/`, root patches in `mesa_patches/nine/` and `patches/mesa9x/`.
 - Tests: `test/win98_fill_probe.c`, `test/update_win98_driver.sh`, `test/run_vfio_win98_autoretry.sh`.
-- Latest run: `test_logs/win98-20261125-095608.log`; `vm_serial.log` points to this run. Primary QHD is still intentionally not advertised; only option-ROM-verified 1920x1080 is safe on this path. Do not synthesize 1440p until a native primary modeset path is validated.
+- Latest run: `test_logs/win98-20261125-102423.log`; `vm_serial.log` points to this run. Primary QHD is still intentionally not advertised; only option-ROM-verified 1920x1080 is safe on this path. Do not synthesize 1440p until a native primary modeset path is validated.

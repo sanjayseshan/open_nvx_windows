@@ -32,6 +32,7 @@ echo "==> Installing single-monitor Win98 package into $WIN98_IMG"
 guestfish --ro -a "$WIN98_IMG" -m /dev/sda1 download /WINDOWS/SYSTEM.INI "$TMP_SYS_INI"
 python3 - "$TMP_SYS_INI" <<'PY'
 import pathlib
+import os
 import sys
 
 path = pathlib.Path(sys.argv[1])
@@ -99,6 +100,7 @@ ensure("386Enh", "minivdd", "nvx.vxd")
 ensure("386Enh", "display", "*vdd,*vflatd")
 ensure("386Enh", "mouse", "*vmouse")
 ensure("WINVBE", "DibEngine", "0")
+ensure("WINVBE", "GpuFill", os.environ.get("NVX_WIN98_GPU_FILL", "0"))
 ensure("WINVBE", "Debug", "1")
 path.write_bytes(("\r\n".join(out) + "\r\n").encode())
 PY

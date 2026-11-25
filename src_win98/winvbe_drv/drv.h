@@ -512,7 +512,7 @@ typedef struct {
        KERNEL (profile/registry) may not be called, e.g. after a resume */
     BYTE  ini_timing;           /* Timing: 0 CVT, 1 reduced blanking, 2 auto */
     BYTE  ini_vgareserve, ini_dac8, ini_repost, ini_vmaccel, ini_vmfifo, ini_hwcursor;
-    BYTE  ini_shadow, ini_wc, ini_dibeng;
+    BYTE  ini_shadow, ini_wc, ini_dibeng, ini_gpufill;
 
     /* shadow frame buffer: a copy of the screen in system memory. Reading
        video memory over PCI/AGP/PCIe is very slow (uncached, one bus round

@@ -357,6 +357,10 @@ static void driver_init(void)
     g.ini_vmfifo = (BYTE)get_ini_int("VMwareFifo", 1);
     g.ini_hwcursor = (BYTE)get_ini_int("HwCursor", 1);
     g.ini_shadow = (BYTE)get_ini_int("ShadowBuffer", 1);
+    /* The pitched CE fill path currently causes a blue-patch scanout on this
+       hardware. Keep the validated CPU/shadow path as the safe default until
+       the GPU fill's visible output is corrected. */
+    g.ini_gpufill = (BYTE)get_ini_int("GpuFill", 0);
     /* DIBENG writes directly into the framebuffer and bypasses BitBlt. Keep
        the driver's BitBlt path active so validated GDI fills can reach NVX. */
     g.ini_dibeng = (BYTE)get_ini_int("DibEngine", 0);
