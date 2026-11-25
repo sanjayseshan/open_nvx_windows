@@ -4,6 +4,7 @@ set -e
 cd "$(dirname "$0")"
 . ../owenv.sh
 RES=${RES:-../res}
+WIN98_SINGLE_MONITOR=${WIN98_SINGLE_MONITOR:-1}
 python3 ../tools/mkres.py ../res >/dev/null
 
 # ----------------- 1. Build Primary Driver (Head 0, 1080p, LFB 0xE0000000) -----------------
@@ -61,7 +62,8 @@ done
 mkdir -p ../../dist_win98
 cp obj/winvbe9x.drv ../../dist_win98/nvx.drv
 
-# ----------------- 2. Build Secondary Driver (Head 1, 1440p, LFB 0xE2000000) -----------------
+# ----------------- 2. Optional Secondary Driver -----------------
+if [ "$WIN98_SINGLE_MONITOR" != "1" ]; then
 echo "==> Building Secondary Driver (nvx2.drv)..."
 mkdir -p obj_sec
 CFLAGS_SEC="$CFLAGS -DSECONDARY_HEAD=1"
@@ -108,5 +110,9 @@ wrc -q -r -bt=windows -30 -i=obj_sec/res9x -fo=obj_sec/winvbe9x.res obj_sec/res9
 cp obj_sec/nvx2.drv obj_sec/winvbe9x.drv
 wrc -q -bt=windows -30 obj_sec/winvbe9x.res obj_sec/winvbe9x.drv -fe=obj_sec/winvbe9x.drv
 cp obj_sec/winvbe9x.drv ../../dist_win98/nvx2.drv
+else
+  echo "==> Single-monitor target: skipping nvx2.drv"
+fi
 
-ls -l obj/winvbe9x.drv obj_sec/winvbe9x.drv ../../dist_win98/nvx.drv ../../dist_win98/nvx2.drv
+ls -l obj/winvbe9x.drv ../../dist_win98/nvx.drv
+[ "$WIN98_SINGLE_MONITOR" = "1" ] || ls -l obj_sec/winvbe9x.drv ../../dist_win98/nvx2.drv

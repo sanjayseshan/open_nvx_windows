@@ -1,90 +1,69 @@
-# NVIDIA Modern GPU Display Driver for Windows 98 SE (Dual-Monitor) — Version 2.0.0.1
+# NVX experimental display driver for Windows 98 SE
 
-This experimental driver brings up **Windows 98 Second Edition (SE)** on modern **NVIDIA Turing, Ampere, and Ada Lovelace GPUs** (GeForce RTX 3070 / RTX 3060 Ti) with **full multi-monitor dual-display support**. Version 2 links directly against the upstream `open-gpu-kernel-modules` official SDK definitions, swref register tables, and dynamic monitor EDID resolution discovery.
+## Current target and status
 
-Both physical displays are driven simultaneously in 32-bit True Color:
-- **Head 0 (Primary):** 1920×1080 @ 32bpp (DisplayPort / HDMI)
-- **Head 1 (Secondary):** 2560×1440 @ 32bpp (DisplayPort)
-- Full desktop extension across both monitors using standard Windows 98 multi-monitor display virtualization.
+The reproducible build target is **one primary monitor**. Run `./src_win98/build.sh` from the repository root; it builds `nvx.drv` and `nvx.vxd`, generates a primary-only `nvx.inf`, and stages `GSPGA104.BIN` in `dist_win98/`. Set `WIN98_SINGLE_MONITOR=0` only to build the older secondary display path as well.
 
----
+The package has booted on the RTX 3070 under Win98 SE through GSP initialization, display-driver startup, and `Control 39`. The DIB access callbacks use Open Watcom `__loadds` to load the driver's data segment. The current VFIO run also proves that Win98 GDI solid fills can reach the GPU through the display driver's BitBlt callback, the VxD PM service, and the shared miniport. The guest remains running for physical display inspection.
 
-## Architecture Overview
+For the primary monitor, do not select 2560×1440 through the VBE path. The observed `mode 6014` was a synthetic primary VBE entry: Windows accepted it and the driver changed its pitch without programming a matching primary scanout, causing stripes. The primary driver now trusts the option ROM's enumerated modes after a successful VBE probe and does not advertise synthetic QHD. The separate `nvx2.drv` head-1 path has a native EVO scanout commit and can expose a 2560×1440 mode when the EDID reports QHD; the current default single-monitor package does not install that second driver. Keep these two paths distinct.
 
-Windows 98 SE uses a hybrid 16-bit / 32-bit driver architecture combining a 16-bit GDI display driver (`.DRV`), Microsoft's DIB Engine (`DIBENG.DLL`), and a 32-bit Ring 0 Virtual Device Driver (`.VXD`).
+The VxD DIOC handler forwards the shared `IOCTL_NVX_*` ABI through `NvxShimDispatchMiniportIoctl()` to the same `HwStartIO` handler used by XP. The Win98 PM service calls that VxD handler, while the shared miniport validates requests and uses `NvxGspSubmitFill/Copy/Upload`; the Win98 layer does not build GPU packets. A private development VxD ID (`0x7d00`) currently connects the 16-bit driver to the PM service. Replace it with an assigned, collision-free ID before distributing a package.
 
-```
-+-------------------------------------------------------------------------+
-|                  Windows 98 SE User / GDI Subsystem                     |
-|            Multi-Monitor Desktop Virtualization (Desktop 0 & 1)         |
-+-------------------------------------------------------------------------+
-             |                                             |
-     Calls GDI Display #1                          Calls GDI Display #2
-             v                                             v
-+-------------------------+                   +-------------------------+
-|  Primary: NVX.DRV       |                   |  Secondary: NVX2.DRV    |
-|  16-bit NE Display Drv  |                   |  16-bit NE Display Drv  |
-|  - C1_DIBENGINE (0x10)  |                   |  - C1_DIBENGINE (0x10)  |
-|  - RAM Shadow Buffer    |                   |  - DIB Engine PDEVICE   |
-|  - Begin/EndAccess hook |                   |  - Linear Framebuffer   |
-|  - Burst-flush to VRAM  |                   |  - Direct scanout       |
-+-------------------------+                   +-------------------------+
-             \                                             /
-              \----------> DIBENG.DLL (GDI 2D) <----------/
-                                   |
-                  Ring 3 -> Ring 0 | DeviceIoControl / VDD
-                                   v
-+-------------------------------------------------------------------------+
-|                   Virtual Device Driver: NVX.VXD (Ring 0)               |
-|                                                                         |
-|  +-------------------------------------------------------------------+  |
-|  | VideoPort Shim Layer (shim/videoprt_shim.c)                       |  |
-|  | - VideoPortGetDeviceBase       -> _MapPhysToLinear                |  |
-|  | - VideoPortAllocateCommonBuffer-> _PageAllocate / _PageLock       |  |
-|  | - VideoPortMapMemory           -> Map physical BAR1 VRAM aperture |  |
-|  | - VideoPortRead/WriteRegister* -> Direct MMIO                     |  |
-|  | - VideoPortStallExecution      -> Hardware I/O microsecond delay  |  |
-|  +-------------------------------------------------------------------+  |
-|                                  |                                      |
-|  +-------------------------------------------------------------------+  |
-|  | Core GA104 Miniport Engine (Compiled 32-bit x86 from src_driver/) |  |
-|  | - nvxmp.c      : Miniport lifecycle, mode setting, dual-head scan |  |
-|  | - nvx_gsp.c    : Falcon bootloader, SEC2 booter, GSP firmware     |  |
-|  | - nvx_fw.c     : Authenticated firmware extraction                |  |
-|  | - nvx_rpc.c    : GSP command queues and message channels          |  |
-|  | - nvx_mmu.c    : Ampere GPU MMU page tables & context structures  |  |
-|  | - nvx_seq.c    : Hardware sequencing and initialization           |  |
-|  | - nvx_vbios.c  : VBIOS parsing and display connector discovery    |  |
-|  +-------------------------------------------------------------------+  |
-+-------------------------------------------------------------------------+
-                                   |
-                     PCI MMIO / DMA / BAR1 Aperture
-                                   v
-+-------------------------------------------------------------------------+
-|                Hardware: NVIDIA GeForce RTX 3070 (GA104)                |
-|  - Head 0: 1920×1080 @ 60Hz 32bpp Primary Display                       |
-|  - Head 1: 2560×1440 @ 60Hz 32bpp Secondary Extended Display            |
-|  - GSP-RM firmware running on onboard Falcon coprocessor                |
-|  - Ampere Copy Engine DMA channels for hardware acceleration            |
-+-------------------------------------------------------------------------+
+`DibEngine=0` is required for this first accelerated path: with DIBENG enabled, Windows draws directly into its DIB shadow and bypasses this driver's `BitBlt`. The driver keeps its shadow coherent, then submits eligible 32bpp screen solid fills to the GPU. Other drawing operations still use CPU fallback. No Win98 WGL/OpenGL ICD or Direct3D client is connected, so application 3D acceleration is not available.
+
+The QEMU input setup reads the host Logitech evdev mouse and forwards its events through the emulated PS/2 mouse. `test/update_win98_driver.sh` removes every `mouse*=` key and mouse/HID `device=` or `minivdd=` directive from `SYSTEM.INI`, then writes exactly `[boot] mouse.drv=mouse.drv` and `[386Enh] mouse=*vmouse`. PS/2 PnP registry records remain in `nvx_reg.reg`; they are not additional SYSTEM.INI mouse entries. QMP reports the active QEMU PS/2 mouse, but actual cursor movement still needs visual confirmation.
+
+## Current architecture
+
+```text
+Win98 GDI solid fill
+  -> 16-bit nvx.drv BitBlt -> VxD PM service
+  -> NVX.VXD DIOC -> shared HwStartIO -> OpenRM/GSP -> GA104 CE
+  -> scanout VRAM + synchronized driver shadow
+
+Other BitBlt operations -> CPU fallback
+Win98 OpenGL / Direct3D -> not connected yet
 ```
 
-### Key Technical Innovations
+The VxD build reuses the XP miniport source and pinned OpenRM policy/container code. The GDI fill DIOC/PM route is runtime-tested; the separate VMM user-mapping and general client-memory interfaces remain unvalidated and must stay fail-closed.
 
-1. **NT VideoPort Shim on Windows 98 VMM:**
-   - The driver reuses the authentic 32-bit C miniport source code from the NT/XP driver (`src_driver/`).
-   - A translation layer (`shim/videoprt_shim.c`) emulates the 22 core Windows NT `VideoPort*` APIs using Windows 98 VMM (Virtual Machine Manager) services, including contiguous physical memory allocation, physical-to-linear virtual memory mapping, and registry configuration queries.
+## Win98 2D and 3D acceleration roadmap
 
-2. **GSP-RM Firmware Bootstrap in Ring 0:**
-   - At system boot, `NVX.VXD` maps the GA104 BAR0 MMU registers, uploads the authentic NVIDIA SEC2 and GSP firmware payloads into DMA-coherent memory, executes the Falcon bootloader, and establishes bidirectional RPC communication with the onboard RISC-V GSP-RM coprocessor.
+The long-term goal is to reuse the existing NVX GPU submission and Mesa/Nouveau code as much as possible, while adapting the Win98 OS boundary. The XP XDDM miniport is not a binary shim target for Win98: XP's VideoPort/ExtEscape and Win98's VxD DIOC, 16-bit display-driver, and DirectDraw interfaces differ. The reusable part is the shared NVX request ABI and GPU implementation behind `HwStartIO`; a small Win98 adapter should translate Win98 requests into that ABI.
 
-3. **DIB Engine Integration with Shadow Buffer & Dirty-Flush:**
-   - Both `NVX.DRV` and `NVX2.DRV` export `C1_DIBENGINE` (capability flag `0x0010`) and populate a standard `DIBENGINE` structure (`0x5250 'RP'`) required by Windows 98 to permit desktop extension across multiple monitors.
-   - For Head 0, a system RAM shadow buffer is maintained to accelerate window composition. Drawing operations are processed by `DIBENG.DLL` into system RAM, and driver hooks in `BeginAccess` / `EndAccess` (`my_BeginAccess` and `my_EndAccess`) compute dirty bounding rectangles and burst-flush updated pixels to physical VRAM using high-performance block copies.
+```text
+Win98 GDI solid fill -> nvx.drv BitBlt -> VxD PM service
+  -> NVX.VXD DIOC -> shared miniport HwStartIO -> OpenRM/GSP -> GA104
 
-4. **Multi-Monitor Secondary Attach Utility (`ATTACH_SEC.EXE`):**
-   - A dedicated 32-bit utility (`attach_sec.c`) interfaces with the Windows 98 Multi-Monitor API (`EnumDisplayDevicesA` and `ChangeDisplaySettingsExA`).
-   - It programmatically initializes `\\.\Display2` (`NVX2.DRV`), positions it at coordinates `(1920, 0)` immediately to the right of Head 0, and updates the active desktop display virtualization.
+Other GDI operations -> CPU fallback
+Win98 OpenGL / Direct3D -> not connected
+```
+
+### 2D: accelerate common GDI operations first
+
+1. Replace development PM service ID `0x7d00` with an assigned collision-free ID before packaging for distribution.
+2. Visually confirm the color-fill probe on the physical monitor. Add a pixel/readback check so correctness does not rely only on serial submission records.
+3. Extend only measured, well-bounded 2D cases, starting with SRCCOPY when source and destination layout can be represented safely. Keep CPU fallback for unsupported ROPs, formats, overlap, and DIBENG paths.
+4. Reduce synchronous overhead by batching rectangles through a VxD-owned validated queue; preserve fence/synchronization before CPU reads, mode changes, or presentation. Measure before expanding acceleration.
+5. Reconcile `ddhal.c` capability advertisement with callbacks; do not claim DirectDraw hardware 3D merely because surfaces are marked `DDSCAPS_3DDEVICE`.
+6. For application 3D, add a native Win98 Mesa/Nouveau winsys adapter. Keep kernel mappings fail-closed until per-process mapping or a validated shared-ring protocol exists.
+
+### 3D: reuse Mesa/Nouveau, adapt the Win98 client boundary
+
+1. Use the Mesa 9x work already present under `submodules/mesa9x/win9x/` as the reference for Win9x loader, WGL, memory, and presentation integration. First identify which frontend and Gallium pieces are built for the chosen Win98 configuration; XP's `nvx_winsys_win32.c`/`ExtEscape` path and XP DLLs are not automatically Win98-compatible.
+2. Provide a native Win98 OpenGL ICD (and later a D3D9 frontend if desired) whose calls reach Gallium Nouveau/NVC0. Keep Mesa's API/state tracking and Nouveau command generation; implement only the OS-facing winsys adapter that maps BO allocation/map/unmap, client open/close, batch submission, fences, and present to the NVX VxD ABI.
+3. Complete safe resource management before allowing general apps to submit: per-process client identity, BO handles and access validation, user mappings or shared-ring transfer, reset/close cleanup, and synchronization. The current VxD adapter's fail-closed user map means the existing XP-style mapped-buffer winsys cannot simply be enabled yet.
+4. Bring up progressively: ICD load and renderer identification; clear/readback; one triangle; depth-tested indexed geometry; textures and buffer updates; swap/present; multiple contexts/processes. Use a software fallback only as an explicit diagnostic. Never report hardware rendering unless the renderer string and a GPU submission/fence/readback prove it.
+5. Keep the first implementation narrow and upstream-shaped: reuse Mesa/Nouveau's NVC0 screen, resource and batch logic; keep Win98-specific code in the frontend/winsys and VxD shims. Avoid duplicating Gallium or inventing a second command encoder.
+
+### What SoftGPU contributes
+
+[SoftGPU](https://github.com/JHRobotics/softgpu) is a useful Windows 9x integration and testbed reference. Its project describes a bundle of separate components (VMDisp9x, Mesa9x, WineD3D, OpenGlide, VMHAL9x, and an optional QEMU 3D passthrough component), with render paths including software Mesa, VMware SVGA3D, and QEMU 3D passthrough. That is evidence that a 9x user-mode graphics stack can be assembled from OS-specific frontends and a backend; it is not a drop-in NVIDIA/Ampere driver or an XP XDDM shim. For this project, the strongest reuse is the existing Mesa9x frontend/winsys work and its Win9x compatibility patterns, while NVX.VXD supplies this card's transport and OpenRM/GSP stack.
+
+### Separate 1440p display work
+
+The primary VBE path is limited to modes reported by the option ROM; do not synthesize primary QHD by changing pitch. QHD on the secondary head is a different path: the optional `nvx2.drv` uses head-1 native scanout and should add 2560×1440 only when EDID confirms that mode. The current default single-monitor package omits `nvx2.drv`; validate the dual-head package separately before describing it as available in that build.
 
 ---
 
@@ -93,10 +72,9 @@ Windows 98 SE uses a hybrid 16-bit / 32-bit driver architecture combining a 16-b
 | File | Description |
 |---|---|
 | `dist_win98/nvx.drv` | Primary 16-bit GDI display driver (Head 0, 1920×1080 @ 32bpp) |
-| `dist_win98/nvx2.drv` | Secondary 16-bit GDI display driver (Head 1, 2560×1440 @ 32bpp) |
 | `dist_win98/nvx.vxd` | 32-bit Ring 0 Virtual Device Driver with VideoPort shim and GA104 GSP miniport |
 | `dist_win98/nvx.inf` | Windows 98 Plug-and-Play setup information file |
-| `dist_win98/attach_sec.exe` | Win32 utility to attach and enable the secondary monitor |
+| `dist_win98/GSPGA104.BIN` | GSP firmware payload installed into `C:\WINDOWS\SYSTEM` |
 | `src_win98/nvx_reg.reg` | Recommended registry configuration for modes, refresh rates, and settings |
 | `src_win98/qipnp.reg` | Quick-install PCI PNP registry configuration helper |
 
@@ -105,64 +83,35 @@ Windows 98 SE uses a hybrid 16-bit / 32-bit driver architecture combining a 16-b
 ## Build Instructions
 
 ### Prerequisites
-On a Debian or Ubuntu x86-64 build host, install the following tools:
-- **GCC / MinGW-w64** (32-bit and 64-bit cross-compilers):
+On a Debian or Ubuntu x86-64 build host, install:
   ```sh
-  sudo apt-get install build-essential gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 binutils-mingw-w64
+  sudo apt-get install build-essential gcc-mingw-w64-i686 binutils-mingw-w64 nasm python3
   ```
-- **Open Watcom C/C++** (v1.9 or v2.0):
-  Ensure `owenv.sh` points to your Open Watcom installation:
-  ```sh
-  export WATCOM=/usr/bin/watcom
-  export PATH=$WATCOM/binl:$PATH
-  export INCLUDE=$WATCOM/h
-  ```
-- **JWasm** (free MASM-compatible x86 assembler)
-- **Python 3**
+Install Open Watcom 2.0 and make sure `src_win98/owenv.sh` resolves it. NASM is used for the VxD assembly; JWasm is not required. Initialize the Mesa and Open GPU Kernel Modules submodules before building.
 
-### 1. Build the 16-bit Display Drivers (`nvx.drv` and `nvx2.drv`)
-```sh
-cd src_win98/winvbe_drv
-./build.sh
-```
-This compiles the assembly and C sources using Open Watcom (`wcc` / `wasm` / `wlink`) and generates `dist_win98/nvx.drv` and `dist_win98/nvx2.drv`.
+### Build the primary-monitor package
 
-### 2. Build the Ring 0 Driver (`nvx.vxd`)
-```sh
-cd src_win98
-./build_vxd.sh
-```
-This compiles the 32-bit miniport engine, VideoPort shim, and VxD entry stubs, and outputs `dist_win98/nvx.vxd`.
+From the repository root:
 
-### 3. Build the Secondary Monitor Attach Utility (`attach_sec.exe`)
 ```sh
-i686-w64-mingw32-gcc -O2 -s -o dist_win98/attach_sec.exe src_win98/attach_sec.c -luser32
+./src_win98/build.sh
 ```
+
+The default `WIN98_SINGLE_MONITOR=1` build outputs `nvx.drv`, `nvx.vxd`, `nvx.inf`, and `GSPGA104.BIN` in `dist_win98/`. To also build the older secondary `.DRV` path, set `WIN98_SINGLE_MONITOR=0`; that does not imply the dual-monitor path has been runtime validated.
 
 ---
 
 ## Installation Guide
 
-### Option A: Clean Installation via Device Manager
-1. Copy the driver files (`nvx.inf`, `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `attach_sec.exe`) to a directory on your Windows 98 machine (e.g., `C:\DRIVERS\NVX`).
+### Primary monitor installation
+1. Copy `nvx.inf`, `nvx.drv`, `nvx.vxd`, and `GSPGA104.BIN` from `dist_win98/` to a directory on Windows 98 (for example, `C:\DRIVERS\NVX`).
 2. Right-click on **My Computer** -> **Properties** -> **Device Manager**.
 3. Expand **Display adapters**, double-click **Standard PCI Graphics Adapter (VGA)**, and select the **Driver** tab.
 4. Click **Update Driver...** -> **Specify the location of the driver** -> **Browse** to `C:\DRIVERS\NVX`.
 5. Select **NVIDIA GeForce RTX 3070** (or corresponding model) and click **Next** to install.
 6. When prompted, restart Windows 98.
 
-### Option B: Enabling Multi-Monitor Extended Desktop
-1. Upon booting into Windows 98, the primary monitor (Head 0) will display the desktop at 1920×1080 in 32-bit True Color.
-2. To enable the secondary monitor (Head 1 at 2560×1440):
-   - **Method 1 (Command line or startup):** Run `ATTACH_SEC.EXE`. The utility enumerates `\\.\Display2`, positions it at `(1920, 0)`, and activates the extended desktop. You can add this to `AUTOEXEC.BAT` or the `StartUp` folder.
-   - **Method 2 (Display Properties GUI):** Right-click the desktop -> **Properties** -> **Settings**. Click on **Monitor 2**, check **"Extend my Windows desktop onto this monitor"**, select **2560 by 1440 pixels** and **True Color (32 bit)**, then click **Apply**.
-
-### Option C: Automated Offline Disk Update (for VMs or Dual-Boot)
-If running Windows 98 under QEMU/KVM with VFIO or dual-booting with Linux, run:
-```sh
-./update_win98_driver.sh
-```
-This script automatically mounts the guest disk image, copies updated driver binaries into `C:\WINDOWS\SYSTEM`, and verifies binary checksums.
+The INF copies the GSP firmware into `C:\WINDOWS\SYSTEM`. On 2026-11-24, `test/run_vfio_win98_autoretry.sh` booted `win98_small.img` on the RTX 3070. Log `test_logs/win98-20261124-214215.log` records `DibEngine=0`, active 1920×1080×32 mode, successful PM API connection, and 32 validated `IOCTL_NVX_ACCEL_FILL_RECT` operations. The miniport logs each rectangle only after every row's `NvxGspSubmitFill` completed successfully. `C:\NVXFILL.LOG` was read from the guest and contains `START`/`PAINT` markers for the GDI fill probe. The VM is intentionally left running. This validates the GPU solid-fill route for GDI desktop drawing; physical color accuracy, broader 2D coverage, and application-level 3D remain unverified or unimplemented.
 
 ---
 

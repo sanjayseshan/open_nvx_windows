@@ -1044,31 +1044,15 @@ static int nvx_init_modes(void)
     far_memset(g.oemstr, 0, sizeof(g.oemstr));
     g.oemstr[0]='N'; g.oemstr[1]='V'; g.oemstr[2]='X'; g.oemstr[3]=0;
 
-    /* 32bpp True Color modes */
-    nvx_add_mode(640, 480, 32);
-    nvx_add_mode(800, 600, 32);
-    nvx_add_mode(1024, 768, 32);
-    nvx_add_mode(1280, 720, 32);
-    nvx_add_mode(1280, 1024, 32);
-    nvx_add_mode(1600, 900, 32);
-    nvx_add_mode(1920, 1080, 32);
-    nvx_add_mode(2560, 1440, 32);
-
-    /* 16bpp High Color modes */
-    nvx_add_mode(640, 480, 16);
-    nvx_add_mode(800, 600, 16);
-    nvx_add_mode(1024, 768, 16);
-    nvx_add_mode(1280, 720, 16);
-    nvx_add_mode(1280, 1024, 16);
-    nvx_add_mode(1920, 1080, 16);
-    nvx_add_mode(2560, 1440, 16);
-
-    /* 8bpp modes */
-    nvx_add_mode(640, 480, 8);
-    nvx_add_mode(800, 600, 8);
-    nvx_add_mode(1024, 768, 8);
-    nvx_add_mode(1280, 1024, 8);
-    nvx_add_mode(1920, 1080, 8);
+    /* These fallback entries must have a matching VBE mode-set candidate.
+       Do not advertise arbitrary EDID modes here: mode metadata alone does
+       not program GA104 scanout. The normal VBE path below uses the modes
+       actually returned by the option ROM. */
+    nvx_add_mode(1920, 1080, 32); /* VBE 0x177 */
+    nvx_add_mode(640, 480, 16);   /* VBE 0x111 */
+    nvx_add_mode(800, 600, 16);   /* VBE 0x115 */
+    nvx_add_mode(1024, 768, 16);  /* VBE 0x118 */
+    nvx_add_mode(1280, 1024, 16); /* VBE 0x11B */
 
     DBG("NVX: %u modes initialized successfully (LFB=0xE0000000)\n", nmodes);
     return 1;
@@ -1152,13 +1136,26 @@ int vbe_probe(void)
         }
         add_mode(list[i], mi);
     }
-    nvx_init_modes();
+    /* The primary driver's modes must come from the option ROM: its INT10
+       path programs the mode, and a synthetic entry has no matching BIOS
+       modeset. The secondary driver is different: its framebuffer belongs
+       to native EVO head 1 and is committed by NVX's dual-head scanout path,
+       so it may expose the monitor's EDID timing without asking INT10 to
+       program head 1. Keep this exception confined to SECONDARY_HEAD. */
+    if (!nmodes)
+        nvx_init_modes();
+    read_edid();
+#ifdef SECONDARY_HEAD
+    if (g.edid_w == 2560 && g.edid_h == 1440) {
+        nvx_add_mode(2560, 1440, 32);
+        DBG("NVX2 [MODE]: native head-1 QHD mode added from EDID; primary VBE list unchanged\n");
+    }
+#endif
     for (i = 0; i < nmodes; i++)
         DBG(" mode %x: %ux%ux%u pitch=%u attr=%x win=%x/%x gran=%u size=%u seg=%x lfb=%lx\n",
             modes[i].mode, modes[i].xres, modes[i].yres, modes[i].bpp, modes[i].pitch, modes[i].attr,
             modes[i].winAattr, modes[i].winBattr, modes[i].wingran, modes[i].winsize, modes[i].winAseg,
             modes[i].physbase);
-    read_edid();
     return 1;
 }
 
@@ -1354,7 +1351,12 @@ WORD vbe_mode_ok(WORD w, WORD h, WORD bpp)
         MODEINFO *m = &modes[i];
         if (m->xres != w || m->yres != h) continue;
         if (m->bpp != bpp && !(bpp == 24 && m->bpp == 32) && !(bpp == 15 && m->bpp == 16)) continue;
-        if ((m->mode & 0xF000) == 0x6000) return 0;
+        if ((m->mode & 0xF000) == 0x6000) {
+            /* Synthetic fallback modes are exact-depth only. In particular,
+               do not treat 24bpp as a 32bpp mode: that changes the pitch. */
+            if (m->bpp != bpp) continue;
+            return 0;
+        }
         if (!mode_lfb_ok(m) && !mode_banked_ok(m)) continue;
         if (g.totalmem64k && (DWORD)m->lpitch * m->yres > (DWORD)g.totalmem64k * 65536UL) return 2;
         return 0;
@@ -1695,17 +1697,25 @@ int vbe_set_mode(void)
 #ifndef SECONDARY_HEAD
         {
             WORD vbe_cand = 0;
-            if (g.xres == 1920 && g.yres == 1080) vbe_cand = (g.bpp == 16) ? 0x171 : 0x177;
-            else if (g.xres == 1024 && g.yres == 768) vbe_cand = (g.bpp == 16) ? 0x117 : 0x118;
-            else if (g.xres == 800 && g.yres == 600) vbe_cand = (g.bpp == 16) ? 0x114 : 0x115;
-            else if (g.xres == 1280 && g.yres == 1024) vbe_cand = (g.bpp == 16) ? 0x11A : 0x11B;
-            else if (g.xres == 640 && g.yres == 480) vbe_cand = (g.bpp == 16) ? 0x111 : 0x112;
+            if (g.xres == 1920 && g.yres == 1080 && g.bpp == 32) vbe_cand = 0x177;
+            else if (g.xres == 1024 && g.yres == 768 && g.bpp == 16) vbe_cand = 0x118;
+            else if (g.xres == 800 && g.yres == 600 && g.bpp == 16) vbe_cand = 0x115;
+            else if (g.xres == 1280 && g.yres == 1024 && g.bpp == 16) vbe_cand = 0x11B;
+            else if (g.xres == 640 && g.yres == 480 && g.bpp == 16) vbe_cand = 0x111;
             if (vbe_cand) {
                 rclear();
                 rmr.eax = 0x4F02;
                 rmr.ebx = vbe_cand | 0x4000;
-                int10(&rmr);
+                if (!int10(&rmr) || (WORD)rmr.eax != 0x004F) {
+                    DBG("NVX: VBE hardware modeset 0x%04x failed ax=%x\n",
+                        (WORD)(vbe_cand | 0x4000), (WORD)rmr.eax);
+                    return 0;
+                }
                 DBG("NVX: hardware modeset 0x%04x ax=%x\n", (WORD)(vbe_cand | 0x4000), (WORD)rmr.eax);
+            } else {
+                DBG("NVX: refusing synthetic mode without a hardware modeset: %ux%ux%u\n",
+                    g.xres, g.yres, g.bpp);
+                return 0;
             }
         }
 #endif

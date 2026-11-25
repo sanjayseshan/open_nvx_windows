@@ -32,76 +32,16 @@ REGEDIT4
 "RefreshRate"="-1"
 "DDC"="1"
 
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\640,480]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\800,600]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\1280,720]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\8\2560,1440]
-
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\640,480]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\800,600]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\1280,720]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\16\2560,1440]
 
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\640,480]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\800,600]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\1280,720]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\1600,900]
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0000\MODES\32\2560,1440]
-
-; --- Secondary Display Adapter (GA104 Head 1, Lenovo 1440p, LFB 0xE2000000) ---
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001]
-"DriverDesc"="NVIDIA GeForce RTX 3070 (GA104 Win98 Secondary 1440p)"
-"MatchingDeviceId"="*PNP0900"
-"ProviderName"="NVIDIA Corporation (Win98SE Port)"
-"DriverDate"="11-05-2026"
-"DriverVersion"="2.0.0.1"
-"InfPath"="nvx.inf"
-"InfSection"="NVX_Inst"
-"DevLoader"="*vdd"
-"Ver"="4.0"
-"MONITOR"="Monitor\\0001"
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\DEFAULT]
-"drv"="nvx2.drv"
-"vdd"="*vdd,*vflatd"
-"minivdd"="nvx.vxd"
-"Mode"="32,2560,1440"
-"RefreshRate"="-1"
-"DDC"="1"
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\640,480]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\800,600]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\1280,720]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\8\2560,1440]
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\640,480]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\800,600]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\1280,720]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\16\2560,1440]
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\640,480]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\800,600]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\1024,768]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\1280,720]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\1280,1024]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\1600,900]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\1920,1080]
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Display\0001\MODES\32\2560,1440]
 
 ; --- PCI Hardware Node (Primary Head -> Dell 1080p) ---
 [HKEY_LOCAL_MACHINE\Enum\PCI\VEN_10DE&DEV_2488&SUBSYS_47553842&REV_A1]
@@ -115,18 +55,6 @@ REGEDIT4
 "ConfigFlags"=hex:00,00,00,00
 "HardwareID"="PCI\\VEN_10DE&DEV_2488&SUBSYS_47553842&REV_A1,PCI\\VEN_10DE&DEV_2488,PCI\\VEN_10DE&CC_030000,PCI\\VEN_10DE&CC_0300,PCI\\VEN_10DE,PCI\\CC_030000,PCI\\CC_0300"
 "CompatibleIDs"="PCI\\VEN_10DE&DEV_2488,PCI\\VEN_10DE,PCI\\CC_030000,PCI\\CC_0300"
-
-; --- PnP Secondary Display Node (*PNP0900 -> Lenovo 1440p) ---
-[HKEY_LOCAL_MACHINE\Enum\Root\*PNP0900]
-
-[HKEY_LOCAL_MACHINE\Enum\Root\*PNP0900\0000]
-"DeviceDesc"="NVIDIA GeForce RTX 3070 (GA104 Win98 Secondary 1440p)"
-"Driver"="Display\\0001"
-"Child0000"="MONITOR\\DEFAULT_MONITOR\\0001"
-"Class"="Display"
-"ClassGUID"="{4D36E968-E325-11CE-BFC1-08002BE10318}"
-"ConfigFlags"=hex:00,00,00,00
-"HardwareID"="*PNP0900"
 
 [-HKEY_LOCAL_MACHINE\Enum\PCI\VEN_1234&DEV_1111&SUBSYS_11001AF4&REV_00]
 
@@ -166,19 +94,7 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Monitor\0000\MODES\1920,1080]
 "Mode1"="67.5,60.0,+,+"
 
-; --- Monitor 1: Secondary (Lenovo R27qe 1440p) ---
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Monitor\0001]
-"DriverDesc"="Lenovo R27qe (1440p 180Hz Gaming Display)"
-"MaxResolution"="2560,1440"
-"MonitorRanges"="30-140,48-144,+,+"
-"DPMS"="1"
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Monitor\0001\MODES]
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Class\Monitor\0001\MODES\2560,1440]
-"Mode1"="88.8,60.0,+,+"
-
-; --- Enum Monitors for Display 0 and Display 1 ---
+; --- Enum Monitor for Display 0 ---
 [HKEY_LOCAL_MACHINE\Enum\MONITOR\DEFAULT_MONITOR]
 
 [HKEY_LOCAL_MACHINE\Enum\MONITOR\DEFAULT_MONITOR\0000]
@@ -187,32 +103,12 @@ REGEDIT4
 "MaxResolution"="1920,1080"
 "MonitorRanges"="30-140,48-144,+,+"
 
-[HKEY_LOCAL_MACHINE\Enum\MONITOR\DEFAULT_MONITOR\0001]
-"Driver"="Monitor\\0001"
-"DeviceDesc"="Lenovo R27qe (1440p 180Hz Gaming Display)"
-"MaxResolution"="2560,1440"
-"MonitorRanges"="30-140,48-144,+,+"
-
-; --- Display Settings (Primary 1080p @ 0,0 ; Secondary 1440p @ 1920,0) ---
+; --- Primary Display Settings (1920x1080 @ 0,0) ---
 [HKEY_LOCAL_MACHINE\Config\0001\Display\Settings]
 "BitsPerPixel"="32"
 "Resolution"="1920,1080"
 "AttachToDesktop"="1"
 "DesktopPos"="0,0"
-"RefreshRate"="-1"
-
-[HKEY_LOCAL_MACHINE\Config\0001\Display\Settings\0001]
-"BitsPerPixel"="32"
-"Resolution"="2560,1440"
-"AttachToDesktop"="1"
-"DesktopPos"="1920,0"
-"RefreshRate"="-1"
-
-[HKEY_LOCAL_MACHINE\Config\0001\Display\Settings\Display2]
-"BitsPerPixel"="32"
-"Resolution"="2560,1440"
-"AttachToDesktop"="1"
-"DesktopPos"="1920,0"
 "RefreshRate"="-1"
 
 ; --- Clean Startup Run Keys ---

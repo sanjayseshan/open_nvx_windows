@@ -58,6 +58,41 @@ static void select_scheme(void)
 #endif
 extern DWORD __far __pascal GetProcAddress(WORD, LPSTR);
 
+/* Win98 VxD PM API. The private development ID must match vxd_entry.asm;
+   parameters are passed through the client-register structure. */
+extern DWORD nvx_vxd_api_entry_asm;
+static DWORD get_nvx_vxd_api(void);
+static BYTE nvx_vxd_api_queried;
+#pragma aux get_nvx_vxd_api = \
+    "push es" \
+    "push di" \
+    "xor di,di" \
+    "mov es,di" \
+    "mov ax,1684h" \
+    "mov bx,7d00h" \
+    "int 2Fh" \
+    "mov dx,es" \
+    "mov ax,di" \
+    "pop di" \
+    "pop es" \
+    value [dx ax] modify [bx cx];
+extern DWORD __far __cdecl nvx_pm_fill_call(WORD, WORD, WORD, WORD, DWORD);
+
+BOOL nvx_accel_fill_rect(SHORT x, SHORT y, SHORT w, SHORT h, DWORD color)
+{
+    if (x < 0 || y < 0 || w <= 0 || h <= 0) return FALSE;
+    if (!nvx_vxd_api_queried) {
+        nvx_vxd_api_queried = 1;
+        nvx_vxd_api_entry_asm = get_nvx_vxd_api();
+        if (nvx_vxd_api_entry_asm)
+            DBG("NVX [2D]: Win98 VxD PM API connected\n");
+        else
+            DBG("NVX [2D]: Win98 VxD PM API lookup failed (ID=7D00)\n");
+    }
+    if (!nvx_vxd_api_entry_asm) return FALSE;
+    return nvx_pm_fill_call((WORD)x, (WORD)y, (WORD)w, (WORD)h, color) == 0;
+}
+
 
 DRVSTATE g;
 #ifndef WIN9X_DPVER
@@ -322,7 +357,9 @@ static void driver_init(void)
     g.ini_vmfifo = (BYTE)get_ini_int("VMwareFifo", 1);
     g.ini_hwcursor = (BYTE)get_ini_int("HwCursor", 1);
     g.ini_shadow = (BYTE)get_ini_int("ShadowBuffer", 1);
-    g.ini_dibeng = (BYTE)get_ini_int("DibEngine", 1);
+    /* DIBENG writes directly into the framebuffer and bypasses BitBlt. Keep
+       the driver's BitBlt path active so validated GDI fills can reach NVX. */
+    g.ini_dibeng = (BYTE)get_ini_int("DibEngine", 0);
     g.ini_wc = (BYTE)get_ini_int("WriteCombining", 1);
     g.ini_opengl = (BYTE)get_ini_int("OpenGL", 1);
     {
@@ -594,8 +631,9 @@ int enable_hw(BYTE restore)
     setup_shadow();
     lut_update();
     pdev_sync();
-    DBG("NVX [2D-ACCEL]: 2D engine active: Mode=%ux%ux%u Pitch=%u WC=%u Shadow=%u DIBENG=%u\n",
-        g.xres, g.yres, g.bpp, g.pitch, g.wc, g.shadow, dibeng_on);
+    DBG("NVX [DISPLAY]: mode active %ux%ux%u Pitch=%u WC=%u Shadow=%u DIBENG=%u; solid-fill acceleration=%u\n",
+        g.xres, g.yres, g.bpp, g.pitch, g.wc, g.shadow, dibeng_on,
+        !dibeng_on && g.bpp == 32);
     if (g.xf == 2) vram_clear();            /* the borders of a scaled desktop */
     if (restore && had && g.shadow && opitch == g.spitch && oy == g.lh) {
         shadow_flush(0, 0, g.lw, g.lh);
@@ -741,8 +779,9 @@ WORD EXPORT ReEnable(LPVOID lpDevice, LPGDIINFO lpInfo)
     }
     if (g.mi.bpp != omi.bpp) palette_init();
     pdev_sync();
-    DBG("NVX [2D-ACCEL]: 2D engine active: Mode=%ux%ux%u Pitch=%u WC=%u Shadow=%u DIBENG=%u\n",
-        g.xres, g.yres, g.bpp, g.pitch, g.wc, g.shadow, dibeng_on);
+    DBG("NVX [DISPLAY]: mode active %ux%ux%u Pitch=%u WC=%u Shadow=%u DIBENG=%u; solid-fill acceleration=%u\n",
+        g.xres, g.yres, g.bpp, g.pitch, g.wc, g.shadow, dibeng_on,
+        !dibeng_on && g.bpp == 32);
 #ifndef OLDWIN
     if (dibeng_on) dibeng_reenable(lpDevice);
 #endif

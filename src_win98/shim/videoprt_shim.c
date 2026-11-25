@@ -12,8 +12,22 @@ extern uint32_t __attribute__((stdcall)) _CopyPageTable(uint32_t LinPgNum, uint3
 extern void   __attribute__((stdcall)) Out_Debug_String(const char *str);
 
 /* Device extensions for Primary and Secondary heads */
-NVX_DEVICE_EXTENSION g_PrimaryDevExt;
-NVX_DEVICE_EXTENSION g_SecondaryDevExt;
+NVX_DEVICE_EXTENSION *g_pPrimaryDevExt;
+#define g_PrimaryDevExt (*g_pPrimaryDevExt)
+#if !NVX_WIN98_SINGLE_MONITOR
+static NVX_DEVICE_EXTENSION *g_pSecondaryDevExt;
+#define g_SecondaryDevExt (*g_pSecondaryDevExt)
+#endif
+
+static ULONG g_NvxShimCurrentProcessId = 1;
+static PVIDEO_HW_START_IO g_NvxMiniportStartIo;
+
+typedef struct NVX_VXD_POOL_HEADER {
+    uint32_t signature;
+    uint32_t pages;
+} NVX_VXD_POOL_HEADER;
+
+#define NVX_VXD_POOL_SIGNATURE 0x504e584eU
 
 /* I/O Port helpers */
 static inline void outl(uint16_t port, uint32_t val) {
@@ -57,32 +71,32 @@ static void NvxShimLogHex(uint32_t val) {
 }
 
 /* VideoPort Register Access */
-ULONG VideoPortReadRegisterUlong(PULONG Register) {
+ULONG VPAPI VideoPortReadRegisterUlong(PULONG Register) {
     return *(volatile ULONG *)Register;
 }
 
-VOID VideoPortWriteRegisterUlong(PULONG Register, ULONG Value) {
+VOID VPAPI VideoPortWriteRegisterUlong(PULONG Register, ULONG Value) {
     *(volatile ULONG *)Register = Value;
 }
 
-UCHAR VideoPortReadRegisterUchar(PUCHAR Register) {
+UCHAR VPAPI VideoPortReadRegisterUchar(PUCHAR Register) {
     return *(volatile UCHAR *)Register;
 }
 
-VOID VideoPortWriteRegisterUchar(PUCHAR Register, UCHAR Value) {
+VOID VPAPI VideoPortWriteRegisterUchar(PUCHAR Register, UCHAR Value) {
     *(volatile UCHAR *)Register = Value;
 }
 
-USHORT VideoPortReadRegisterUshort(PUSHORT Register) {
+USHORT VPAPI VideoPortReadRegisterUshort(PUSHORT Register) {
     return *(volatile USHORT *)Register;
 }
 
-VOID VideoPortWriteRegisterUshort(PUSHORT Register, USHORT Value) {
+VOID VPAPI VideoPortWriteRegisterUshort(PUSHORT Register, USHORT Value) {
     *(volatile USHORT *)Register = Value;
 }
 
 /* VideoPort Memory / Device Base */
-PVOID VideoPortGetDeviceBase(PVOID HwDeviceExtension, PHYSICAL_ADDRESS IoAddress, ULONG NumberOfBytes, UCHAR InIoSpace) {
+PVOID VPAPI VideoPortGetDeviceBase(PVOID HwDeviceExtension, PHYSICAL_ADDRESS IoAddress, ULONG NumberOfBytes, UCHAR InIoSpace) {
     (void)HwDeviceExtension; (void)InIoSpace;
     uint32_t phys = IoAddress.LowPart;
     void *virt = _MapPhysToLinear(phys, NumberOfBytes, 0);
@@ -95,11 +109,11 @@ PVOID VideoPortGetDeviceBase(PVOID HwDeviceExtension, PHYSICAL_ADDRESS IoAddress
     return virt;
 }
 
-VOID VideoPortFreeDeviceBase(PVOID HwDeviceExtension, PVOID MappedAddress) {
+VOID VPAPI VideoPortFreeDeviceBase(PVOID HwDeviceExtension, PVOID MappedAddress) {
     (void)HwDeviceExtension; (void)MappedAddress;
 }
 
-VP_STATUS VideoPortMapMemory(PVOID HwDeviceExtension, PHYSICAL_ADDRESS PhysicalAddress, PULONG Length, PULONG InIoSpace, PVOID *VirtualAddress) {
+VP_STATUS VPAPI VideoPortMapMemory(PVOID HwDeviceExtension, PHYSICAL_ADDRESS PhysicalAddress, PULONG Length, PULONG InIoSpace, PVOID *VirtualAddress) {
     (void)HwDeviceExtension; (void)InIoSpace;
     if (!VirtualAddress || !Length) return ERROR_INVALID_PARAMETER;
     uint32_t phys = PhysicalAddress.LowPart;
@@ -107,13 +121,13 @@ VP_STATUS VideoPortMapMemory(PVOID HwDeviceExtension, PHYSICAL_ADDRESS PhysicalA
     return (*VirtualAddress != (PVOID)-1 && *VirtualAddress != NULL) ? NO_ERROR : ERROR_INVALID_PARAMETER;
 }
 
-VP_STATUS VideoPortUnmapMemory(PVOID HwDeviceExtension, PVOID VirtualAddress, HANDLE ProcessHandle) {
+VP_STATUS VPAPI VideoPortUnmapMemory(PVOID HwDeviceExtension, PVOID VirtualAddress, HANDLE ProcessHandle) {
     (void)HwDeviceExtension; (void)VirtualAddress; (void)ProcessHandle;
     return NO_ERROR;
 }
 
 /* VideoPort DMA Common Buffer Allocation using VMM _PageAllocate */
-PVOID VideoPortAllocateCommonBuffer(PVOID HwDeviceExtension, PVOID DmaAdapter, ULONG DesiredLength, PPHYSICAL_ADDRESS LogicalAddress, BOOLEAN CacheEnabled, PVOID Reserved) {
+PVOID VPAPI VideoPortAllocateCommonBuffer(PVOID HwDeviceExtension, PVOID DmaAdapter, ULONG DesiredLength, PPHYSICAL_ADDRESS LogicalAddress, BOOLEAN CacheEnabled, PVOID Reserved) {
     (void)HwDeviceExtension; (void)DmaAdapter; (void)CacheEnabled; (void)Reserved;
     uint32_t pages = (DesiredLength + 4095) / 4096;
     uint32_t phys = 0;
@@ -165,19 +179,19 @@ PVOID VideoPortAllocateCommonBuffer(PVOID HwDeviceExtension, PVOID DmaAdapter, U
     return virt;
 }
 
-VOID VideoPortFreeCommonBuffer(PVOID HwDeviceExtension, ULONG Length, PVOID VirtualAddress, PHYSICAL_ADDRESS LogicalAddress, BOOLEAN CacheEnabled) {
+VOID VPAPI VideoPortFreeCommonBuffer(PVOID HwDeviceExtension, ULONG Length, PVOID VirtualAddress, PHYSICAL_ADDRESS LogicalAddress, BOOLEAN CacheEnabled) {
     (void)HwDeviceExtension; (void)Length; (void)LogicalAddress; (void)CacheEnabled;
     if (VirtualAddress) {
         _PageFree(VirtualAddress, 0);
     }
 }
 
-PVOID VideoPortGetDmaAdapter(PVOID HwDeviceExtension, PVP_DEVICE_DESCRIPTION DeviceDescription) {
+PVOID VPAPI VideoPortGetDmaAdapter(PVOID HwDeviceExtension, PVP_DEVICE_DESCRIPTION DeviceDescription) {
     (void)HwDeviceExtension; (void)DeviceDescription;
     return (PVOID)1; /* non-NULL dummy handle */
 }
 
-VOID VideoPortPutDmaAdapter(PVOID HwDeviceExtension, PVOID DmaAdapter) {
+VOID VPAPI VideoPortPutDmaAdapter(PVOID HwDeviceExtension, PVOID DmaAdapter) {
     (void)HwDeviceExtension; (void)DmaAdapter;
 }
 
@@ -194,7 +208,7 @@ static void PciWriteConfig32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off
     outl(0xCFC, val);
 }
 
-ULONG VideoPortGetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, ULONG SlotNumber, PVOID Buffer, ULONG Offset, ULONG Length) {
+ULONG VPAPI VideoPortGetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, ULONG SlotNumber, PVOID Buffer, ULONG Offset, ULONG Length) {
     (void)HwDeviceExtension; (void)BusDataType;
     uint8_t bus = 0;
     uint8_t dev = (SlotNumber >> 3) & 0x1F;
@@ -209,7 +223,7 @@ ULONG VideoPortGetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, UL
     return Length;
 }
 
-ULONG VideoPortSetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, ULONG SlotNumber, PVOID Buffer, ULONG Offset, ULONG Length) {
+ULONG VPAPI VideoPortSetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, ULONG SlotNumber, PVOID Buffer, ULONG Offset, ULONG Length) {
     (void)HwDeviceExtension; (void)BusDataType;
     uint8_t bus = 0;
     uint8_t dev = (SlotNumber >> 3) & 0x1F;
@@ -229,7 +243,7 @@ ULONG VideoPortSetBusData(PVOID HwDeviceExtension, BUS_DATA_TYPE BusDataType, UL
 }
 
 /* VideoPort Access Ranges */
-VP_STATUS VideoPortGetAccessRanges(
+VP_STATUS VPAPI VideoPortGetAccessRanges(
     PVOID HwDeviceExtension,
     ULONG NumPathRanges,
     PVOID PathRange,
@@ -274,32 +288,37 @@ VP_STATUS VideoPortGetAccessRanges(
     return NO_ERROR;
 }
 
-VP_STATUS VideoPortCreateSecondaryDisplay(PVOID HwDeviceExtension, PVOID *SecondaryDeviceExtension, ULONG Flag) {
+VP_STATUS VPAPI VideoPortCreateSecondaryDisplay(PVOID HwDeviceExtension, PVOID *SecondaryDeviceExtension, ULONG Flag) {
     (void)HwDeviceExtension; (void)Flag;
     if (!SecondaryDeviceExtension) return ERROR_INVALID_PARAMETER;
+#if NVX_WIN98_SINGLE_MONITOR
+    *SecondaryDeviceExtension = NULL;
+    return ERROR_NOT_SUPPORTED;
+#else
     *SecondaryDeviceExtension = (PVOID)&g_SecondaryDevExt;
     return NO_ERROR;
+#endif
 }
 
-VP_STATUS VideoPortEnumerateChildren(PVOID HwDeviceExtension, PVOID Reserved) {
+VP_STATUS VPAPI VideoPortEnumerateChildren(PVOID HwDeviceExtension, PVOID Reserved) {
     (void)HwDeviceExtension; (void)Reserved;
     return NO_ERROR;
 }
 
-VOID VideoPortStallExecution(ULONG Microseconds) {
+VOID VPAPI VideoPortStallExecution(ULONG Microseconds) {
     for (volatile ULONG i = 0; i < Microseconds * 20; i++) {
         __asm__ __volatile__("outb %%al, $0x80" : : : "memory");
     }
 }
 
-VOID VideoPortZeroMemory(PVOID Destination, ULONG Length) {
+VOID VPAPI VideoPortZeroMemory(PVOID Destination, ULONG Length) {
     if (Destination && Length) {
         uint8_t *d = (uint8_t *)Destination;
         while (Length--) *d++ = 0;
     }
 }
 
-VOID VideoPortMoveMemory(PVOID Destination, PVOID Source, ULONG Length) {
+VOID VPAPI VideoPortMoveMemory(PVOID Destination, PVOID Source, ULONG Length) {
     if (Destination && Source && Length) {
         uint8_t *d = (uint8_t *)Destination;
         const uint8_t *s = (const uint8_t *)Source;
@@ -366,16 +385,22 @@ int strncmp(const char *s1, const char *s2, size_t n) {
 }
 
 /* VideoPortInitialize for Windows 98 SE */
-ULONG VideoPortInitialize(PVOID Context1, PVOID Context2, PVIDEO_HW_INITIALIZATION_DATA HwInitData, PVOID HwContext) {
+ULONG VPAPI VideoPortInitialize(PVOID Context1, PVOID Context2, PVIDEO_HW_INITIALIZATION_DATA HwInitData, PVOID HwContext) {
     (void)Context1; (void)Context2; (void)HwContext;
     NvxShimLog("NVX [SHIM]: VideoPortInitialize entered\n");
+    if (!HwInitData || !HwInitData->HwFindAdapter ||
+        !HwInitData->HwInitialize || !HwInitData->HwStartIO)
+        return ERROR_INVALID_PARAMETER;
+    g_NvxMiniportStartIo = HwInitData->HwStartIO;
     VIDEO_PORT_CONFIG_INFO configInfo;
     VideoPortZeroMemory(&configInfo, sizeof(configInfo));
     configInfo.Length = sizeof(configInfo);
     configInfo.SystemIoBusNumber = 0;
 
     VideoPortZeroMemory(&g_PrimaryDevExt, sizeof(g_PrimaryDevExt));
+#if !NVX_WIN98_SINGLE_MONITOR
     VideoPortZeroMemory(&g_SecondaryDevExt, sizeof(g_SecondaryDevExt));
+#endif
 
     /* 1. Find Primary Adapter */
     UCHAR again = 0;
@@ -391,14 +416,80 @@ ULONG VideoPortInitialize(PVOID Context1, PVOID Context2, PVIDEO_HW_INITIALIZATI
         return 1;
     }
 
-    /* 3. Initialize Secondary Head (Head 1, Lenovo 1440p) */
+    /* Secondary adapter support is deliberately disabled in the first Win98
+       target. The second 16-bit display driver is not attached. */
+#if !NVX_WIN98_SINGLE_MONITOR
     if (g_PrimaryDevExt.SecondaryDeviceExtension) {
         if (!HwInitData->HwInitialize(g_PrimaryDevExt.SecondaryDeviceExtension)) {
             NvxShimLog("NVX [SHIM]: Secondary HwInitialize failed!\n");
         }
     }
+#endif
 
     return NO_ERROR;
+}
+
+PVOID NTAPI VideoPortAllocatePool(PVOID HwDeviceExtension,
+                                  VP_POOL_TYPE PoolType,
+                                  SIZE_T NumberOfBytes, ULONG Tag)
+{
+    uint32_t pages, physical = 0;
+    NVX_VXD_POOL_HEADER *header;
+    (void)HwDeviceExtension; (void)PoolType; (void)Tag;
+    if (!NumberOfBytes || NumberOfBytes > 0xffffffffU - sizeof(*header))
+        return NULL;
+    pages = (uint32_t)((NumberOfBytes + sizeof(*header) + 4095U) >> 12);
+    header = (NVX_VXD_POOL_HEADER *)_PageAllocate(pages, 1, 0, 0, 0,
+        0xffffffffU, &physical, 0x0000000fU);
+    if (!header)
+        return NULL;
+    header->signature = NVX_VXD_POOL_SIGNATURE;
+    header->pages = pages;
+    return header + 1;
+}
+
+VOID NTAPI VideoPortFreePool(PVOID HwDeviceExtension, PVOID Ptr)
+{
+    NVX_VXD_POOL_HEADER *header;
+    (void)HwDeviceExtension;
+    if (!Ptr) return;
+    header = ((NVX_VXD_POOL_HEADER *)Ptr) - 1;
+    if (header->signature != NVX_VXD_POOL_SIGNATURE) return;
+    header->signature = 0;
+    _PageFree(header, 0);
+}
+
+HANDLE NTAPI PsGetCurrentProcessId(VOID)
+{
+    return (HANDLE)(ULONG_PTR)g_NvxShimCurrentProcessId;
+}
+
+ULONG NTAPI RtlRandomEx(PULONG Seed)
+{
+    ULONG value;
+    if (!Seed) return 0;
+    value = *Seed * 214013U + 2531011U;
+    *Seed = value;
+    return (value >> 16) & 0x7fffU;
+}
+
+PVOID NTAPI ExAllocatePoolWithTag(ULONG PoolType, ULONG_PTR NumberOfBytes,
+                                  ULONG Tag)
+{
+    return VideoPortAllocatePool(&g_PrimaryDevExt, (VP_POOL_TYPE)PoolType,
+                                 (SIZE_T)NumberOfBytes, Tag);
+}
+
+VOID NTAPI ExFreePool(PVOID Pointer)
+{
+    VideoPortFreePool(&g_PrimaryDevExt, Pointer);
+}
+
+VP_STATUS VPAPI VideoPortInt10(PVOID HwDeviceExtension,
+                               PVIDEO_X86_BIOS_ARGUMENTS BiosArguments)
+{
+    (void)HwDeviceExtension; (void)BiosArguments;
+    return ERROR_NOT_SUPPORTED;
 }
 
 /* GSP Firmware Dynamic Pointers */
@@ -413,6 +504,7 @@ static int NvxLoadFirmwareIntoMemory(VOID) {
     if (g_pNvxFirmwareStart) return 1;
 
     const char *paths[] = {
+        "C:\\WINDOWS\\SYSTEM\\GSPGA104.BIN",
         "C:\\WINDOWS\\SYSTEM\\GSP_GA104.BIN",
         "C:\\GSP_GA104.BIN",
         "C:\\DRIVER\\GSP_GA104.BIN"
@@ -420,7 +512,7 @@ static int NvxLoadFirmwareIntoMemory(VOID) {
 
     uint32_t hFile = 0;
     int found = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         NvxShimLog("NVX [FIRMWARE]: Probing for GSP container: ");
         NvxShimLog(paths[i]);
         NvxShimLog("\n");
@@ -495,7 +587,7 @@ static int NvxLoadFirmwareIntoMemory(VOID) {
 }
 
 /* VxD Device Init Entry Point (called from vxd_entry.asm) */
-extern ULONG DriverEntry(PVOID Context1, PVOID Context2);
+extern ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2);
 
 static void NvxEnableWriteCombining(uint32_t base, uint32_t size) {
     if (!base || !size) return;
@@ -530,6 +622,25 @@ VOID NvxVxDDeviceInit(VOID) {
     NvxShimLog("\n========================================\n");
     NvxShimLog(" NVX Miniport Driver (GA104 Win98 Ring 0 Authentic GSP)\n");
     NvxShimLog("========================================\n");
+    /* Keep the LE image small and allocate large adapter state through VMM.
+       Win9x locks preloaded VxD objects; embedding the full BO/session tables
+       there made the loader reject the module before this entry point ran. */
+    g_pPrimaryDevExt = (NVX_DEVICE_EXTENSION *)VideoPortAllocatePool(NULL,
+        (VP_POOL_TYPE)0, sizeof(*g_pPrimaryDevExt), 0x58564E50U);
+    if (!g_pPrimaryDevExt) {
+        NvxShimLog("NVX [SHIM]: Primary device-extension allocation failed\n");
+        return;
+    }
+#if !NVX_WIN98_SINGLE_MONITOR
+    g_pSecondaryDevExt = (NVX_DEVICE_EXTENSION *)VideoPortAllocatePool(NULL,
+        (VP_POOL_TYPE)0, sizeof(*g_pSecondaryDevExt), 0x58564E53U);
+    if (!g_pSecondaryDevExt) {
+        NvxShimLog("NVX [SHIM]: Secondary device-extension allocation failed\n");
+        VideoPortFreePool(NULL, g_pPrimaryDevExt);
+        g_pPrimaryDevExt = NULL;
+        return;
+    }
+#endif
     NvxShimLog("NVX [SHIM]: Calling DriverEntry...\n");
     ULONG st = DriverEntry(NULL, NULL);
     NvxShimLog("NVX [SHIM]: DriverEntry returned: 0x");
@@ -565,10 +676,12 @@ VOID NvxBootstrapGsp(VOID) {
     NvxShimLogHex(ok);
     NvxShimLog("\n");
 
+#if !NVX_WIN98_SINGLE_MONITOR
     if (g_PrimaryDevExt.GspCopyVerified) {
         NvxShimLog("NVX [NATIVE]: Win98 GSP copy verified! Training secondary DP link...\n");
         NvxGspTrainSecondaryDpLink(&g_PrimaryDevExt);
     }
+#endif
 
     if (bar0) {
         ULONG gspBar1Block = VideoPortReadRegisterUlong((PULONG)(bar0 + 0x1704));
@@ -612,8 +725,97 @@ typedef struct _NVX_HEAD_INFO {
     uint32_t Bpp;
 } NVX_HEAD_INFO;
 
+/* Win9x ABI adapter: pass the shared request unchanged to the same miniport
+ * handler used by the XP XDDM path. Keep policy, validation, and GPU packet
+ * construction in nvxmp.c / NvxGspSubmit* rather than cloning them here. */
+int NvxShimDispatchMiniportIoctl(uint32_t ioctlCode,
+                                void *inBuffer, uint32_t inBytes,
+                                void *outBuffer, uint32_t outBytes,
+                                uint32_t *bytesReturned) {
+    VIDEO_REQUEST_PACKET request;
+    STATUS_BLOCK statusBlock;
+    BOOLEAN started;
+
+    if (!g_NvxMiniportStartIo ||
+        ioctlCode < IOCTL_NVX_ACCEL_COPY ||
+        ioctlCode > IOCTL_NVX_ACCEL_FILL_RECT ||
+        (ioctlCode & 3U) != 0U ||
+        (inBytes && !inBuffer) || (outBytes && !outBuffer))
+        return -1;
+
+    VideoPortZeroMemory(&request, sizeof(request));
+    VideoPortZeroMemory(&statusBlock, sizeof(statusBlock));
+    request.IoControlCode = ioctlCode;
+    request.StatusBlock = &statusBlock;
+    request.InputBuffer = inBuffer;
+    request.InputBufferLength = inBytes;
+    request.OutputBuffer = outBuffer;
+    request.OutputBufferLength = outBytes;
+
+    started = g_NvxMiniportStartIo(&g_PrimaryDevExt, &request);
+    if (bytesReturned)
+        *bytesReturned = (uint32_t)statusBlock.Information;
+    return started && statusBlock.Status == NO_ERROR ? 0 : -1;
+}
+
+/* Shared GPU path for the narrow Win98 PM API: validate screen-space values,
+ * query the shared miniport's current scanout VA, then forward a standard
+ * miniport rectangle-fill request. No caller-supplied GPU pointer is trusted. */
+static int NvxVxDSubmitSolidRect(uint32_t x, uint32_t y,
+                                uint32_t width, uint32_t height,
+                                uint32_t color) {
+    PVIDEO_MODE_INFORMATION mode;
+    ULONG64 scanoutGpuVa = 0;
+    uint32_t bytesReturned = 0;
+    NVX_ACCEL_FILL_RECT_PARAMS params;
+
+    if (!g_pPrimaryDevExt ||
+        g_PrimaryDevExt.CurrentModeIndex >= g_PrimaryDevExt.NumModes ||
+        !width || !height || x > 0xffffU || y > 0xffffU ||
+        width > 0xffffU || height > 0xffffU)
+        return -1;
+    mode = &g_PrimaryDevExt.Modes[g_PrimaryDevExt.CurrentModeIndex];
+    if (mode->BitsPerPlane * mode->NumberOfPlanes != 32U ||
+        x >= mode->VisScreenWidth || y >= mode->VisScreenHeight ||
+        width > mode->VisScreenWidth - x ||
+        height > mode->VisScreenHeight - y ||
+        width > 0x3fffffffU || mode->ScreenStride < width * 4U)
+        return -1;
+
+    if (NvxShimDispatchMiniportIoctl(IOCTL_NVX_SCANOUT_GPU_VA,
+                                     NULL, 0, &scanoutGpuVa,
+                                     sizeof(scanoutGpuVa), &bytesReturned) ||
+        bytesReturned != sizeof(scanoutGpuVa) || !scanoutGpuVa)
+        return -1;
+
+    params.DstGpuVa = scanoutGpuVa + (ULONG64)y * mode->ScreenStride +
+                      (ULONG64)x * 4ULL;
+    params.Color = color;
+    params.Pitch = mode->ScreenStride;
+    params.BytesPerLine = width * 4U;
+    params.LineCount = height;
+    return NvxShimDispatchMiniportIoctl(IOCTL_NVX_ACCEL_FILL_RECT,
+                                        &params, sizeof(params), NULL, 0,
+                                        NULL);
+}
+
+void NvxVxDPMDispatch(uint32_t vmHandle, NVX_CLIENT_REGS32 *clientRegs) {
+    uint32_t result = 1U;
+    (void)vmHandle;
+    if (clientRegs && clientRegs->ebx == 1U) {
+        result = NvxVxDSubmitSolidRect(
+            clientRegs->ecx, clientRegs->edx,
+            clientRegs->esi, clientRegs->edi, clientRegs->eax) == 0 ? 0U : 1U;
+        clientRegs->eax = result;
+    } else if (clientRegs) {
+        clientRegs->eax = result;
+    }
+}
+
 int NvxVxDDeviceIoControl(DIOCParams *params) {
     if (!params) return 0;
+    g_NvxShimCurrentProcessId = params->tagProcess ? params->tagProcess :
+                                (params->VMHandle ? params->VMHandle : 1U);
     NvxShimLog("NVX [IOCTL]: Received dwIoControlCode=0x");
     NvxShimLogHex(params->dwIoControlCode);
     NvxShimLog("\n");
@@ -637,6 +839,9 @@ int NvxVxDDeviceIoControl(DIOCParams *params) {
         }
 
         case IOCTL_NVX_GET_HEAD1_INFO: {
+#if NVX_WIN98_SINGLE_MONITOR
+            return -1;
+#else
             if (params->lpvOutBuffer && params->cbOutBuffer >= sizeof(NVX_HEAD_INFO)) {
                 NVX_HEAD_INFO *info = (NVX_HEAD_INFO *)params->lpvOutBuffer;
                 info->PhysLfb = g_SecondaryDevExt.PhysicalBar1.LowPart;
@@ -648,6 +853,7 @@ int NvxVxDDeviceIoControl(DIOCParams *params) {
                 return 0;
             }
             return -1;
+#endif
         }
 
         case IOCTL_NVX_GPU_COPY:
@@ -656,14 +862,21 @@ int NvxVxDDeviceIoControl(DIOCParams *params) {
             return 0;
 
         case IOCTL_NVX_TRAIN_DP:
+#if NVX_WIN98_SINGLE_MONITOR
+            return -1;
+#else
             if (g_PrimaryDevExt.GspInitialized && g_PrimaryDevExt.SecondaryDpTrainReady) {
                 NvxShimLog("NVX [DP]: Secondary DP link training requested via IOCTL.\n");
                 NvxGspTrainSecondaryDpLink(&g_PrimaryDevExt);
                 return 0;
             }
             return -1;
+#endif
 
         case IOCTL_NVX_SET_SECONDARY_SCANOUT:
+#if NVX_WIN98_SINGLE_MONITOR
+            return -1;
+#else
             NvxShimLog("NVX [IOCTL]: Triggering dual hardware scanout...\n");
             if (!g_PrimaryDevExt.FramebufferVirtual && g_PrimaryDevExt.PhysicalBar1.LowPart) {
                 g_PrimaryDevExt.FramebufferVirtual = _MapPhysToLinear(g_PrimaryDevExt.PhysicalBar1.LowPart, 0x01000000, 0);
@@ -673,8 +886,21 @@ int NvxVxDDeviceIoControl(DIOCParams *params) {
             NvxShimLogHex(scanOk);
             NvxShimLog("\n");
             return scanOk ? 0 : -1;
+#endif
 
         default:
+            /* Windows 9x's VxD DIOC is the transport for the shared miniport
+               escape ABI. Preserve the caller's synchronous buffer lifetime
+               while forwarding it to the same HwStartIO handler used by XP. */
+            if (params->dwIoControlCode >= IOCTL_NVX_ACCEL_COPY &&
+                params->dwIoControlCode <= IOCTL_NVX_ACCEL_FILL_RECT &&
+                (params->dwIoControlCode & 3U) == 0U) {
+                return NvxShimDispatchMiniportIoctl(
+                    params->dwIoControlCode,
+                    params->lpvInBuffer, params->cbInBuffer,
+                    params->lpvOutBuffer, params->cbOutBuffer,
+                    params->lpcbBytesReturned);
+            }
             return 0;
     }
 }

@@ -672,6 +672,8 @@ void scr_write(WORD y, WORD x, WORD n, const BYTE *buf);
 void scr_fill(WORD y, WORD x, WORD n, DWORD pix);
 void vram_write(WORD y, WORD x, WORD n, const BYTE *buf);   /* not the shadow (cursor) */
 void shadow_flush(WORD l, WORD t, WORD r, WORD b);
+void scr_fill_shadow(WORD y, WORD x, WORD n, DWORD pix);
+BOOL nvx_accel_fill_rect(SHORT x, SHORT y, SHORT w, SHORT h, DWORD color);
 void vram_clear(void);                                       /* the whole mode, black */           /* shadow -> video memory */
 /* colour correction (surf.c) */
 extern BYTE lut_on, lut_hc, lutc[3][256];

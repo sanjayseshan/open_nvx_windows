@@ -1,7 +1,7 @@
 ;
 ; NVX Display Driver Installation File for Windows 98 SE
 ; Architecture: NVIDIA GA104 (GeForce RTX 3070 / RTX 3060 Ti)
-; Target: Dynamic resolution selection up to 2560x1440 @ 32bpp
+; Target: modes validated by the current VBE scanout path (native 2560x1440 is not implemented)
 ;
 
 [Version]
@@ -14,14 +14,15 @@ DriverVer   = 11/08/2026, 2.0.0.1
 [DestinationDirs]
 DefaultDestDir = 11    ; LDID_SYS (C:\WINDOWS\SYSTEM)
 Driver.Copy    = 11
+Firmware.Copy = 11
 
 [SourceDisksNames]
 1 = %DiskName%,,0
 
 [SourceDisksFiles]
 nvx.drv = 1
-nvx2.drv = 1
 nvx.vxd = 1
+GSPGA104.BIN = 1
 
 [Manufacturer]
 %Mfg% = NVIDIA
@@ -35,15 +36,17 @@ nvx.vxd = 1
 %NV3060_GA104%= NVX_Inst, PCI\VEN_10DE&DEV_24C7
 
 [NVX_Inst]
-CopyFiles = Driver.Copy
+CopyFiles = Driver.Copy, Firmware.Copy
 DelReg    = Driver.DelReg
 AddReg    = Driver.AddReg
 UpdateInis= Driver.Inis
 
 [Driver.Copy]
 nvx.drv
-nvx2.drv
 nvx.vxd
+
+[Firmware.Copy]
+GSPGA104.BIN
 
 [Driver.Inis]
 system.ini,boot,,"display.drv=nvx.drv"
@@ -60,44 +63,21 @@ HKR,CURRENT
 HKR,,Ver,,4.0
 HKR,,DevLoader,,*vdd
 HKR,DEFAULT,drv,,nvx.drv
-HKR,DEFAULT,drv2,,nvx2.drv
 HKR,DEFAULT,vdd,,"*vdd,*vflatd"
 HKR,DEFAULT,RefreshRate,,-1
 HKR,DEFAULT,DDC,,1
 
-; Standard mode entries for dynamic user resolution selection
-HKR,"MODES\8\640,480"
-HKR,"MODES\8\800,600"
-HKR,"MODES\8\1024,768"
-HKR,"MODES\8\1280,720"
-HKR,"MODES\8\1280,1024"
-HKR,"MODES\8\1920,1080"
-HKR,"MODES\8\2560,1440"
-
+; Conservative mode list; VBE mode validation is authoritative.
 HKR,"MODES\16\640,480"
 HKR,"MODES\16\800,600"
 HKR,"MODES\16\1024,768"
-HKR,"MODES\16\1280,720"
 HKR,"MODES\16\1280,1024"
-HKR,"MODES\16\1920,1080"
-HKR,"MODES\16\2560,1440"
-
-HKR,"MODES\24\640,480"
-HKR,"MODES\24\800,600"
-HKR,"MODES\24\1024,768"
-HKR,"MODES\24\1280,720"
-HKR,"MODES\24\1280,1024"
-HKR,"MODES\24\1920,1080"
-HKR,"MODES\24\2560,1440"
 
 HKR,"MODES\32\640,480"
 HKR,"MODES\32\800,600"
 HKR,"MODES\32\1024,768"
-HKR,"MODES\32\1280,720"
 HKR,"MODES\32\1280,1024"
-HKR,"MODES\32\1600,900"
 HKR,"MODES\32\1920,1080"
-HKR,"MODES\32\2560,1440"
 
 [Strings]
 Mfg           = "NVIDIA Corporation (Win98SE Port)"

@@ -531,6 +531,15 @@ void scr_fill(WORD y, WORD x, WORD n, DWORD pix)
     }
 }
 
+/* Update only the authoritative DIBENG shadow after a GPU scanout fill. */
+void scr_fill_shadow(WORD y, WORD x, WORD n, DWORD pix)
+{
+    if (!g.shadow || !n || y >= g.lh || x >= g.lw) return;
+    if (n > g.lw - x) n = g.lw - x;
+    fill_bytes((DWORD)y * g.spitch + (DWORD)x * g.Bpp,
+               n * g.Bpp, pix, 1);
+}
+
 /* ---------------- memory bitmaps ------------------------------------ */
 
 /* a memory bitmap of more than 64 KB without the tiled layout of GDI

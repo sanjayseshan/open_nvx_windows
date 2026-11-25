@@ -334,6 +334,7 @@ typedef struct _VIDEO_SHARE_MEMORY {
 #define IOCTL_NVX_3D_UPLOAD_SPANS         CTL_CODE(FILE_DEVICE_VIDEO, 0x217, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_NVX_3D_PRESENT_BATCH        CTL_CODE(FILE_DEVICE_VIDEO, 0x218, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_NVX_3D_MAP_BUFFER           CTL_CODE(FILE_DEVICE_VIDEO, 0x219, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_NVX_ACCEL_FILL_RECT         CTL_CODE(FILE_DEVICE_VIDEO, 0x21A, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define NVX_UPLOAD_KIND_COPYBITS         1UL
 #define NVX_UPLOAD_KIND_BITBLT           2UL
 #define NVX_UPLOAD_KIND_TEXTOUT          3UL
@@ -352,6 +353,16 @@ typedef struct _NVX_ACCEL_FILL_PARAMS {
     ULONG   Color;
     ULONG   Bytes;
 } NVX_ACCEL_FILL_PARAMS, *PNVX_ACCEL_FILL_PARAMS;
+
+/* Screen-space solid fill. The miniport validates the scanout base, pitch,
+ * row span and height, then reuses the existing NVC0 fill submission path. */
+typedef struct _NVX_ACCEL_FILL_RECT_PARAMS {
+    ULONG64 DstGpuVa;
+    ULONG   Color;
+    ULONG   Pitch;
+    ULONG   BytesPerLine;
+    ULONG   LineCount;
+} NVX_ACCEL_FILL_RECT_PARAMS, *PNVX_ACCEL_FILL_RECT_PARAMS;
 
 typedef struct _NVX_ACCEL_UPLOAD_PARAMS {
     ULONG64 DstGpuVa;

@@ -39,6 +39,21 @@ typedef struct _DIOCParams {
 } DIOCParams;
 
 int NvxVxDDeviceIoControl(DIOCParams *params);
+/* Forward an unchanged shared NVX IOCTL through the XP-compatible HwStartIO
+ * ABI. Win98 entry points should marshal OS-specific buffers here instead
+ * of reimplementing GPU commands or OpenRM policy. */
+int NvxShimDispatchMiniportIoctl(uint32_t ioctlCode,
+                                void *inBuffer, uint32_t inBytes,
+                                void *outBuffer, uint32_t outBytes,
+                                uint32_t *bytesReturned);
+
+/* Win98 protected-mode API callback register frame (VMM CLIENT_STRUCT). */
+typedef struct _NVX_CLIENT_REGS32 {
+    uint32_t edi, esi, ebp, reserved0;
+    uint32_t ebx, edx, ecx, eax;
+} NVX_CLIENT_REGS32;
+
+void NvxVxDPMDispatch(uint32_t vmHandle, NVX_CLIENT_REGS32 *clientRegs);
 
 #ifdef __cplusplus
 }

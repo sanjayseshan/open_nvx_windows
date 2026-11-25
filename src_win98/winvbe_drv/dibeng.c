@@ -148,7 +148,9 @@ static WORD dirty_l, dirty_t, dirty_r, dirty_b;
 static BYTE dirty_pending = 0;
 static WORD access_depth = 0;
 
-void __far __pascal my_BeginAccess(LPVOID lpDevice, WORD left, WORD top, WORD right, WORD bottom, WORD flags)
+/* DIBENG calls these through far pointers while executing in its own module
+   context.  Load this driver's DGROUP before touching dirty-region globals. */
+void __far __pascal __loadds my_BeginAccess(LPVOID lpDevice, WORD left, WORD top, WORD right, WORD bottom, WORD flags)
 {
     if (dibe_tab[DT_BEGINACCESS])
         ((PF_BEGIN)dibe_tab[DT_BEGINACCESS])(lpDevice, left, top, right, bottom, flags);
@@ -172,7 +174,7 @@ void __far __pascal my_BeginAccess(LPVOID lpDevice, WORD left, WORD top, WORD ri
     }
 }
 
-void __far __pascal my_EndAccess(LPVOID lpDevice, WORD flags)
+void __far __pascal __loadds my_EndAccess(LPVOID lpDevice, WORD flags)
 {
     if (dibe_tab[DT_ENDACCESS])
         ((PF_END)dibe_tab[DT_ENDACCESS])(lpDevice, flags);

@@ -9,6 +9,10 @@ segment _DATA public class=DATA use16 align=2
 segment _BSS public class=BSS use16 align=2
 group DGROUP _DATA _BSS
 
+segment _DATA
+        global  _nvx_vxd_api_entry_asm
+_nvx_vxd_api_entry_asm dd 0
+
         extern  rmr                 ; RMREGS (C)
         extern  rm_stack_seg
         extern  rm_stack_top
@@ -36,6 +40,31 @@ i2f_top:
 %endif
 
 segment ENTRY_TEXT public class=CODE use16 align=16
+
+; DWORD far cdecl nvx_pm_fill_call(x,y,w,h,color)
+; VxD PM API client registers: EBX=operation, ECX=x, EDX=y,
+; ESI=width, EDI=height, EAX=color. The PM API returns status in EAX.
+        global  _nvx_pm_fill_call
+_nvx_pm_fill_call:
+        push    bp
+        mov     bp,sp
+        push    ebx
+        push    esi
+        push    edi
+        movzx   ecx,word [bp+6]
+        movzx   edx,word [bp+8]
+        movzx   esi,word [bp+10]
+        movzx   edi,word [bp+12]
+        mov     eax,dword [bp+14]
+        mov     ebx,1
+        call    far [_nvx_vxd_api_entry_asm wrt DGROUP]
+        mov     edx,eax
+        shr     edx,16
+        pop     edi
+        pop     esi
+        pop     ebx
+        pop     bp
+        retf
 
         global  LibEntry
 ..start:

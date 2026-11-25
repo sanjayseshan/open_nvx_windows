@@ -9,6 +9,13 @@ cd "$ROOT_DIR"
 NVX_DRIVER_ISO="${NVX_DRIVER_ISO:-$ROOT_DIR/nvx_driver_full.iso}"
 NVX_SERIAL_LOG="${NVX_SERIAL_LOG:-$ROOT_DIR/vm_serial.log}"
 NVX_VM_MEMORY_MB="${NVX_VM_MEMORY_MB:-1024}"
+NVX_IMG="${NVX_IMG:-$ROOT_DIR/win98_small.img}"
+NVX_IMG_FORMAT="${NVX_IMG_FORMAT:-raw}"
+NVX_QEMU_DEBUG_LOG="${NVX_QEMU_DEBUG_LOG:-}"
+NVX_QEMU_DEBUG_ARGS=()
+if [ -n "$NVX_QEMU_DEBUG_LOG" ]; then
+    NVX_QEMU_DEBUG_ARGS=(-d int,cpu_reset,guest_errors -D "$NVX_QEMU_DEBUG_LOG")
+fi
 
 NVX_QEMU_CDROM_ARGS=()
 if [ -f "$NVX_DRIVER_ISO" ]; then
@@ -53,11 +60,11 @@ for dev in /dev/vfio/vfio "${VFIO_GROUP_NODES[@]}" "$LOGITECH_KBD" "$LOGITECH_MO
 done
 
 for _ in $(seq 1 50); do
-    qemu-img info "$ROOT_DIR/win98_small.img" >/dev/null 2>&1 && break
+    qemu-img info "$NVX_IMG" >/dev/null 2>&1 && break
     sleep 0.1
 done
-if ! qemu-img info "$ROOT_DIR/win98_small.img" >/dev/null 2>&1; then
-    echo "Error: win98_small.img is still locked; refusing to start QEMU." >&2
+if ! qemu-img info "$NVX_IMG" >/dev/null 2>&1; then
+    echo "Error: $NVX_IMG is unavailable or locked; refusing to start QEMU." >&2
     exit 1
 fi
 
@@ -68,10 +75,11 @@ echo "Display Output: Monitor plugged into the RTX 3070"
 echo "Driver CD: $NVX_CDROM_STATUS"
 echo "Serial log: $NVX_SERIAL_LOG"
 echo "Guest RAM: ${NVX_VM_MEMORY_MB} MB (memlock: ${NVX_MEMLOCK_KB} KB)"
-echo "Input: Dedicated Logitech Keyboard & Mouse (PS/2 mapping)"
+echo "Input: Dedicated Logitech keyboard & mouse via evdev to QEMU PS/2"
 echo "------------------------------------------------------------------"
 
 qemu-system-x86_64 \
+    -machine pc,i8042=on \
     -enable-kvm \
     -m "$NVX_VM_MEMORY_MB" \
     -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
@@ -80,11 +88,12 @@ qemu-system-x86_64 \
     -net none \
     -device vfio-pci,host=01:00.0,multifunction=on,x-vga=on,addr=02.0 \
     -device vfio-pci,host=01:00.1,addr=02.1 \
-    -drive file="$ROOT_DIR/win98_small.img",format=raw,if=ide \
+    -drive file="$NVX_IMG",format="$NVX_IMG_FORMAT",if=ide \
     "${NVX_QEMU_CDROM_ARGS[@]}" \
     -object input-linux,id=logitech_kbd,evdev="$LOGITECH_KBD",grab_all=on,repeat=on \
     -object input-linux,id=logitech_mouse,evdev="$LOGITECH_MOUSE" \
     -serial "file:$NVX_SERIAL_LOG" \
+    "${NVX_QEMU_DEBUG_ARGS[@]}" \
     -qmp unix:/tmp/qmp-win98.sock,server,nowait \
     -monitor unix:/tmp/qemu-monitor.sock,server,nowait \
     -monitor stdio

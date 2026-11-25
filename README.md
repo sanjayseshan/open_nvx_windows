@@ -25,7 +25,7 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 | **Driver Architecture** | Windows 2000/XP Display Driver Model (XDDM 32-bit) | Windows XP Display Driver Model (XDDM 64-bit) | Hybrid Ring 0 VxD + 16-bit GDI Display Driver |
 | **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
 | **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0) & `nvx2.drv` (Head 1) (16-bit NE) |
-| **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | Partial Acceleration (DIB Engine RAM shadow buffer + burst VRAM flush) |
+| **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | GPU-backed 32bpp GDI solid fills via VxD/OpenRM; CPU fallback for other operations |
 | **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Software rasterization |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
 | **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Dual display drivers (`nvx.drv` + `nvx2.drv`) & desktop extension via `attach_sec.exe` |
@@ -126,16 +126,16 @@ The x86 diagram is the same graphics route without WoW64: every application and 
 
 ```mermaid
 flowchart TB
-  APP[Win32 applications / GDI] --> DIB[DIB Engine display drivers<br/>nvx.drv and nvx2.drv]
-  DIB --> VXD[nvx.vxd<br/>VMM ring-0 device]
+  APP[Win98 GDI solid fills] --> DIB[nvx.drv BitBlt<br/>DibEngine=0]
+  DIB --> VXD[nvx.vxd<br/>VxD PM service + DIOC]
   VXD --> SHIM[VideoPort compatibility shim]
-  SHIM --> CORE[Shared GPU initialization<br/>and display services]
+  SHIM --> CORE[Shared miniport<br/>HwStartIO + OpenRM/GSP]
   CORE --> RM[GSP-RM firmware]
   RM --> GPU[RTX GPU]
   UTIL[attach_sec.exe] -. secondary-head setup .-> APP
 ```
 
-This path uses the DIB engine and a RAM shadow/flush strategy for desktop drawing; it is not the XP OpenGL ICD path. See [src_win98/README.md](src_win98/README.md) for design and setup details.
+The tested Win98 path sends eligible 32bpp GDI solid fills through `nvx.drv` and a VxD shim into the same validated OpenRM/GSP miniport submission used by XP. `DibEngine=0` is required because DIBENG otherwise bypasses the driver's BitBlt callback. Other 2D operations currently fall back to CPU rendering, and application-level 3D is not connected. See [src_win98/README.md](src_win98/README.md) for test evidence and remaining work.
 
 ---
 

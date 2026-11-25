@@ -2,26 +2,45 @@
 
 ## Current status
 
-- RTX 3070 GA104 is the only validated GPU. XP x64 is the primary development target; a separate native XP x86 build is now also exercised.
-- User reports a completed **5,409 3DMark05** result with the current x86 Gallium Nine path. Earlier x86 runs had black-screen behavior; the new score establishes that a benchmark completed, but this install package has not yet been tested from `dist32/install.bat`.
-- The x86 D3D9 implementation is Gallium Nine from Mesa 25.1.6. It uses the Nouveau/NVC0 path and is distinct from WineD3D. WineD3D supplies D3D8 and DirectDraw in the native x86 package.
-- `dist32/install.bat` now targets native XP x86 only, rejects WoW64, backs up replaced files, installs the x86 miniport/display driver, Mesa OpenGL ICD, Nine D3D9 and WineD3D runtime components, registers the ICD, and stages optional tests.
-- `README.md` now separates XP x64 WoW64 applications from the native XP x86 architecture and documents the x86 package assembly/install flow.
-- The `vm_serial.log` symlink still points at `test_logs/xp_v2_20261124-145620.log`; it is a prior diagnostic log, not a live feed from the latest user-reported benchmark. No QEMU process was active at last inspection.
+- RTX 3070 GA104 is the only hardware validated so far.
+- Windows XP x64 has the mature OpenGL/Nouveau path. Native XP x86 Gallium Nine has completed 3DMark05; latest user-reported score was 5,409. The x86 release installer still needs a clean-package install validation.
+- Win98 SE now has a runtime-proven first hardware 2D path: 32bpp GDI solid fills reach the GA104 copy engine through the 16-bit display driver's BitBlt callback, a Win98 VxD PM shim, and the shared XP miniport/OpenRM/GSP submission.
+- Win98 hardware run `test_logs/win98-20261124-214215.log` booted successfully and remains running. It shows 1920x1080x32, `DibEngine=0`, PM API connected, and 32 validated fill rectangles. The miniport emits each success record only after all row submissions complete. Guest `C:\NVXFILL.LOG` contains `START`/`PAINT` from the GDI fill probe.
+- Leave the VM running for physical monitor inspection. The six-color probe and desktop rendering need visual confirmation; serial confirms command completion, not pixel color correctness.
+- Win98 supports only the accelerated solid-fill case currently. Other GDI operations use CPU fallback; application OpenGL/Direct3D acceleration is not connected.
+
+## Win98 path and constraints
+
+```text
+Win98 GDI solid fill
+  -> nvx.drv BitBlt -> VxD PM API -> NVX.VXD DIOC
+  -> shared HwStartIO -> OpenRM/GSP -> AMPERE_DMA_COPY_B -> scanout VRAM
+  -> synchronized driver shadow
+```
+
+- `DibEngine=0` is necessary: DIBENG draws into its own DIB shadow and bypasses our display driver's BitBlt callback.
+- The private development PM service ID `0x7d00` is currently used to connect the 16-bit driver to the VxD. Do not distribute this build until the ID is assigned collision-free.
+- GPU writes use the existing shared `NvxGspSubmitFill` helper and wait for its completion fence. No GPU packet construction was added to the Win98 driver.
+- Primary output is currently 1920x1080; synthetic primary 2560x1440 caused stripes and remains disabled. The separate optional head-1 path is not part of this single-monitor test.
+- SYSTEM.INI updater must retain exactly `[boot] mouse.drv=mouse.drv` and `[386Enh] mouse=*vmouse`; cursor still needs visual confirmation.
+- Win98 GART user mapping remains fail-closed. Do not expose kernel mappings to application processes. A future Mesa/Nouveau ICD needs a safe Win9x mapping or validated shared-ring design.
 
 ## Next steps
 
-1. Assemble `dist32/` using the README commands after building the current x86 driver, Mesa ICD, WineD3D and Nine outputs.
-2. Review and test `dist32/install.bat` on native XP x86; it has only been statically reviewed so far.
-3. Capture a fresh serial log on the next VFIO run and record whether 5,409 is the final score and which game tests completed.
+1. Ask user to visually confirm the physical screen and color-fill probe; do not stop the VM before then.
+2. Add a deterministic readback/pixel validation for the GDI fill probe.
+3. Replace PM ID `0x7d00` with a registered/collision-free identifier before distributing.
+4. Profile synchronous per-row fence waits; batch validated fills through a VxD-owned queue while preserving synchronization and CPU fallback.
+5. Add SRCCOPY only after format, pitch, overlap, shadow, and fallback behavior are covered by tests.
+6. Keep DirectDraw 3D capability flags honest. Win98 OpenGL/D3D remains future work; reuse Mesa9x/Nouveau and the current NVX VxD transport rather than adding a parallel GPU command encoder.
 
 ## Relevant files
 
-- `dist32/install.bat` — native XP x86 installer.
-- `dist32/nvx.inf` — x86 display adapter INF.
-- `test/install_xp32_driver_and_tests.sh` — offline image deployment path.
-- `test/run_vfio_vm_xp32.sh`, `test/run_vfio_xp32_autoretry.sh` — x86 VFIO runners. Always use `NVX_AUTO_RETRY=1` for VFIO starts.
-- `mesa_patches/nine/mesa99.c`, `mesa_patches/nine/nine_present.c` — x86 Gallium Nine adapter and present bridge.
-- `README.md` — architecture, build and install instructions.
-
-Increment the driver version for each new test build. Restore `vm_serial.log` to the x64 log after x86 testing.
+- `src_win98/winvbe_drv/blt.c`, `surf.c`, `enable.c` — GDI fill route, shadow synchronization, and mode setup.
+- `src_win98/vxd_entry.asm`, `shim/videoprt_shim.c/.h` — PM entry and shared-IOCTL forwarding.
+- `src_driver/miniport.h`, `nvxmp.c`, `nvx_gsp.h` — shared fill ABI, validation, CE submission/fence.
+- `test/win98_fill_probe.c` — Win32 solid-fill verification app.
+- `test/update_win98_driver.sh` — deploys package and sets `DibEngine=0` and the required mouse entries.
+- `test/run_vfio_win98_autoretry.sh` — VFIO boot; use auto-retry (`MAX_RETRIES=6 BOOT_TIMEOUT=45` was used for the latest run).
+- `test_logs/win98-20261124-214215.log` — latest live serial log; `vm_serial.log` points to it.
+- `src_win98/README.md`, `README.md` — build, install, architecture and current validation status.

@@ -322,12 +322,40 @@ typedef struct _VIDEO_MODE_DEF {
 #define NVX_TRACE_HOTPATH 0
 #endif
 
+#ifndef NVX_3D_USER_BUFFER_SLOTS
+#if defined(NVX_WIN98)
+/* Win9x loads the MiniVDD as one preloaded LE object. 8192 full BO
+ * descriptors make each static device extension nearly 4 MiB, which makes
+ * the VxD itself too large to load reliably. Keep the 9x registry bounded;
+ * NT builds retain their larger capacity. */
+#define NVX_3D_USER_BUFFER_SLOTS 1024U
+#else
 #define NVX_3D_USER_BUFFER_SLOTS 8192U
+#endif
+#endif
+#ifndef NVX_3D_CLIENT_SESSION_SLOTS
+#if defined(NVX_WIN98)
+#define NVX_3D_CLIENT_SESSION_SLOTS 8U
+#else
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
+#endif
+#endif
 #define NVX_3D_FENCE_TRACK_SLOTS 1024U
 #define NVX_3D_MAX_INFLIGHT_BATCHES 256U
+#ifndef NVX_NVC0_CAPTURE_BATCH_SLOTS
+#if defined(NVX_WIN98)
+#define NVX_NVC0_CAPTURE_BATCH_SLOTS 2U
+#else
 #define NVX_NVC0_CAPTURE_BATCH_SLOTS 4U
+#endif
+#endif
+#ifndef NVX_NVC0_CAPTURE_DWORDS
+#if defined(NVX_WIN98)
+#define NVX_NVC0_CAPTURE_DWORDS 128U
+#else
 #define NVX_NVC0_CAPTURE_DWORDS 512U
+#endif
+#endif
 typedef struct _NVX_NVC0_BATCH_CAPTURE {
     ULONG64 FenceValue, PushGpuVa;
     ULONG DwordCount, CapturedDwords, ReferenceCount;

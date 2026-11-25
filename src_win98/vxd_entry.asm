@@ -8,19 +8,20 @@ global _Control_Dispatcher
 extern _NvxVxDDeviceInit
 extern _NvxVxDInitComplete
 extern _NvxVxDDeviceIoControl
+extern _NvxVxDPMDispatch
 
 ; DDB Structure (offset 0 in flat binary)
 _DDB:
     dd 0                    ; 00h: DDB_Next
     dw 0x0400               ; 04h: DDB_SDK_Version (Windows 4.0)
-    dw 0                    ; 06h: DDB_Req_Device_Number (undefined)
+    dw 0x7d00               ; 06h: NVX private development VxD ID (PM API)
     db 1, 0                 ; 08h: DDB_Dev_Major_Version, DDB_Dev_Minor_Version
     dw 0                    ; 0Ah: DDB_Flags
     db "NVX     "           ; 0Ch: DDB_Name (8 chars blank padded)
     dd 0x02800001           ; 14h: DDB_Init_Order (VDD_Init_Order + 1 for MiniVDD)
     dd _Control_Dispatcher  ; 18h: DDB_Control_Proc
     dd 0                    ; 1Ch: DDB_V86_API_Proc
-    dd 0                    ; 20h: DDB_PM_API_Proc
+    dd _NvxVxDPMApi         ; 20h: DDB_PM_API_Proc
     dd 0                    ; 24h: DDB_V86_API_CSIP
     dd 0                    ; 28h: DDB_PM_API_CSIP
     dd 0                    ; 2Ch: DDB_Reference_Data
@@ -62,5 +63,14 @@ _Control_Dispatcher:
     call _NvxVxDDeviceIoControl
     add esp, 4
     clc
+    ret
+
+; Protected-mode API call-in for the 16-bit Win98 display driver.
+; VMM enters with EBX = VM handle and EBP = CLIENT_STRUCT pointer.
+_NvxVxDPMApi:
+    push ebp
+    push ebx
+    call _NvxVxDPMDispatch
+    add esp, 8
     ret
 

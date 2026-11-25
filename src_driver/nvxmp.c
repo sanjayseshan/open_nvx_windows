@@ -1099,8 +1099,8 @@ VP_STATUS NTAPI HwVidFindAdapter(
     {
         USHORT pciDev[2] = {0, 0};
         UCHAR pciRevision = 0;
-        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, 0, pciDev, 0x00, sizeof(pciDev));
-        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, 0,
+        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, devExt->PciSlot, pciDev, 0x00, sizeof(pciDev));
+        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, devExt->PciSlot,
                             &pciRevision, 0x08, sizeof(pciRevision));
         devExt->DeviceId=pciDev[1];
         devExt->RevisionId=pciRevision;
@@ -1122,13 +1122,15 @@ VP_STATUS NTAPI HwVidFindAdapter(
     /* Ensure PCI Command Register has Memory Space & Bus Master enabled */
     {
         USHORT pciCmd = 0;
-        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, 0, &pciCmd, 0x04, sizeof(pciCmd));
+        VideoPortGetBusData(HwDeviceExtension, PCIConfiguration, devExt->PciSlot,
+                            &pciCmd, 0x04, sizeof(pciCmd));
         LogStr("NVX: Initial PCI Command: 0x");
         LogHex(pciCmd);
         LogStr("\n");
         if ((pciCmd & 0x0006) != 0x0006) {
             pciCmd |= 0x0007; /* I/O + Memory + Bus Master */
-            VideoPortSetBusData(HwDeviceExtension, PCIConfiguration, 0, &pciCmd, 0x04, sizeof(pciCmd));
+            VideoPortSetBusData(HwDeviceExtension, PCIConfiguration, devExt->PciSlot,
+                                &pciCmd, 0x04, sizeof(pciCmd));
             LogStr("NVX: Enabled PCI Memory & BusMastering: 0x");
             LogHex(pciCmd);
             LogStr("\n");
@@ -2971,6 +2973,7 @@ BOOLEAN NTAPI HwVidStartIO(
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_UPLOAD &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL_RECT &&
        RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_SUBMIT_BATCH &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_COPY &&
@@ -3776,6 +3779,72 @@ BOOLEAN NTAPI HwVidStartIO(
             }
         } else {
             status = ERROR_DEVICE_NOT_READY;
+        }
+        break;
+    }
+
+    case IOCTL_NVX_ACCEL_FILL_RECT: {
+        PNVX_ACCEL_FILL_RECT_PARAMS params =
+            (PNVX_ACCEL_FILL_RECT_PARAMS)RequestPacket->InputBuffer;
+        PNVX_DEVICE_EXTENSION engine = devExt->IsSecondaryDisplay ?
+            (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension : devExt;
+        PVIDEO_MODE_INFORMATION mode;
+        ULONG64 base, surfaceBytes, offset;
+        ULONG row;
+        static ULONG s_fillRectCount;
+
+        if (!params || RequestPacket->InputBufferLength != sizeof(*params)) {
+            status = ERROR_INVALID_PARAMETER;
+            break;
+        }
+        if (!engine || !engine->GspCopyVerified || engine->GspChannelFaulted ||
+            devExt->CurrentModeIndex >= devExt->NumModes ||
+            !params->BytesPerLine || !params->LineCount ||
+            params->BytesPerLine > params->Pitch || params->Pitch == 0 ||
+            (params->BytesPerLine & 3U) || (params->DstGpuVa & 3ULL) ||
+            params->LineCount > 4096U) {
+            status = ERROR_NOT_SUPPORTED;
+            break;
+        }
+        mode = &devExt->Modes[devExt->CurrentModeIndex];
+        if (params->Pitch != mode->ScreenStride ||
+            mode->BitsPerPlane * mode->NumberOfPlanes != 32U) {
+            status = ERROR_NOT_SUPPORTED;
+            break;
+        }
+        base = engine->GspVramGpuVa +
+            (devExt->IsSecondaryDisplay ? 0x2000000ULL : 0ULL);
+        surfaceBytes = (ULONG64)mode->ScreenStride * mode->VisScreenHeight;
+        if (params->DstGpuVa < base || params->DstGpuVa - base >= surfaceBytes) {
+            status = ERROR_INVALID_PARAMETER;
+            break;
+        }
+        offset = params->DstGpuVa - base;
+        if ((offset % params->Pitch) + params->BytesPerLine > params->Pitch ||
+            params->LineCount > (surfaceBytes - offset) / params->Pitch) {
+            status = ERROR_INVALID_PARAMETER;
+            break;
+        }
+        for (row = 0; row < params->LineCount; ++row) {
+            if (!NvxGspSubmitFill(engine,
+                    params->DstGpuVa + (ULONG64)row * params->Pitch,
+                    params->Color, params->BytesPerLine)) {
+                status = ERROR_DEVICE_NOT_READY;
+                break;
+            }
+        }
+        if (row == params->LineCount) {
+            status = NO_ERROR;
+            statusBlock->Information = sizeof(*params);
+            ++s_fillRectCount;
+            if (s_fillRectCount <= 32 || (s_fillRectCount % 1000U) == 0) {
+                LogStr("NVX [2D]: validated fill rect #"); LogHex(s_fillRectCount);
+                LogStr(" xbytes="); LogHex((ULONG)(offset % params->Pitch));
+                LogStr(" y="); LogHex((ULONG)(offset / params->Pitch));
+                LogStr(" widthbytes="); LogHex(params->BytesPerLine);
+                LogStr(" rows="); LogHex(params->LineCount);
+                LogStr(" color="); LogHex(params->Color); LogStr("\n");
+            }
         }
         break;
     }

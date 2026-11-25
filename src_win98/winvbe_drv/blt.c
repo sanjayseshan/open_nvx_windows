@@ -116,6 +116,15 @@ void solid_rect(SURF *d, SHORT x, SHORT y, SHORT w, SHORT h, DWORD phys, BYTE ro
         }
         fill_count++;
         if (g.svga && (DWORD)w * h >= 2048 && svga_fill(pix, x, y, w, h)) return;
+        if (Bpp == 4 && !g.xf && !g.in_background && !lut_hc &&
+            nvx_accel_fill_rect(x, y, w, h, pix)) {
+            /* Keep GDI's RAM shadow coherent; the VxD has already filled the
+               GPU scanout. Do not fall through to the CPU framebuffer copy. */
+            if (g.shadow)
+                for (r = 0; r < (WORD)h; ++r)
+                    scr_fill_shadow((WORD)(y + r), (WORD)x, (WORD)w, pix);
+            return;
+        }
         for (r = 0; r < (WORD)h; r++)
             scr_fill(y + r, x, w, pix);
         return;
@@ -184,6 +193,7 @@ void fill_rect(SURF *d, SHORT x, SHORT y, SHORT w, SHORT h, BYTE rop3, LPPBRUSH 
 WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHORT sy,
                    SHORT w, SHORT h, DWORD rop, LPPBRUSH br, LPDRAWMODE dm)
 {
+    static WORD blt_probe_count;
     TRACE("BitBlt\n");
     SURF d, s;
     BYTE rop3 = (BYTE)(rop >> 16);
@@ -194,12 +204,29 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
     BYTE rtl = 0, same = 0;
     SHORT el, et, er, eb;
 
+    if (g.debug && blt_probe_count < 24) {
+        BYTE dstType = lpDst ? ((LPGBITMAP)lpDst)->bmType : 0xFF;
+        BYTE srcType = (needS && lpSrc) ? ((LPGBITMAP)lpSrc)->bmType : 0xFF;
+        DBG("NVX [2D-PROBE #%u]: BitBlt dstType=%u srcType=%u rop3=%02x needS=%u brush=%x/%x size=%dx%d\n",
+            blt_probe_count, dstType, srcType, rop3, needS,
+            br ? br->style : 0xFFFF, br ? br->flags : 0, w, h);
+        ++blt_probe_count;
+    }
+
     if (!g.enabled && ((LPGBITMAP)lpDst)->bmType) return 1;
 #ifndef OLDWIN
     {
         typedef WORD (__far __pascal *PF_DIB_BITBLT)(LPVOID, SHORT, SHORT, LPVOID, SHORT, SHORT, SHORT, SHORT, DWORD, LPPBRUSH, LPDRAWMODE);
         if (dibeng_on) {
-            if (!(((LPGBITMAP)lpDst)->bmType && needS && lpSrc && ((LPGBITMAP)lpSrc)->bmType && rop3 == 0xCC)) {
+            BYTE screen_copy = ((LPGBITMAP)lpDst)->bmType && needS && lpSrc &&
+                               ((LPGBITMAP)lpSrc)->bmType && rop3 == 0xCC;
+            BYTE screen_solid_fill = ((LPGBITMAP)lpDst)->bmType && !needS &&
+                                     rop3 == 0xF0 && br &&
+                                     (br->flags & PBF_SOLID) &&
+                                     !(br->flags & PBF_MONOPAT);
+            if (screen_solid_fill && g.debug)
+                DBG("NVX [2D-PROBE]: dispatching screen solid fill to NVX BitBlt\n");
+            if (!screen_copy && !screen_solid_fill) {
                 return ((PF_DIB_BITBLT)dibe_tab[0])(lpDst, dx, dy, lpSrc, sx, sy, w, h, rop, br, dm);
             }
         }
