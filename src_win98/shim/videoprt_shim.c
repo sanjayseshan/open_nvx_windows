@@ -22,6 +22,7 @@ static NVX_DEVICE_EXTENSION *g_pSecondaryDevExt;
 static ULONG g_NvxShimCurrentProcessId = 1;
 static PVIDEO_HW_START_IO g_NvxMiniportStartIo;
 static volatile ULONG g_NvxMiniportDispatchBusy;
+static ULONG64 g_NvxScanoutGpuVa;
 
 typedef struct NVX_VXD_POOL_HEADER {
     uint32_t signature;
@@ -393,6 +394,7 @@ ULONG VPAPI VideoPortInitialize(PVOID Context1, PVOID Context2, PVIDEO_HW_INITIA
         !HwInitData->HwInitialize || !HwInitData->HwStartIO)
         return ERROR_INVALID_PARAMETER;
     g_NvxMiniportStartIo = HwInitData->HwStartIO;
+    g_NvxScanoutGpuVa = 0;
     VIDEO_PORT_CONFIG_INFO configInfo;
     VideoPortZeroMemory(&configInfo, sizeof(configInfo));
     configInfo.Length = sizeof(configInfo);
@@ -843,7 +845,7 @@ static int NvxVxDSubmitSolidRect(uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height,
                                 uint32_t color) {
     PVIDEO_MODE_INFORMATION mode;
-    ULONG64 scanoutGpuVa = 0;
+    ULONG64 scanoutGpuVa;
     uint32_t bytesReturned = 0;
     NVX_ACCEL_FILL_RECT_PARAMS params;
 
@@ -860,11 +862,20 @@ static int NvxVxDSubmitSolidRect(uint32_t x, uint32_t y,
         width > 0x3fffffffU || mode->ScreenStride < width * 4U)
         return -1;
 
-    if (NvxShimDispatchMiniportIoctl(IOCTL_NVX_SCANOUT_GPU_VA,
-                                     NULL, 0, &scanoutGpuVa,
-                                     sizeof(scanoutGpuVa), &bytesReturned) ||
-        bytesReturned != sizeof(scanoutGpuVa) || !scanoutGpuVa)
-        return -1;
+    /* The GSP VA is stable across Win98 mode changes. Query it once, and
+       invalidate if the miniport's initialized scanout base changes. */
+    if (g_NvxScanoutGpuVa != g_PrimaryDevExt.GspVramGpuVa)
+        g_NvxScanoutGpuVa = 0;
+    if (!g_NvxScanoutGpuVa) {
+        scanoutGpuVa = 0;
+        if (NvxShimDispatchMiniportIoctl(IOCTL_NVX_SCANOUT_GPU_VA,
+                                         NULL, 0, &scanoutGpuVa,
+                                         sizeof(scanoutGpuVa), &bytesReturned) ||
+            bytesReturned != sizeof(scanoutGpuVa) || !scanoutGpuVa)
+            return -1;
+        g_NvxScanoutGpuVa = scanoutGpuVa;
+    }
+    scanoutGpuVa = g_NvxScanoutGpuVa;
 
     params.DstGpuVa = scanoutGpuVa + (ULONG64)y * mode->ScreenStride +
                       (ULONG64)x * 4ULL;

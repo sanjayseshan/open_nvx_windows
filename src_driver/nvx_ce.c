@@ -846,6 +846,91 @@ BOOLEAN NvxGspSubmitFillLocked(PVOID extension,ULONG64 dstVa,ULONG color,ULONG b
     return result;
 }
 
+/* Submit a pitched constant-color rectangle as one CE launch.  A single
+ * line-count/pitch operation replaces one synchronous launch and fence wait
+ * per scanline in the Win98 GDI solid-fill path. */
+static BOOLEAN NvxGspSubmitFillRectUnlocked(PVOID HwDeviceExtension,
+    ULONG64 dstVa,ULONG color,ULONG bytesPerLine,ULONG pitch,ULONG lineCount)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    PUCHAR scratch;
+    volatile ULONG *userd,*fence;
+    volatile ULONG64 *fifo;
+    PULONG push;
+    ULONG slot,n=0,fenceVal,wait;
+    ULONG64 va,pushVa,span;
+
+    if(!dev||!dev->GspInitialized||!dev->GspCopyVerified||
+       dev->GspChannelFaulted||!bytesPerLine||bytesPerLine>0x1000000U||
+       !lineCount||lineCount>4096U||bytesPerLine>pitch||
+       (bytesPerLine&3U)||(pitch&3U)||(dstVa&3ULL)) return FALSE;
+    span=(ULONG64)(lineCount-1U)*pitch+bytesPerLine;
+    if(span>0x1000000ULL||dstVa>~0ULL-span) return FALSE;
+
+    scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
+    userd=(volatile ULONG *)(scratch+0x3200);
+    fence=(volatile ULONG *)(scratch+0x3400);
+    fifo=(volatile ULONG64 *)scratch;
+    va=dev->GspScratchGpuVa;
+    slot=dev->GspGPPut%16U;
+    push=(PULONG)(scratch+0x10000+slot*0x100);
+    pushVa=va+0x10000+slot*0x100;
+    fenceVal=dev->GspNextFence++;
+    if(!fenceVal) fenceVal=dev->GspNextFence++;
+
+    push[n++]=0x20018000;push[n++]=0xc7b5; /* SET_OBJECT AMPERE_DMA_COPY_B */
+    push[n++]=0x200281c1; /* SET_REMAP_CONST_B + SET_REMAP_COMPONENTS */
+    push[n++]=color;
+    push[n++]=0x00030005; /* DST_X CONST_B, 4-byte component */
+    push[n++]=0x20028102; /* OFFSET_OUT_UPPER/LOWER */
+    push[n++]=(ULONG)(dstVa>>32);push[n++]=(ULONG)dstVa;
+    push[n++]=0x20018105;push[n++]=pitch;           /* PITCH_OUT (0x414) */
+    push[n++]=0x20018106;push[n++]=bytesPerLine/4U; /* LINE_LENGTH_IN (0x418) */
+    push[n++]=0x20018107;push[n++]=lineCount;       /* LINE_COUNT (0x41c) */
+    push[n++]=0x200180c0;push[n++]=0x04000586;      /* LAUNCH_DMA + remap */
+    push[n++]=0x20038090; /* SET_SEMAPHORE_A/B/PAYLOAD */
+    push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);
+    push[n++]=fenceVal;
+    push[n++]=0x200180c0;push[n++]=0x0400000c; /* flushed release */
+    fence[0]=0;
+    __sync_synchronize();
+    fifo[dev->GspGPPut%1024U]=(pushVa&0xfffffffcULL)|
+        (((pushVa>>32)&0xffULL)<<32)|((ULONG64)n<<42);
+    dev->GspGPPut=(dev->GspGPPut+1U)%1024U;
+    userd[0x8c/4]=dev->GspGPPut;
+    __sync_synchronize();
+    if(dev->Bar0Length>=0x30094)
+        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+0x30090),
+                                    dev->GspSubmitToken);
+    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                dev->GspRunlistBase+0x90),1);
+    for(wait=0;wait<20000U;wait++) {
+        if(fence[0]==fenceVal) {__sync_synchronize();return TRUE;}
+        VideoPortStallExecution(10U);
+    }
+    LogStr("NVX [FILL-RECT-Q]: submit timeout fence=");LogHex(fenceVal);
+    LogStr(" observed=");LogHex(fence[0]);LogStr(" GPPut=");
+    LogHex(userd[0x8c/4]);LogStr("\n");
+    dev->GspChannelFaulted=TRUE;
+    return FALSE;
+}
+
+BOOLEAN NvxGspSubmitFillRect(PVOID extension,ULONG64 dstVa,ULONG color,
+                             ULONG bytesPerLine,ULONG pitch,ULONG lineCount)
+{
+    BOOLEAN result;
+    if(!NvxGspLockUserScratch()) return FALSE;
+    if(!NvxGspLockEngine()) {
+        __sync_lock_release(&NvxGrUserSubmitBusy);
+        return FALSE;
+    }
+    result=NvxGspSubmitFillRectUnlocked(extension,dstVa,color,bytesPerLine,
+                                         pitch,lineCount);
+    NvxGspUnlockEngine();
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return result;
+}
+
 static BOOLEAN NvxGspUploadUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,const void *src,ULONG bytes)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;

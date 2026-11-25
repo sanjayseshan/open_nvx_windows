@@ -716,6 +716,9 @@ BOOLEAN NvxGspUnmapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
 BOOLEAN NvxGspSubmitFill(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG color,ULONG bytes);
 BOOLEAN NvxGspSubmitFillLocked(PVOID HwDeviceExtension,ULONG64 dstVa,
                                ULONG color,ULONG bytes);
+BOOLEAN NvxGspSubmitFillRect(PVOID HwDeviceExtension,ULONG64 dstVa,
+                             ULONG color,ULONG bytesPerLine,ULONG pitch,
+                             ULONG lineCount);
 BOOLEAN NvxGspSubmitUserClear(PVOID HwDeviceExtension,ULONG64 dstVa,
                               ULONG color,ULONG64 fenceValue,
                               ULONG *matchingPixels);

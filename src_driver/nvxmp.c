@@ -2974,6 +2974,7 @@ BOOLEAN NTAPI HwVidStartIO(
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL_RECT &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_SCANOUT_GPU_VA &&
        RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_SUBMIT_BATCH &&
        RequestPacket->IoControlCode!=IOCTL_NVX_3D_PRESENT_COPY &&
@@ -3790,7 +3791,6 @@ BOOLEAN NTAPI HwVidStartIO(
             (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension : devExt;
         PVIDEO_MODE_INFORMATION mode;
         ULONG64 base, surfaceBytes, offset;
-        ULONG row;
         static ULONG s_fillRectCount;
 
         if (!params || RequestPacket->InputBufferLength != sizeof(*params)) {
@@ -3825,19 +3825,13 @@ BOOLEAN NTAPI HwVidStartIO(
             status = ERROR_INVALID_PARAMETER;
             break;
         }
-        for (row = 0; row < params->LineCount; ++row) {
-            if (!NvxGspSubmitFill(engine,
-                    params->DstGpuVa + (ULONG64)row * params->Pitch,
-                    params->Color, params->BytesPerLine)) {
-                status = ERROR_DEVICE_NOT_READY;
-                break;
-            }
-        }
-        if (row == params->LineCount) {
+        if (NvxGspSubmitFillRect(engine, params->DstGpuVa, params->Color,
+                                 params->BytesPerLine, params->Pitch,
+                                 params->LineCount)) {
             status = NO_ERROR;
             statusBlock->Information = sizeof(*params);
             ++s_fillRectCount;
-            if (s_fillRectCount <= 32 || (s_fillRectCount % 1000U) == 0) {
+            if (s_fillRectCount == 1 || (s_fillRectCount % 4096U) == 0) {
                 LogStr("NVX [2D]: validated fill rect #"); LogHex(s_fillRectCount);
                 LogStr(" xbytes="); LogHex((ULONG)(offset % params->Pitch));
                 LogStr(" y="); LogHex((ULONG)(offset / params->Pitch));
@@ -3873,8 +3867,6 @@ BOOLEAN NTAPI HwVidStartIO(
         *(PULONG64)RequestPacket->OutputBuffer=engine->GspVramGpuVa+
             (devExt->IsSecondaryDisplay?0x2000000ULL:0ULL);
         statusBlock->Information=sizeof(ULONG64);status=NO_ERROR;
-        LogStr("NVX [SCANOUT-VA]: secondary=");LogHex(devExt->IsSecondaryDisplay);
-        LogStr(" gpuVa=");LogHex(*(PULONG64)RequestPacket->OutputBuffer);LogStr("\n");
         break;
     }
 
