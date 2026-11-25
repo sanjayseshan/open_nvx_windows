@@ -8,6 +8,7 @@ if [ ! -x "$MESON" ] && command -v meson >/dev/null 2>&1; then
 fi
 NINJA="${NINJA:-ninja}"
 NVX_MESA_ARCH="${NVX_MESA_ARCH:-x64}"
+NVX_MESA_TRANSPORT="${NVX_MESA_TRANSPORT:-xp}"
 case "$NVX_MESA_ARCH" in
     x64)
         MESA_ARCH_SUFFIX=64
@@ -25,7 +26,19 @@ case "$NVX_MESA_ARCH" in
         ;;
     *) echo "NVX_MESA_ARCH must be x64 or x86" >&2; exit 1 ;;
 esac
-BUILD_DIR="${NVX_MESA_BUILD_DIR:-${TMPDIR:-/tmp}/nvx-mesa-xp${MESA_ARCH_SUFFIX}-build}"
+if [[ "$NVX_MESA_TRANSPORT" != xp && "$NVX_MESA_TRANSPORT" != win98 ]]; then
+    echo "NVX_MESA_TRANSPORT must be xp or win98" >&2
+    exit 1
+fi
+if [[ "$NVX_MESA_TRANSPORT" == win98 && "$NVX_MESA_ARCH" != x86 ]]; then
+    echo "The Win98 DIOC transport is x86-only" >&2
+    exit 1
+fi
+if [[ "$NVX_MESA_TRANSPORT" == win98 ]]; then
+    BUILD_DIR="${NVX_MESA_BUILD_DIR:-${TMPDIR:-/tmp}/nvx-mesa-win98-dioc-build}"
+else
+    BUILD_DIR="${NVX_MESA_BUILD_DIR:-${TMPDIR:-/tmp}/nvx-mesa-xp${MESA_ARCH_SUFFIX}-build}"
+fi
 XP_CROSS_FILE="${BUILD_DIR}.ini"
 DLL="$BUILD_DIR/src/gallium/targets/wgl/${MESA_DLL_NAME}.dll"
 MESA_WGL_DLL="$BUILD_DIR/src/gallium/targets/libgl-gdi/opengl32.dll"
@@ -45,18 +58,21 @@ MESON_VERSION="$($MESON --version)"
 mkdir -p "$BUILD_DIR"
 python3 - "$MESA_CROSS_FILE" "$XP_CROSS_FILE" \
     "$ROOT/mesa_patches/xp_include" "${NVX_RUSTC:-}" \
-    "${NVX_RUST_TARGET:-$MESA_TARGET}" <<'PY'
+    "${NVX_RUST_TARGET:-$MESA_TARGET}" "$NVX_MESA_TRANSPORT" <<'PY'
 from pathlib import Path
 import sys
 
-source, destination, include_dir, rustc, rust_target = sys.argv[1:]
+source, destination, include_dir, rustc, rust_target, transport = sys.argv[1:]
 text = Path(source).read_text()
 for option in ("c_args", "cpp_args"):
     prefix = f"{option} = ["
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if line.startswith(prefix):
-            lines[index] = line[:-1] + f", '-I{include_dir}']"
+            extra = f", '-I{include_dir}'"
+            if transport == "win98":
+                extra += ", '-DNVX_WIN98_DIOC=1'"
+            lines[index] = line[:-1] + extra + "]"
             break
     else:
         raise SystemExit(f"missing {option} in Mesa cross file")
@@ -141,23 +157,33 @@ if printf '%s\n' "$imports" | grep -Eiq 'api-ms-win|winpthread|libz'; then
     exit 1
 fi
 
-install -m 0644 "$DLL" "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
-if [[ "$NVX_MESA_ARCH" == x64 ]]; then
-    install -m 0644 "$MESA_WGL_DLL" "$ROOT/dist_full/nvxmesa.dll"
-fi
-echo "Built XP $NVX_MESA_ARCH Mesa WGL ICD ($MESA_GALLIUM_DRIVERS): $ROOT/dist_full/${MESA_DLL_NAME}.dll"
-if [[ "$NVX_MESA_ARCH" == x64 ]]; then
-    echo "Built direct Mesa WGL diagnostic frontend: $ROOT/dist_full/nvxmesa.dll"
+if [[ "$NVX_MESA_TRANSPORT" == win98 ]]; then
+    # This is a compile/link smoke build for the DIOC transport selection.
+    # Mesa's Windows SDK floor and imports still need Win98-specific auditing;
+    # never place this artifact in the XP package or claim it is installable.
+    echo "Built Win98-DIOC x86 Mesa transport smoke artifact: $DLL"
+else
+    install -m 0644 "$DLL" "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
+    if [[ "$NVX_MESA_ARCH" == x64 ]]; then
+        install -m 0644 "$MESA_WGL_DLL" "$ROOT/dist_full/nvxmesa.dll"
+    fi
+    echo "Built XP $NVX_MESA_ARCH Mesa WGL ICD ($MESA_GALLIUM_DRIVERS): $ROOT/dist_full/${MESA_DLL_NAME}.dll"
+    if [[ "$NVX_MESA_ARCH" == x64 ]]; then
+        echo "Built direct Mesa WGL diagnostic frontend: $ROOT/dist_full/nvxmesa.dll"
+    fi
 fi
 echo "Imported DLLs:"
 printf '%s\n' "$imports"
 
-# Record the exact external patch inputs alongside the packaged binary.
-{
-    git -C "$ROOT/mesa" rev-parse HEAD
-    while IFS= read -r relative_patch; do
-        [ -n "$relative_patch" ] || continue
-        sha256sum "$ROOT/$relative_patch"
-    done < "$ROOT/test/mesa25_patch_series.txt"
-    sha256sum "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
-} > "$ROOT/dist_full/mesa-build-manifest-${NVX_MESA_ARCH}.txt"
+# Record only packaged XP builds. The Win98-DIOC smoke artifact is intentionally
+# isolated in /tmp and must not alter XP release manifests.
+if [[ "$NVX_MESA_TRANSPORT" == xp ]]; then
+    {
+        git -C "$ROOT/mesa" rev-parse HEAD
+        while IFS= read -r relative_patch; do
+            [ -n "$relative_patch" ] || continue
+            sha256sum "$ROOT/$relative_patch"
+        done < "$ROOT/test/mesa25_patch_series.txt"
+        sha256sum "$ROOT/dist_full/${MESA_DLL_NAME}.dll"
+    } > "$ROOT/dist_full/mesa-build-manifest-${NVX_MESA_ARCH}.txt"
+fi

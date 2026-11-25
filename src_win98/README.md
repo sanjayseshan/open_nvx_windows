@@ -10,7 +10,7 @@ For the primary monitor, do not select 2560×1440 through the VBE path. The obse
 
 The VxD DIOC handler forwards the shared `IOCTL_NVX_*` ABI through `NvxShimDispatchMiniportIoctl()` to the same `HwStartIO` handler used by XP. The Win98 PM service calls that VxD handler, while the shared miniport validates requests and uses `NvxGspSubmitFill/Copy/Upload`; the Win98 layer does not build GPU packets. A private development VxD ID (`0x7d00`) currently connects the 16-bit driver to the PM service. Replace it with an assigned, collision-free ID before distributing a package.
 
-`DibEngine=0` is required for this first accelerated path: with DIBENG enabled, Windows draws directly into its DIB shadow and bypasses this driver's `BitBlt`. The driver keeps its shadow coherent, then submits eligible 32bpp screen solid fills to the GPU. Other drawing operations still use CPU fallback. No Win98 WGL/OpenGL ICD or Direct3D client is connected, so application 3D acceleration is not available.
+`DibEngine=0` is required for this first accelerated path: with DIBENG enabled, Windows draws directly into its DIB shadow and bypasses this driver's `BitBlt`. The driver keeps its shadow coherent, then submits eligible 32bpp screen solid fills to the GPU. Other drawing operations still use CPU fallback. A Win98 DIOC transport adapter now connects the Mesa WGL/Nouveau bridge source to the VxD's shared miniport ABI, and the full x86 Nouveau/WGL library compiles with that backend selected. It is only a smoke build: the library still uses Mesa's XP API floor, has not been import-audited against Win98, and has not been installed or runtime-tested. Application 3D acceleration is not yet verified or supported.
 
 The QEMU input setup reads the host Logitech evdev mouse and forwards its events through the emulated PS/2 mouse. `test/update_win98_driver.sh` removes every `mouse*=` key and mouse/HID `device=` or `minivdd=` directive from `SYSTEM.INI`, then writes exactly `[boot] mouse.drv=mouse.drv` and `[386Enh] mouse=*vmouse`. PS/2 PnP registry records remain in `nvx_reg.reg`; they are not additional SYSTEM.INI mouse entries. QMP reports the active QEMU PS/2 mouse, but actual cursor movement still needs visual confirmation.
 
@@ -23,7 +23,8 @@ Win98 GDI solid fill
   -> scanout VRAM + synchronized driver shadow
 
 Other BitBlt operations -> CPU fallback
-Win98 OpenGL / Direct3D -> not connected yet
+Win98 OpenGL/Nouveau -> DIOC adapter implemented; runtime not yet verified
+Win98 Direct3D Nine -> not yet connected to a verified ICD
 ```
 
 The VxD build reuses the XP miniport source and pinned OpenRM policy/container code. The GDI fill DIOC/PM route is runtime-tested; the separate VMM user-mapping and general client-memory interfaces remain unvalidated and must stay fail-closed.
@@ -34,10 +35,12 @@ The long-term goal is to reuse the existing NVX GPU submission and Mesa/Nouveau 
 
 ```text
 Win98 GDI solid fill -> nvx.drv BitBlt -> VxD PM service
-  -> NVX.VXD DIOC -> shared miniport HwStartIO -> OpenRM/GSP -> GA104
+  -> Mesa/Nouveau WGL bridge -> DIOC adapter -> NVX.VXD -> shared miniport
+  -> OpenRM/GSP -> GA104
 
 Other GDI operations -> CPU fallback
-Win98 OpenGL / Direct3D -> not connected
+Win98 OpenGL/Nouveau -> transport/build smoke-tested; no Win98 render proof
+Win98 Direct3D -> not connected to a verified hardware path
 ```
 
 ### 2D: accelerate common GDI operations first
@@ -51,10 +54,10 @@ Win98 OpenGL / Direct3D -> not connected
 
 ### 3D: reuse Mesa/Nouveau, adapt the Win98 client boundary
 
-For the Direct3D 9 application boundary, the pinned `submodules/wine9x` project already has a per-application switcher that can route D3D9 calls to `mesa99.dll` (Gallium Nine). Reuse that routing instead of writing another Direct3D wrapper. It does not provide the NVX GPU backend: the Mesa Nine Nouveau winsys still needs a Win98 transport adapter, safe buffer transfer/mapping, submission, fences, and present. Keep any project-specific changes in root-owned patches, not in the Wine9x submodule.
+For the Direct3D 9 application boundary, the pinned `submodules/wine9x` project already has a per-application switcher that can route D3D9 calls to `mesa99.dll` (Gallium Nine). Reuse that routing instead of writing another Direct3D wrapper. The shared WGL/Nouveau source now has a Win98 DIOC transport adapter and staged upload/readback path, but there is no Win98-target ICD package or runtime 3D proof yet. Keep project-specific changes in root-owned patches, not in the Wine9x submodule.
 
-1. Use the Mesa 9x work already present under `submodules/mesa9x/win9x/` as the reference for Win9x loader, WGL, memory, and presentation integration. First identify which frontend and Gallium pieces are built for the chosen Win98 configuration; XP's `nvx_winsys_win32.c`/`ExtEscape` path and XP DLLs are not automatically Win98-compatible.
-2. Provide a native Win98 OpenGL ICD (and later a D3D9 frontend if desired) whose calls reach Gallium Nouveau/NVC0. Keep Mesa's API/state tracking and Nouveau command generation; implement only the OS-facing winsys adapter that maps BO allocation/map/unmap, client open/close, batch submission, fences, and present to the NVX VxD ABI.
+1. Use the Mesa 9x work already present under `submodules/mesa9x/win9x/` as the reference for Win9x loader, WGL, memory, and presentation integration. A DIOC adapter and shared WGL bridge are now present in root-owned code; the first build still sets Mesa's XP API floor, so it is not a Win98 ICD yet.
+2. Build a genuine Win98-compatible OpenGL ICD (and later a D3D9 frontend if desired) whose calls reach Gallium Nouveau/NVC0. Keep Mesa's API/state tracking and Nouveau command generation; finish the OS-facing boundary for BO allocation, staged upload/readback, client lifetime, batch submission, fences, and present. The adapter intentionally leaves user mapping disabled.
 3. Complete safe resource management before allowing general apps to submit: per-process client identity, BO handles and access validation, user mappings or shared-ring transfer, reset/close cleanup, and synchronization. The current VxD adapter's fail-closed user map means the existing XP-style mapped-buffer winsys cannot simply be enabled yet.
 4. Bring up progressively: ICD load and renderer identification; clear/readback; one triangle; depth-tested indexed geometry; textures and buffer updates; swap/present; multiple contexts/processes. Use a software fallback only as an explicit diagnostic. Never report hardware rendering unless the renderer string and a GPU submission/fence/readback prove it.
 5. Keep the first implementation narrow and upstream-shaped: reuse Mesa/Nouveau's NVC0 screen, resource and batch logic; keep Win98-specific code in the frontend/winsys and VxD shims. Avoid duplicating Gallium or inventing a second command encoder.
@@ -113,7 +116,7 @@ The default `WIN98_SINGLE_MONITOR=1` build outputs `nvx.drv`, `nvx.vxd`, `nvx.in
 5. Select **NVIDIA GeForce RTX 3070** (or corresponding model) and click **Next** to install.
 6. When prompted, restart Windows 98.
 
-The INF copies the GSP firmware into `C:\WINDOWS\SYSTEM`. On 2026-11-24, `test/run_vfio_win98_autoretry.sh` booted `win98_small.img` on the RTX 3070. Log `test_logs/win98-20261124-214215.log` records `DibEngine=0`, active 1920×1080×32 mode, successful PM API connection, and 32 validated `IOCTL_NVX_ACCEL_FILL_RECT` operations. The miniport logs each rectangle only after every row's `NvxGspSubmitFill` completed successfully. `C:\NVXFILL.LOG` was read from the guest and contains `START`/`PAINT` markers for the GDI fill probe. The VM is intentionally left running. This validates GPU solid-fill submissions; physical color accuracy remains unconfirmed. A separate `WIN98_SINGLE_MONITOR=0 ./src_win98/build.sh` dual-head build completed, but QHD was not boot-tested and the tracked single-head package was restored afterward. Application-level 3D remains unimplemented.
+The INF copies the GSP firmware into `C:\WINDOWS\SYSTEM`. On 2026-11-24, `test/run_vfio_win98_autoretry.sh` booted `win98_small.img` on the RTX 3070. Log `test_logs/win98-20261124-214215.log` records `DibEngine=0`, active 1920×1080×32 mode, successful PM API connection, and 32 validated `IOCTL_NVX_ACCEL_FILL_RECT` operations. The miniport logs each rectangle only after every row's `NvxGspSubmitFill` completed successfully. `C:\NVXFILL.LOG` was read from the guest and contains `START`/`PAINT` markers for the GDI fill probe. The VM is intentionally left running. This validates GPU solid-fill submissions; physical color accuracy remains unconfirmed. A separate `WIN98_SINGLE_MONITOR=0 ./src_win98/build.sh` dual-head build completed, but QHD was not boot-tested and the tracked single-head package was restored afterward. The Win98 DIOC transport and full Nouveau/WGL link have now passed a smoke build, but no Win98 ICD was installed and application-level 3D remains unverified.
 
 ---
 

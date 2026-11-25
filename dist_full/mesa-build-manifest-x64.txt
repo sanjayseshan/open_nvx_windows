@@ -1,5 +1,5 @@
 357bbc55bd419dae5625a14ffa0acf1818f9ebbe
-5c1ca4a32cb2ba492a92f8340d9da1c13ec186ff4d9bf286c5473068698749a6  /home/sanjay/temp/xddm/mesa_patches/mesa25/0000-xp-win32-shims.patch
+3944f692daa35eeaeaea9658accaf8bae25fad7b9e29e531343fafade7bccbf5  /home/sanjay/temp/xddm/mesa_patches/mesa25/0000-xp-win32-shims.patch
 542e91d7a9d7fdb81a8cf2cd8a92f2d27d29b7e66a8d263045f7b11dd0cdc266  /home/sanjay/temp/xddm/mesa_patches/0002-xp-kernel32-api-compat.patch
 cf0a8b8f9c0203e5718639bf0c65724bcbb02d6b1f44f4432e724fb25922604f  /home/sanjay/temp/xddm/mesa_patches/mesa25/0001-nvx-wgl-native-nouveau.patch
 2e942b21038b2884c02d129f5ed816c6f83a1e627de8ad50b6c41ca180a22b2a  /home/sanjay/temp/xddm/mesa_patches/mesa25/0002-nine-wgl-exports.patch
@@ -30,4 +30,4 @@ f9b83f6717c7b64c0767d4b32074df9f3e5d0488086768d820a48b2b12b9ed6d  /home/sanjay/t
 76717c44f662e977fc2ea9f33878aef79dac11dbfa46bd53608e617d0556aade  /home/sanjay/temp/xddm/mesa_patches/mesa25/0009-nouveau-fence-allocation-lifetime.patch
 92978711ffaadea8570395e64bde67b8a3fabddb1c349a75b152b70a69dcfd70  /home/sanjay/temp/xddm/mesa_patches/mesa25/0011-nouveau-xp-fence-rotation-recovery.patch
 3ca83a63144092b171aa260a265626894d0c8fd5e2f399f6cec4734c7782eac2  /home/sanjay/temp/xddm/mesa_patches/mesa25/0012-nvc0-reject-out-of-range-vertex-fetch.patch
-647689f49aa740aef4237824428e51a8a62ab4d0a7c748fc00d91ca806c6cec1  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+72641de83adae2581064ce371573971fe48f32bfa9140f8e567f427234c11a6b  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

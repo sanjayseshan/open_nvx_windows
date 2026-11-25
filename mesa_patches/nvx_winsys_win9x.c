@@ -1,4 +1,6 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <winioctl.h>
 
@@ -69,8 +71,14 @@ nvx_winsys_escape_vxd(void *opaque, uint32_t escape, uint32_t input_bytes,
        (input_bytes && !input) || (output_bytes && !output))
       return 0;
 
-   return DeviceIoControl(vxd, ioctl_code, (LPVOID)input, input_bytes,
-                          output, output_bytes, &bytes_returned, NULL) != FALSE;
+   if (!DeviceIoControl(vxd, ioctl_code, (LPVOID)input, input_bytes,
+                        output, output_bytes, &bytes_returned, NULL))
+      return 0;
+   if (output_bytes && bytes_returned != output_bytes)
+      return 0;
+   /* Match the XP transport's return convention: exact output bytes when
+    * present, and a nonzero success marker for successful no-output calls. */
+   return output_bytes ? (int)bytes_returned : 1;
 }
 
 static void

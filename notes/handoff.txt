@@ -14,7 +14,7 @@
 - Optional head 1: source has `nvx2.drv`, an EDID-gated 2560x1440 mode, native scanout commit, and `attach_sec.exe`. `WIN98_SINGLE_MONITOR=0 ./src_win98/build.sh` compiled the dual-head package successfully; tracked single-head outputs were restored afterward.
 - Dual-head QHD has not been runtime-tested. The current VM remains on the single-head image. Next hardware test needs a dual-head image/registry configuration, QHD EDID, `nvx2.drv`, secondary VxD extension, and attach utility. Do not call Win98 QHD supported until that boot is visually validated.
 
-## Win98 3D: transport groundwork, renderer not connected yet
+## Win98 3D: transport bridge in progress
 
 ```text
 D3D9 app -> Wine9x D3D9 switcher (`nine`) -> Mesa Gallium Nine (`mesa99.dll`)
@@ -24,10 +24,11 @@ D3D9 app -> Wine9x D3D9 switcher (`nine`) -> Mesa Gallium Nine (`mesa99.dll`)
 
 - Added `submodules/wine9x` at upstream revision `3fbe3fd` as a pinned reference. Its D3D9 switcher can route applications to `mesa99.dll`; it is a front-end router, not the GPU driver. Project-specific patches must live outside this submodule.
 - Existing `src_driver/nvxmp.c` has the XP miniport 3D IOCTL set (client/session, BO allocation, upload/download, batch submit, wait fence, present).
-- New uncommitted work adds a bounded DIOC allowlist for the shared 3D IOCTL ABI, serializes Win9x process-tag selection with `HwStartIO`, adds `mesa_patches/nvx_winsys_win9x.c` to map Mesa escape IDs to VxD IOCTLs, and stops advertising direct-map support in the Win98 build. `./src_win98/build.sh` succeeds and emits an updated `dist_win98/nvx.vxd`.
-- This is transport groundwork only: the VxD package was not installed in the running guest, the new adapter is not yet linked into the Win98 Mesa ICD/Nine build, and no 3D app has exercised it.
+- Commit `23b4d1e` adds a bounded DIOC allowlist for the shared 3D IOCTL ABI, serializes Win9x process-tag selection with `HwStartIO`, maps Mesa escape IDs to VxD IOCTLs in `mesa_patches/nvx_winsys_win9x.c`, and suppresses unsupported direct-map capability in the Win98 build. The Win98 VxD package builds successfully.
+- Current changes route Mesa WGL bridge requests through `NvxWinsysEscape`, include the Win9x adapter in the external Mesa source patch, and let `NVX_WIN98_DIOC` select the DIOC backend. Both the normal x86 Mesa 25.1.6 XP ICD and the full x86 Nouveau/WGL DIOC smoke build compile and link. The DIOC artifact is isolated under `/tmp/nvx-mesa-win98-dioc-build`; it was built with Mesa's XP API floor, so it is not yet a Win98-installable ICD. Its imports are `GDI32`, `KERNEL32`, `MSVCRT`, and `USER32`; Win98 export and subsystem compatibility are still unverified.
+- The VxD package was not installed in the running guest, and no Win98 3D app has exercised the transport or rendered on GPU. Do not report Win98 3D acceleration as working yet.
 - `src_win98/shim/nvx_mdl_win98.c:NvxMdlMapUser()` deliberately fails closed. The Win98 adapter can use upload/download paths, but map-dependent BO behavior and Nouveau screen creation still need to be checked end to end.
-- Next: integrate the DIOC adapter into a reproducible Win98 `nvxogl32.dll`/Nine build outside the submodule, prove caps/client/BO upload and a GPU clear+readback, then triangle/depth, textures and present. Preserve miniport/OpenRM validation and packet construction. Keep user mapping disabled until a real safe VMM process mapping exists.
+- Next: produce an actual Win98 API-floor ICD (or identify and shim every unavailable Mesa import), audit imports/subsystem against Win98 exports, then install the VxD/ICD in a separate guest snapshot. Prove caps/client/BO upload and GPU clear+readback, then triangle/depth, textures and present. Preserve miniport/OpenRM validation and packet construction. Keep user mapping disabled until a real safe VMM process mapping exists.
 - Do not claim D3D hardware acceleration based on DirectDraw capability bits or a software HAL. Current evidence for Win98 is 2D solid fills only.
 
 ## Constraints and current test setup
@@ -40,7 +41,7 @@ D3D9 app -> Wine9x D3D9 switcher (`nine`) -> Mesa Gallium Nine (`mesa99.dll`)
 ## Relevant files
 
 - 2D: `src_win98/winvbe_drv/blt.c`, `surf.c`, `enable.c`; VxD bridge: `src_win98/vxd_entry.asm`, `src_win98/shim/videoprt_shim.c/.h`.
-- Shared GPU ABI: `src_driver/miniport.h`, `nvxmp.c`, `nvx_gsp.h`; Win9x transport: `src_win98/shim/videoprt_shim.c`, `mesa_patches/nvx_winsys_win9x.c/.h`.
+- Shared GPU ABI: `src_driver/miniport.h`, `nvxmp.c`, `nvx_gsp.h`; Win9x transport: `src_win98/shim/videoprt_shim.c`, `mesa_patches/nvx_winsys_win9x.c/.h`, `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_wgl_bridge.c`.
 - 3D frontends: `submodules/wine9x/`, `submodules/mesa9x/win9x/nine/`, root patches in `mesa_patches/nine/` and `patches/mesa9x/`.
 - Tests: `test/win98_fill_probe.c`, `test/update_win98_driver.sh`, `test/run_vfio_win98_autoretry.sh`.
 - Latest run: `test_logs/win98-20261124-214215.log`; `vm_serial.log` points to this run.

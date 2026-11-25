@@ -563,12 +563,14 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       visible_rect_count = 1;
 
       if (nvx_bridge_winsys.caps.Features & NVX_3D_FEATURE_PRESENT_BATCH) {
-         result = ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_BATCH, sizeof(batch),
-                            (LPCSTR)&batch, 0, NULL) != 0;
+         result = NvxWinsysEscape(&nvx_bridge_winsys,
+                            NVX_ESCAPE_3D_PRESENT_BATCH, sizeof(batch),
+                            &batch, 0, NULL);
          if (result) copied_regions = 1;
       } else {
-         result = ExtEscape(hdc, NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
-                            (LPCSTR)&request, 0, NULL) != 0;
+         result = NvxWinsysEscape(&nvx_bridge_winsys,
+                            NVX_ESCAPE_3D_PRESENT_COPY, sizeof(request),
+                            &request, 0, NULL);
          if (result) copied_regions = 1;
       }
       if (!result) NVX_PRESENT_COPY_FAIL("ExtEscape fast path rejected");
@@ -646,14 +648,16 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       }
       if (batch.Count) {
          if (nvx_bridge_winsys.caps.Features & NVX_3D_FEATURE_PRESENT_BATCH) {
-            result=ExtEscape(hdc,NVX_ESCAPE_3D_PRESENT_BATCH,sizeof(batch),
-                              (LPCSTR)&batch,0,NULL)!=0;
+            result=NvxWinsysEscape(&nvx_bridge_winsys,
+                              NVX_ESCAPE_3D_PRESENT_BATCH,sizeof(batch),
+                              &batch,0,NULL);
             if (result) copied_regions=batch.Count;
          } else {
             for (i=0; i<batch.Count; i++) {
-               if (!ExtEscape(hdc,NVX_ESCAPE_3D_PRESENT_COPY,
+               if (!NvxWinsysEscape(&nvx_bridge_winsys,
+                              NVX_ESCAPE_3D_PRESENT_COPY,
                               sizeof(batch.Copies[i]),
-                              (LPCSTR)&batch.Copies[i],0,NULL)) {
+                              &batch.Copies[i],0,NULL)) {
                   result=0;
                   break;
                }
@@ -1705,9 +1709,9 @@ nvx_clear_target(HDC hdc, uint64_t target_id, uint32_t color)
    submit.Color = color;
    submit.BufferId = target_id;
    memset(&submitted, 0, sizeof(submitted));
-   return ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                    (LPCSTR)&submit, sizeof(submitted),
-                    (LPSTR)&submitted) != 0 &&
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                    &submit, sizeof(submitted), &submitted) &&
           submitted.FenceValue && nvx_wait_fence(hdc, submitted.FenceValue);
 }
 
@@ -1734,9 +1738,10 @@ nvx_submit_triangle(HDC hdc, uint64_t target_id, uint64_t vbo_id,
    submit.Reserved[0] = (uint32_t)vbo_id;
    submit.Reserved[1] = (uint32_t)(vbo_id >> 32);
    memset(&submitted, 0, sizeof(submitted));
-   if (!ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                  (LPCSTR)&submit, sizeof(submitted),
-                  (LPSTR)&submitted) || !submitted.FenceValue)
+   if (!NvxWinsysEscape(&nvx_bridge_winsys,
+                  NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                  &submit, sizeof(submitted), &submitted) ||
+       !submitted.FenceValue)
       return 0;
    return nvx_wait_fence(hdc, submitted.FenceValue);
 }
@@ -1771,9 +1776,10 @@ nvx_submit_triangles(HDC hdc, uint64_t target_id, uint64_t vbo_id,
    submit.BufferId = target_id;
    submit.Reserved[0] = (uint32_t)vbo_id;
    submit.Reserved[1] = (uint32_t)(vbo_id >> 32);
-   if (!ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                  (LPCSTR)&submit, sizeof(submitted),
-                  (LPSTR)&submitted) || !submitted.FenceValue) {
+   if (!NvxWinsysEscape(&nvx_bridge_winsys,
+                  NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                  &submit, sizeof(submitted), &submitted) ||
+       !submitted.FenceValue) {
       nvx_bridge_trace("batch submit failed or returned no fence");
       return 0;
    }
@@ -1838,9 +1844,10 @@ nvx_submit_dynamic_target_batch(HDC hdc, const NVX_3D_COLOR_SURFACE_LAYOUT *layo
    submit.Reserved[4] = (uint32_t)depth_target_id;
    submit.Reserved[5] = (uint32_t)(depth_target_id >> 32);
    memset(&submitted, 0, sizeof(submitted));
-   return ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                    (LPCSTR)&submit, sizeof(submitted),
-                    (LPSTR)&submitted) != 0 && submitted.FenceValue &&
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                    &submit, sizeof(submitted), &submitted) &&
+          submitted.FenceValue &&
           nvx_wait_fence(hdc, submitted.FenceValue);
 }
 
@@ -1860,9 +1867,10 @@ nvx_clear_dynamic_depth_target(HDC hdc,
    submit.Height = layout->Height;
    submit.BufferId = target_id;
    memset(&submitted, 0, sizeof(submitted));
-   return ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                    (LPCSTR)&submit, sizeof(submitted),
-                    (LPSTR)&submitted) != 0 && submitted.FenceValue &&
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                    &submit, sizeof(submitted), &submitted) &&
+          submitted.FenceValue &&
           nvx_wait_fence(hdc, submitted.FenceValue);
 }
 
@@ -1948,9 +1956,9 @@ nvx_read_dynamic_target_tile(HDC hdc, uint64_t target_id, unsigned x, unsigned y
    request.Height = NVX_3D_TRIANGLE_HEIGHT;
    request.Reserved[0] = x;
    request.Reserved[1] = y;
-   return ExtEscape(hdc, NVX_ESCAPE_3D_READBACK, sizeof(request),
-                    (LPCSTR)&request, NVX_3D_READBACK_BYTES,
-                    (LPSTR)pixels) != 0;
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_READBACK, sizeof(request), &request,
+                    NVX_3D_READBACK_BYTES, pixels);
 }
 
 /* One full-size target avoids the old per-64x16-tile C797 submissions. The
@@ -2330,9 +2338,10 @@ nvx_clear_depth(HDC hdc, uint64_t target_id)
    submit.Height = NVX_3D_TRIANGLE_HEIGHT;
    submit.BufferId = target_id;
    memset(&submitted, 0, sizeof(submitted));
-   return ExtEscape(hdc, NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
-                    (LPCSTR)&submit, sizeof(submitted),
-                    (LPSTR)&submitted) != 0 && submitted.FenceValue &&
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_SUBMIT, sizeof(submit),
+                    &submit, sizeof(submitted), &submitted) &&
+          submitted.FenceValue &&
           nvx_wait_fence(hdc, submitted.FenceValue);
 }
 
@@ -2347,9 +2356,9 @@ nvx_readback_target(HDC hdc, uint64_t target_id,
    readback.BufferId = target_id;
    readback.Width = NVX_3D_TRIANGLE_WIDTH;
    readback.Height = NVX_3D_TRIANGLE_HEIGHT;
-   return ExtEscape(hdc, NVX_ESCAPE_3D_READBACK, sizeof(readback),
-                    (LPCSTR)&readback, NVX_3D_READBACK_BYTES,
-                    (LPSTR)pixels) == NVX_3D_READBACK_BYTES;
+   return NvxWinsysEscape(&nvx_bridge_winsys,
+                    NVX_ESCAPE_3D_READBACK, sizeof(readback), &readback,
+                    NVX_3D_READBACK_BYTES, pixels) == NVX_3D_READBACK_BYTES;
 }
 
 static int
@@ -2649,8 +2658,9 @@ nvx_wgl_try_softpipe_triangle(struct softpipe_context *sp,
 
    memset(&caps, 0, sizeof(caps));
    stage = "3D capability query";
-   caps_escape = ExtEscape(hdc, NVX_ESCAPE_3D_QUERY_CAPS, 0, NULL,
-                           sizeof(caps), (LPSTR)&caps);
+   caps_escape = NvxWinsysEscape(&nvx_bridge_winsys,
+                           NVX_ESCAPE_3D_QUERY_CAPS, 0, NULL,
+                           sizeof(caps), &caps);
    if (!caps_escape ||
        caps.Version != NVX_3D_ABI_VERSION ||
        (caps.Features & (NVX_3D_FEATURE_USER_ALLOC |

@@ -396,7 +396,7 @@ diff --git a/src/gallium/targets/wgl/meson.build b/src/gallium/targets/wgl/meson
 index 78c56ded38a15..9823c19d0e018 100644
 --- a/src/gallium/targets/wgl/meson.build
 +++ b/src/gallium/targets/wgl/meson.build
-@@ -13,7 +13,15 @@ wgl_def = custom_target(
+@@ -13,7 +13,16 @@ wgl_def = custom_target(
  gallium_wgl_name = get_option('gallium-wgl-dll-name')
  libgallium_wgl = shared_library(
    gallium_wgl_name,
@@ -405,6 +405,7 @@ index 78c56ded38a15..9823c19d0e018 100644
 +   '../../../../../mesa_patches/nvx_icd_trace.c',
 +   '../../../../../mesa_patches/nvx_winsys.c',
 +   '../../../../../mesa_patches/nvx_winsys_win32.c',
++   '../../../../../mesa_patches/nvx_winsys_win9x.c',
 +   '../../../../../mesa_patches/nvx_nouveau_device.c',
 +   '../../../../../mesa_patches/nvx_nouveau_bo.c',
 +   '../../../../../mesa_patches/nvx_nouveau_pushbuf.c',

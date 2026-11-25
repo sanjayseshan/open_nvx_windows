@@ -108,6 +108,18 @@ NvxWinsysInit(NVX_WINSYS_DEVICE *device, NVX_WINSYS_ESCAPE escape,
 }
 
 int
+NvxWinsysEscape(NVX_WINSYS_DEVICE *device, uint32_t escape,
+                uint32_t input_bytes, const void *input,
+                uint32_t output_bytes, void *output)
+{
+   if (!nvx_winsys_ready(device) || (input_bytes && !input) ||
+       (output_bytes && !output))
+      return 0;
+   return device->escape(device->opaque, escape, input_bytes, input,
+                         output_bytes, output);
+}
+
+int
 NvxWinsysOpenNouveauChannel(NVX_WINSYS_DEVICE *device)
 {
    NVX_3D_CHANNEL_LEASE request, result;

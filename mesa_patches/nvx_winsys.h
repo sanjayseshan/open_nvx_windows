@@ -32,6 +32,9 @@ typedef struct NVX_WINSYS_DEVICE {
 
 int NvxWinsysInit(NVX_WINSYS_DEVICE *device, NVX_WINSYS_ESCAPE escape,
                   void *opaque);
+int NvxWinsysEscape(NVX_WINSYS_DEVICE *device, uint32_t escape,
+                    uint32_t input_bytes, const void *input,
+                    uint32_t output_bytes, void *output);
 int NvxWinsysCloseClient(NVX_WINSYS_DEVICE *device);
 int NvxWinsysOpenNouveauChannel(NVX_WINSYS_DEVICE *device);
 int NvxWinsysCloseNouveauChannel(NVX_WINSYS_DEVICE *device);
