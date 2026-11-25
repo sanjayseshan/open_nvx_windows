@@ -3952,7 +3952,13 @@ BOOLEAN NTAPI HwVidStartIO(
         if(engine&&engine->GspGraphics2dObjectHandle)
             caps->Features|=NVX_3D_FEATURE_NVC0_2D_OBJECT;
         if(engine&&engine->GspCopyVerified)
-            caps->Features|=NVX_3D_FEATURE_UPLOAD_SPANS|NVX_3D_FEATURE_PRESENT_BATCH|NVX_3D_FEATURE_DIRECT_MAP;
+            caps->Features|=NVX_3D_FEATURE_UPLOAD_SPANS|NVX_3D_FEATURE_PRESENT_BATCH;
+#if !defined(NVX_WIN98)
+        /* The Win98 VxD currently has no per-process GART mapping. Never
+           advertise direct map until NvxMdlMapUser can provide one. */
+        if(engine&&engine->GspCopyVerified)
+            caps->Features|=NVX_3D_FEATURE_DIRECT_MAP;
+#endif
         if(engine&&engine->GspGraphicsUserAllocReady&&
            engine->GspGraphicsChannelReady&&
            engine->GspGraphicsCommandVerified&&

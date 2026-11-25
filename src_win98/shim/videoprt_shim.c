@@ -21,6 +21,7 @@ static NVX_DEVICE_EXTENSION *g_pSecondaryDevExt;
 
 static ULONG g_NvxShimCurrentProcessId = 1;
 static PVIDEO_HW_START_IO g_NvxMiniportStartIo;
+static volatile ULONG g_NvxMiniportDispatchBusy;
 
 typedef struct NVX_VXD_POOL_HEADER {
     uint32_t signature;
@@ -728,20 +729,24 @@ typedef struct _NVX_HEAD_INFO {
 /* Win9x ABI adapter: pass the shared request unchanged to the same miniport
  * handler used by the XP XDDM path. Keep policy, validation, and GPU packet
  * construction in nvxmp.c / NvxGspSubmit* rather than cloning them here. */
-int NvxShimDispatchMiniportIoctl(uint32_t ioctlCode,
+static int NvxShimDispatchMiniportIoctlForProcess(uint32_t ioctlCode,
                                 void *inBuffer, uint32_t inBytes,
                                 void *outBuffer, uint32_t outBytes,
-                                uint32_t *bytesReturned) {
+                                uint32_t *bytesReturned,
+                                ULONG processId) {
     VIDEO_REQUEST_PACKET request;
     STATUS_BLOCK statusBlock;
     BOOLEAN started;
 
-    if (!g_NvxMiniportStartIo ||
-        ioctlCode < IOCTL_NVX_ACCEL_COPY ||
-        ioctlCode > IOCTL_NVX_ACCEL_FILL_RECT ||
-        (ioctlCode & 3U) != 0U ||
-        (inBytes && !inBuffer) || (outBytes && !outBuffer))
+    if (!g_NvxMiniportStartIo || (inBytes && !inBuffer) ||
+        (outBytes && !outBuffer))
         return -1;
+
+    /* The miniport's client/BO tables are keyed by the current process
+       context. Win9x DIOC calls can arrive from different applications, so
+       keep the process tag and synchronous HwStartIO request atomic. */
+    while (__sync_lock_test_and_set(&g_NvxMiniportDispatchBusy, 1U)) { }
+    g_NvxShimCurrentProcessId = processId ? processId : 1U;
 
     VideoPortZeroMemory(&request, sizeof(request));
     VideoPortZeroMemory(&statusBlock, sizeof(statusBlock));
@@ -755,7 +760,80 @@ int NvxShimDispatchMiniportIoctl(uint32_t ioctlCode,
     started = g_NvxMiniportStartIo(&g_PrimaryDevExt, &request);
     if (bytesReturned)
         *bytesReturned = (uint32_t)statusBlock.Information;
+    __sync_lock_release(&g_NvxMiniportDispatchBusy);
     return started && statusBlock.Status == NO_ERROR ? 0 : -1;
+}
+
+int NvxShimDispatchMiniportIoctl(uint32_t ioctlCode,
+                                void *inBuffer, uint32_t inBytes,
+                                void *outBuffer, uint32_t outBytes,
+                                uint32_t *bytesReturned) {
+    return NvxShimDispatchMiniportIoctlForProcess(ioctlCode, inBuffer,
+        inBytes, outBuffer, outBytes, bytesReturned,
+        g_NvxShimCurrentProcessId);
+}
+
+/* The VxD DIOC boundary is not an I/O-manager METHOD_BUFFERED boundary.
+ * Accept only known fixed ABI packets and bound all variable payloads before
+ * exposing caller buffers to HwStartIO. BO mapping stays disabled until a
+ * real Win9x per-process mapping implementation exists. */
+static int NvxVxDValidate3dDio(uint32_t code, uint32_t inBytes,
+                               uint32_t outBytes) {
+    switch (code) {
+    case IOCTL_NVX_3D_QUERY_CAPS:
+        return inBytes == 0 && outBytes >= sizeof(NVX_3D_QUERY_CAPS);
+    case IOCTL_NVX_3D_ALLOC_BUFFER:
+        return inBytes == sizeof(NVX_3D_ALLOC_BUFFER) &&
+               outBytes >= sizeof(NVX_3D_ALLOC_BUFFER);
+    case IOCTL_NVX_3D_SUBMIT:
+        return inBytes == sizeof(NVX_3D_SUBMIT) &&
+               outBytes >= sizeof(NVX_3D_SUBMIT);
+    case IOCTL_NVX_3D_WAIT_FENCE:
+        return inBytes == sizeof(NVX_3D_WAIT_FENCE) &&
+               outBytes >= sizeof(NVX_3D_WAIT_FENCE);
+    case IOCTL_NVX_3D_FREE_BUFFER:
+        return inBytes == sizeof(NVX_3D_FREE_BUFFER) && outBytes == 0;
+    case IOCTL_NVX_3D_UPLOAD_BUFFER:
+        return inBytes >= sizeof(NVX_3D_UPLOAD_BUFFER) &&
+               inBytes <= sizeof(NVX_3D_UPLOAD_BUFFER) + NVX_3D_MAX_UPLOAD_BYTES &&
+               outBytes == 0;
+    case IOCTL_NVX_3D_READBACK_BUFFER:
+        return inBytes == sizeof(NVX_3D_READBACK) &&
+               outBytes >= NVX_3D_READBACK_BYTES &&
+               outBytes <= NVX_3D_MAX_DOWNLOAD_BYTES;
+    case IOCTL_NVX_3D_NVC0_CLEAR:
+    case IOCTL_NVX_3D_NVC0_NATIVE_CLEAR:
+        return inBytes == sizeof(NVX_3D_NVC0_CLEAR) &&
+               outBytes >= sizeof(NVX_3D_NVC0_CLEAR);
+    case IOCTL_NVX_3D_DOWNLOAD_BUFFER:
+        return inBytes == sizeof(NVX_3D_DOWNLOAD_BUFFER) &&
+               outBytes > 0 && outBytes <= NVX_3D_MAX_DOWNLOAD_BYTES;
+    case IOCTL_NVX_3D_VALIDATE_BATCH:
+        return inBytes >= sizeof(NVX_3D_BATCH_HEADER) &&
+               inBytes <= NVX_3D_MAX_BATCH_BYTES && outBytes == 0;
+    case IOCTL_NVX_3D_CLIENT_OPEN:
+        return inBytes == sizeof(NVX_3D_CLIENT_SESSION) &&
+               outBytes >= sizeof(NVX_3D_CLIENT_SESSION);
+    case IOCTL_NVX_3D_CLIENT_CLOSE:
+        return inBytes == sizeof(NVX_3D_CLIENT_SESSION) && outBytes == 0;
+    case IOCTL_NVX_3D_CHANNEL_LEASE:
+        return inBytes == sizeof(NVX_3D_CHANNEL_LEASE) &&
+               outBytes >= sizeof(NVX_3D_CHANNEL_LEASE);
+    case IOCTL_NVX_3D_SUBMIT_BATCH:
+        return inBytes >= sizeof(NVX_3D_BATCH_HEADER) &&
+               inBytes <= NVX_3D_MAX_BATCH_BYTES &&
+               outBytes >= sizeof(NVX_3D_BATCH_RESULT);
+    case IOCTL_NVX_3D_PRESENT_COPY:
+        return inBytes == sizeof(NVX_3D_PRESENT_COPY) && outBytes == 0;
+    case IOCTL_NVX_3D_UPLOAD_SPANS:
+        return inBytes >= sizeof(NVX_3D_UPLOAD_SPANS) &&
+               inBytes <= sizeof(NVX_3D_UPLOAD_SPANS) + NVX_3D_MAX_UPLOAD_BYTES &&
+               outBytes == 0;
+    case IOCTL_NVX_3D_PRESENT_BATCH:
+        return inBytes == sizeof(NVX_3D_PRESENT_BATCH) && outBytes == 0;
+    default:
+        return 0;
+    }
 }
 
 /* Shared GPU path for the narrow Win98 PM API: validate screen-space values,
@@ -813,12 +891,7 @@ void NvxVxDPMDispatch(uint32_t vmHandle, NVX_CLIENT_REGS32 *clientRegs) {
 }
 
 int NvxVxDDeviceIoControl(DIOCParams *params) {
-    if (!params) return 0;
-    g_NvxShimCurrentProcessId = params->tagProcess ? params->tagProcess :
-                                (params->VMHandle ? params->VMHandle : 1U);
-    NvxShimLog("NVX [IOCTL]: Received dwIoControlCode=0x");
-    NvxShimLogHex(params->dwIoControlCode);
-    NvxShimLog("\n");
+    if (!params || params->lpoOverlapped) return -1;
     switch (params->dwIoControlCode) {
         case 0: /* DIOC_OPEN */
         case -1: /* DIOC_CLOSEHANDLE */
@@ -890,17 +963,30 @@ int NvxVxDDeviceIoControl(DIOCParams *params) {
 
         default:
             /* Windows 9x's VxD DIOC is the transport for the shared miniport
-               escape ABI. Preserve the caller's synchronous buffer lifetime
-               while forwarding it to the same HwStartIO handler used by XP. */
+               ABI. Keep the existing narrow 2D route and add bounded 3D
+               packets for a future user-mode Nine winsys adapter. */
             if (params->dwIoControlCode >= IOCTL_NVX_ACCEL_COPY &&
                 params->dwIoControlCode <= IOCTL_NVX_ACCEL_FILL_RECT &&
                 (params->dwIoControlCode & 3U) == 0U) {
-                return NvxShimDispatchMiniportIoctl(
+                ULONG processId = params->tagProcess ? params->tagProcess :
+                                  (params->VMHandle ? params->VMHandle : 1U);
+                return NvxShimDispatchMiniportIoctlForProcess(
                     params->dwIoControlCode,
                     params->lpvInBuffer, params->cbInBuffer,
                     params->lpvOutBuffer, params->cbOutBuffer,
-                    params->lpcbBytesReturned);
+                    params->lpcbBytesReturned, processId);
             }
-            return 0;
+            if (NvxVxDValidate3dDio(params->dwIoControlCode,
+                                    params->cbInBuffer,
+                                    params->cbOutBuffer)) {
+                ULONG processId = params->tagProcess ? params->tagProcess :
+                                  (params->VMHandle ? params->VMHandle : 1U);
+                return NvxShimDispatchMiniportIoctlForProcess(
+                    params->dwIoControlCode,
+                    params->lpvInBuffer, params->cbInBuffer,
+                    params->lpvOutBuffer, params->cbOutBuffer,
+                    params->lpcbBytesReturned, processId);
+            }
+            return -1;
     }
 }
