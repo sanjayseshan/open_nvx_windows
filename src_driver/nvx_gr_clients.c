@@ -223,7 +223,6 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     const char *stage="preconditions";
     ULONG registration[46]={0};
     NVA06F_CTRL_BIND_PARAMS bind={NV2080_ENGINE_TYPE_GRAPHICS};
-    NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS query={0};
     ULONG slot,base,doorbellConfig,classes[5]={AMPERE_B,
         NVX_RM_CLASS_AMPERE_COMPUTE_B,NVX_RM_CLASS_KEPLER_I2M_B,
         NVX_RM_CLASS_FERMI_2D_A,NVX_RM_CLASS_AMPERE_DMA_COPY_B};
@@ -340,15 +339,7 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     c->Promoted=TRUE;
     if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_GPU_PROMOTE_CTX,promote,sizeof(*promote))) goto fail;
     stage="runlist identity";
-    for(ULONG i=0;i<NV2080_GPU_MAX_ENGINES_LIST_SIZE;i++)
-        query.engineList[i]=NV2080_ENGINE_TYPE_NULL;
-    query.engineList[0]=NV2080_ENGINE_TYPE_GRAPHICS;
-    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_GPU_GET_ENGINE_RUNLIST_PRI_BASE,&query,sizeof(query))) goto fail;
-    {
-        const NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS *reply=
-            (const NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS *)(dev->RpcRxRecord+104);
-        c->RunlistBase=reply->runlistPriBase[0];
-    }
+    if(!NvxGspQueryGraphicsRunlist(dev,&c->RunlistBase)) goto fail;
     if(!c->RunlistBase||dev->Bar0Length<0x30094||c->RunlistBase>dev->Bar0Length-0x304) goto fail;
     doorbellConfig=VideoPortReadRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+8));
     if(doorbellConfig==0xffffffffU||(doorbellConfig&0xffff0000U)==0xbadf0000U) goto fail;

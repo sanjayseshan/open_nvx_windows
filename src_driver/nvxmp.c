@@ -2,7 +2,7 @@
  * NVIDIA GeForce RTX 3070 (Ampere GA104) XDDM Video Miniport Driver
  * Target: Windows XP Professional x64 Edition / Server 2003 x64 (NT 5.2)
  *
- * Driver Version: 4.0.0.44
+ * Driver Version: 4.0.0.59
  */
 
 #include "miniport.h"
@@ -1404,6 +1404,7 @@ BOOLEAN NTAPI HwVidInitialize(PVOID HwDeviceExtension) {
 
 static volatile ULONG g_Nvx3dBufferLock=0;
 static volatile LONG g_Nvx3dProcessContextLogged=0;
+static volatile LONG g_Nvx3dCapsLogged=0;
 static ULONG g_Nvx3dSessionSeed=0;
 static ULONG g_Nvx3dSessionSequence=0;
 
@@ -3689,6 +3690,8 @@ BOOLEAN NTAPI HwVidStartIO(
             (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
         static ULONG s_copyCount = 0;
         ULONG64 base,surfaceBytes,srcOffset,dstOffset,srcSpan,dstSpan;
+        ULONG srcX,srcY,dstX,dstY;
+        BOOLEAN overlapMove=FALSE,copied=FALSE;
         if (!params || RequestPacket->InputBufferLength < sizeof(NVX_ACCEL_COPY_PARAMS)) {
             status = ERROR_INVALID_PARAMETER;
             break;
@@ -3717,20 +3720,44 @@ BOOLEAN NTAPI HwVidStartIO(
             status=ERROR_INVALID_PARAMETER;
             break;
         }
-        /* The copy path rejects overlapping spans; CE overlap semantics are
-           not assumed for a multi-row DMA. */
+        /* Bounding spans can intersect for disjoint 2D rectangles because
+           the rows include pitch padding. Resolve those intersections using
+           the actual rectangle coordinates. The scratch memmove path is only
+           valid for equal pitches and rectangles wholly inside each row. */
         if (srcOffset<dstOffset+dstSpan && dstOffset<srcOffset+srcSpan) {
-            status=ERROR_INVALID_PARAMETER;
-            break;
+            if (params->SrcPitch!=params->DstPitch) {
+                status=ERROR_INVALID_PARAMETER;
+                break;
+            }
+            srcX=(ULONG)(srcOffset%params->SrcPitch);
+            srcY=(ULONG)(srcOffset/params->SrcPitch);
+            dstX=(ULONG)(dstOffset%params->DstPitch);
+            dstY=(ULONG)(dstOffset/params->DstPitch);
+            if (srcX>params->SrcPitch-params->BytesPerLine ||
+                dstX>params->DstPitch-params->BytesPerLine) {
+                status=ERROR_INVALID_PARAMETER;
+                break;
+            }
+            if (srcY<dstY+params->LineCount &&
+                dstY<srcY+params->LineCount &&
+                srcX<dstX+params->BytesPerLine &&
+                dstX<srcX+params->BytesPerLine)
+                overlapMove=TRUE;
         }
-        if (NvxGspSubmitCopy2D(engine,params->DstGpuVa,params->SrcGpuVa,
-                               params->SrcPitch,params->DstPitch,
-                               params->BytesPerLine,params->LineCount)) {
+        if (overlapMove)
+            copied=NvxGspSubmitMemmove2D(engine,params->DstGpuVa,
+                params->SrcGpuVa,params->SrcPitch,params->BytesPerLine,
+                params->LineCount,dstY>srcY);
+        else
+            copied=NvxGspSubmitCopy2D(engine,params->DstGpuVa,params->SrcGpuVa,
+                params->SrcPitch,params->DstPitch,params->BytesPerLine,
+                params->LineCount);
+        if (copied) {
             status = NO_ERROR;
             statusBlock->Information = sizeof(NVX_ACCEL_COPY_PARAMS);
             s_copyCount++;
             if ((s_copyCount <= 5) || (s_copyCount % 10000 == 0)) {
-                LogStr("NVX [ACCEL]: GPU Copy #"); LogHex(s_copyCount);
+                LogStr(overlapMove?"NVX [ACCEL]: GPU overlap-safe Copy #":"NVX [ACCEL]: GPU Copy #"); LogHex(s_copyCount);
                 LogStr(" srcOffset=");LogHex(srcOffset);
                 LogStr(" dstOffset=");LogHex(dstOffset);
                 LogStr(" bytesPerLine=");LogHex(params->BytesPerLine);
@@ -3917,7 +3944,6 @@ BOOLEAN NTAPI HwVidStartIO(
         PNVX_DEVICE_EXTENSION engine=devExt->IsSecondaryDisplay?
             (PNVX_DEVICE_EXTENSION)devExt->PrimaryDeviceExtension:devExt;
         NVX_3D_QUERY_CAPS *caps=(NVX_3D_QUERY_CAPS *)RequestPacket->OutputBuffer;
-        ULONG64 heapStart,heapEnd;
         if(!__sync_lock_test_and_set(&g_Nvx3dProcessContextLogged,1)) {
             LogStr("NVX [3D-CLIENT-CONTEXT]: HwStartIO process id=");
             LogHex((ULONG64)(ULONG_PTR)PsGetCurrentProcessId());
@@ -3932,8 +3958,11 @@ BOOLEAN NTAPI HwVidStartIO(
             engine&&engine->GspMmuFaultQueued,
             engine&&engine->GspGraphicsDataWriteVerified,
             engine&&engine->GspGraphicsPixelClearVerified,
-            engine&&engine->GspCopyVerified&&
-                Nvx3dHeapBounds(engine,&heapStart,&heapEnd),
+            /* GART-backed first allocations do not depend on an FB heap.
+               USER_ALLOC must be advertised before the winsys can issue its
+               first allocation, so gate it on the initialized GART instead
+               of the previous-allocation/VRAM-heap state. */
+            engine&&engine->GspGartReady,
             engine&&engine->GspGraphicsChannelReady&&
                 engine->GspGraphicsCommandVerified&&
                 engine->GspGraphicsPixelClearVerified);
@@ -3988,6 +4017,14 @@ BOOLEAN NTAPI HwVidStartIO(
             caps->Features|=NVX_3D_FEATURE_TEST_TRIANGLE;
         if(engine&&engine->GspGraphicsClientTriangleVerified)
             caps->Features|=NVX_3D_FEATURE_CLIENT_TRIANGLE;
+        if(!__sync_lock_test_and_set(&g_Nvx3dCapsLogged,1)) {
+            LogStr("NVX [3D-CAPS]: features=");LogHex(caps->Features);
+            LogStr(" grReady=");LogHex(engine?engine->GspGraphicsChannelReady:0);
+            LogStr(" commandVerified=");LogHex(engine?engine->GspGraphicsCommandVerified:0);
+            LogStr(" gartReady=");LogHex(engine?engine->GspGartReady:0);
+            LogStr(" userAllocState=");LogHex(engine?engine->GspGraphicsUserAllocReady:0);
+            LogStr("\n");
+        }
         RequestPacket->StatusBlock->Information=sizeof(*caps);
         status=NO_ERROR;
         break;
@@ -5348,7 +5385,7 @@ ULONG NTAPI DriverEntry(PVOID Context1, PVOID Context2) {
     ULONG status;
 
     LogStr("\n========================================\n");
-    LogStr(" NVX Video Miniport Driver 4.0.0.44 (open-gpu-kernel-modules unified v2)\n");
+    LogStr(" NVX Video Miniport Driver 4.0.0.59 (open-gpu-kernel-modules unified v2)\n");
     LogStr("========================================\n");
 
     VideoPortZeroMemory(&hwInitData, sizeof(VIDEO_HW_INITIALIZATION_DATA));

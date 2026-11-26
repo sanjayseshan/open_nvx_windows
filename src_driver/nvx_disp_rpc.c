@@ -315,7 +315,12 @@ VOID NvxGspWakeSecondaryDpSink(PVOID HwDeviceExtension)
 static BOOLEAN NvxGspVerifyDisplays(PNVX_DEVICE_EXTENSION dev)
 {
     BOOLEAN primaryActive=FALSE,secondaryActive=FALSE;
-    for(ULONG head=0;head<2;head++) {
+#if defined(__VXDKERNEL__) && NVX_WIN98_SINGLE_MONITOR
+    const ULONG headCount=1;
+#else
+    const ULONG headCount=2;
+#endif
+    for(ULONG head=0;head<headCount;head++) {
         ULONG active[4]={0,head,0,0};
         ULONG id=0;
         ULONG monitor,protocol=0xffffffffUL;
@@ -360,8 +365,13 @@ static BOOLEAN NvxGspVerifyDisplays(PNVX_DEVICE_EXTENSION dev)
             }
         }
     }
+#if defined(__VXDKERNEL__) && NVX_WIN98_SINGLE_MONITOR
+    LogStr("NVX [DISPLAY-VERIFY]: singlePrimaryHeadActive=");LogHex(primaryActive);LogStr("\n");
+    return primaryActive && !dev->NativeDisplayFaulted;
+#else
     LogStr("NVX [DISPLAY-VERIFY]: bothHeadsActive=");LogHex(primaryActive&&secondaryActive);LogStr("\n");
     return primaryActive && secondaryActive && !dev->NativeDisplayFaulted;
+#endif
 }
 
 /* Read-only snapshots: distinguish DMA-object lookup faults from an UPDATE
@@ -473,6 +483,144 @@ static BOOLEAN NvxNativeReserveDma(PNVX_DEVICE_EXTENSION dev,ULONG user,
     return FALSE;
 }
 
+#if defined(__VXDKERNEL__) && NVX_WIN98_SINGLE_MONITOR
+/* Win98 has one framebuffer and one Windows display device. Program only
+   head 0/window 0; a second connector discovered by RM is not a second Win98
+   desktop and must not receive a synthetic scanout. */
+static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
+{
+    PUCHAR bar0;
+    PULONG core,window;
+    volatile ULONG *notifier;
+    ULONG n=0,windowCount=0,owner;
+    ULONG width,height,pitch;
+    ULONG64 end;
+    NVX_DISPLAY_TIMING mode;
+    NVX_EVO_RASTER raster;
+    ULONG desc[6]={0x45,0,0,0,0,0};
+    uint32_t slot,entry[2];
+    ULONG64 instanceVa;
+    BOOLEAN ownerChanged=FALSE;
+
+    if(!dev) return FALSE;
+    if(dev->IsSecondaryDisplay) dev=(PNVX_DEVICE_EXTENSION)dev->PrimaryDeviceExtension;
+    if(!dev || dev->NativeDisplayFaulted || !dev->MonitorCount ||
+       !dev->MonitorIds[0] || dev->MonitorSor[0]>=4 ||
+       (dev->MonitorProtocol[0]!=8 && dev->MonitorProtocol[0]!=9)) {
+        LogStr("NVX [NATIVE-1HEAD]: primary display route unavailable.\n");
+        return FALSE;
+    }
+    if(!dev->NativeDisplayChannelsReady && !NvxGspInitDisplayChannels(dev)) {
+        LogStr("NVX [NATIVE-1HEAD]: display channel initialization failed.\n");
+        return FALSE;
+    }
+    if(dev->CurrentModeIndex>=dev->NumModes ||
+       dev->Modes[dev->CurrentModeIndex].BitsPerPlane!=32 ||
+       dev->Modes[dev->CurrentModeIndex].VisScreenWidth<640) {
+        ULONG targetW=dev->MonitorTiming[0].hActive ? dev->MonitorTiming[0].hActive : 2560;
+        ULONG targetH=dev->MonitorTiming[0].vActive ? dev->MonitorTiming[0].vActive : 1440;
+        for(ULONG m=0;m<dev->NumModes;m++) {
+            if(dev->Modes[m].VisScreenWidth==targetW &&
+               dev->Modes[m].VisScreenHeight==targetH &&
+               dev->Modes[m].BitsPerPlane==32) {
+                dev->CurrentModeIndex=m;
+                break;
+            }
+        }
+    }
+    if(dev->CurrentModeIndex>=dev->NumModes) return FALSE;
+    width=dev->Modes[dev->CurrentModeIndex].VisScreenWidth;
+    height=dev->Modes[dev->CurrentModeIndex].VisScreenHeight;
+    pitch=dev->Modes[dev->CurrentModeIndex].ScreenStride;
+    mode=dev->MonitorTiming[0];
+    if(width<640 || height<480 || pitch<width*4 || (pitch&63) ||
+       !mode.hActive || !mode.vActive || !NvxEncodeEvoRaster(&mode,&raster)) {
+        LogStr("NVX [NATIVE-1HEAD]: primary mode validation failed.\n");
+        return FALSE;
+    }
+    end=(ULONG64)pitch*height-1;
+    if(end>=dev->NativeDisplayInstance) {
+        LogStr("NVX [NATIVE-1HEAD]: framebuffer exceeds display DMA instance.\n");
+        return FALSE;
+    }
+
+    bar0=dev->Bar0MmioVirtual;
+    core=(PULONG)((PUCHAR)dev->GspDmaVirtual+GSP_DISPLAY_PUSH_OFFSET);
+    notifier=(volatile ULONG *)((PUCHAR)core+0x3000);
+    window=(PULONG)((PUCHAR)core+0x1000); /* window channel 1 */
+    VideoPortZeroMemory((PVOID)notifier,0x1000);
+
+    /* Bind just notifier and window-0 image DMA. */
+    {
+        ULONG64 physical=dev->GspDmaPhysical.QuadPart+GSP_DISPLAY_PUSH_OFFSET+0x3000;
+        desc[0]=0x47;desc[1]=(ULONG)(physical>>8);desc[2]=(ULONG)(physical>>40);
+        desc[3]=(ULONG)((physical+0xfff)>>8);desc[4]=(ULONG)((physical+0xfff)>>40);
+        instanceVa=dev->GspVramGpuVa+dev->NativeDisplayInstance;
+        if(!NvxDisplayRamhtEntry(0xd1500001,0,0x2000,dev->GspClientHandle,&slot,entry) ||
+           !NvxGspUpload(dev,instanceVa+0x2000,desc,sizeof(desc)) ||
+           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) return FALSE;
+    }
+    {
+        /* Match the established window DMA descriptor layout: word 3 is
+           the inclusive image limit in 256-byte units. */
+        ULONG imageDesc[6]={0x45,0,0,(ULONG)(end>>8),0,0};
+        ULONG legacy;
+        if(!NvxDisplayRamhtEntry(0xd1500002,1,0x2020,dev->GspClientHandle,&slot,entry) ||
+           !NvxGspUpload(dev,instanceVa+0x2020,imageDesc,sizeof(imageDesc)) ||
+           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) return FALSE;
+        legacy=NvxDisplayRamhtV169Slot(0xd1500002,1);
+        if(legacy!=slot && !NvxGspUpload(dev,instanceVa+legacy*8,entry,sizeof(entry))) return FALSE;
+    }
+
+    if(!NvxNativeReserveDma(dev,0x680000,core,600,&n)) return FALSE;
+    owner=VideoPortReadRegisterUlong((PULONG)(bar0+0x681000))&15;
+    if(owner!=0) {
+        NvxNativeMethod(core,&n,NVX_C67D_WINDOW_SET_CONTROL(0),0);
+        ownerChanged=TRUE;
+    }
+    if(ownerChanged) {
+        NvxNativeMethod(core,&n,0x208,0xd1500001);
+        NvxNativeMethod(core,&n,0x20c,0x1000);
+        NvxNativeMethod(core,&n,0x218,0);
+        NvxNativeMethod(core,&n,0x21c,0);
+        NvxNativeMethod(core,&n,0x200,1);
+        if(!NvxNativeFlushDma(core,0x1000) || !NvxNativeFlushDma((PVOID)notifier,16)) return FALSE;
+        VideoPortWriteRegisterUlong((PULONG)(bar0+0x680000),NvxDisplayPutBytes(n));
+        (void)NvxNativeWaitNotifier(notifier);
+        if((notifier[0]>>30)!=2) return FALSE;
+        VideoPortZeroMemory((PVOID)notifier,16);
+    }
+
+    /* Keep unrelated windows disabled and commit only window 0 + head 0. */
+    for(ULONG w=0;w<8;w++) {
+        NvxNativeMethod(core,&n,0x1004+w*0x80,0x1f);
+        NvxNativeMethod(core,&n,0x1008+w*0x80,0);
+        NvxNativeMethod(core,&n,0x1010+w*0x80,0x00117fff);
+    }
+    if(!NvxNativeReserveDma(dev,0x690000,window,900,&windowCount)) return FALSE;
+    NvxNativeWindow(window,&windowCount,width,height,pitch,0,0xd1500002);
+    if(!NvxNativeHead(core,&n,0,&mode,width,height,dev->MonitorIds[0],
+                      dev->MonitorSor[0],dev->MonitorProtocol[0])) return FALSE;
+    NvxNativeMethod(core,&n,0x208,0xd1500001);
+    NvxNativeMethod(core,&n,0x20c,0x1000);
+    NvxNativeMethod(core,&n,0x218,0);
+    NvxNativeMethod(core,&n,0x21c,1); /* Window 0 only. */
+    NvxNativeMethod(core,&n,0x200,1);
+    if(!NvxNativeFlushDma(core,0x1000) || !NvxNativeFlushDma(window,0x1000) ||
+       !NvxNativeFlushDma((PVOID)notifier,16)) return FALSE;
+    VideoPortWriteRegisterUlong((PULONG)(bar0+0x690000),NvxDisplayPutBytes(windowCount));
+    VideoPortWriteRegisterUlong((PULONG)(bar0+0x680000),NvxDisplayPutBytes(n));
+    (void)NvxNativeWaitNotifier(notifier);
+    {
+        BOOLEAN active=NvxGspVerifyDisplays(dev);
+        LogStr("NVX [NATIVE-1HEAD]: mode=");LogHex(width);LogStr("x");LogHex(height);
+        LogStr(" pitch=");LogHex(pitch);LogStr(" updateNotifier=");LogHex(notifier[0]);
+        LogStr(" primaryActive=");LogHex(active);LogStr("\n");
+        return active && (notifier[0]>>30)==2;
+    }
+}
+#endif
+
 BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
 {
     PNVX_DEVICE_EXTENSION dev=extension,sec;
@@ -492,6 +640,9 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
         dev = (PNVX_DEVICE_EXTENSION)dev->PrimaryDeviceExtension;
         if(!dev) return FALSE;
     }
+#if defined(__VXDKERNEL__) && NVX_WIN98_SINGLE_MONITOR
+    return NvxNativeSetPrimaryScanout(dev);
+#endif
     if(!dev->NativeDisplayChannelsReady) {
         LogStr("NVX [NATIVE]: display channels not yet ready; initializing now.\n");
         if(!NvxGspInitDisplayChannels(dev)) {
@@ -499,7 +650,17 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
             return FALSE;
         }
     }
-    if(dev->NativeDisplayFaulted || dev->MonitorCount<2 || !(sec=dev->SecondaryDeviceExtension)) {
+    /* A single-display Win9x build has no second miniport extension, although
+       GSP may still report two physically connected outputs. Reuse the
+       selected primary mode for the other output in that configuration; this
+       keeps the native primary transaction available without inventing a
+       separate modeset implementation. The two-display XP path still uses
+       its independent secondary mode state. */
+    sec=dev->SecondaryDeviceExtension;
+#ifdef __VXDKERNEL__
+    if(!sec && dev->MonitorCount>=2) sec=dev;
+#endif
+    if(dev->NativeDisplayFaulted || dev->MonitorCount<2 || !sec) {
         LogStr("NVX [NATIVE]: cannot set secondary scanout: faulted=");
         LogHex(dev->NativeDisplayFaulted);
         LogStr(" monitors=");LogHex(dev->MonitorCount);
@@ -597,7 +758,10 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
             ULONG j=i-1;
             ULONG64 end=offsets[j]+(ULONG64)pitches[j]*heights[j]-1;
             if((j==0 && end>=dev->NativeDisplayInstance) ||
-               (j==1 && (offsets[1]<0x2000000 || end>dev->GspFbFreeLimit))) {
+#ifndef __VXDKERNEL__
+               (j==1 && offsets[1]<0x2000000) ||
+#endif
+               (j==1 && end>dev->GspFbFreeLimit)) {
                 LogStr("NVX [NATIVE]: DMA descriptor limit check failed for window=");
                 LogHex(j);LogStr(" end=");LogHex(end);LogStr("\n");
                 return FALSE;
@@ -690,7 +854,9 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
 }
 
 /* ctrl0073specific.h GET_EDID_V2: fixed inline buffer, no guest pointers. */
-static VOID NvxGspReadMonitorEdid(PNVX_DEVICE_EXTENSION dev,ULONG displayId)
+/* Its 2048-byte EDID request must not be inlined into the GSP bootstrap
+ * frame; Win9x invokes this path on a limited VxD system stack. */
+static __attribute__((noinline)) VOID NvxGspReadMonitorEdid(PNVX_DEVICE_EXTENSION dev,ULONG displayId)
 {
     ULONG params[516]={0};
     const ULONG *reply;
@@ -1103,9 +1269,15 @@ static BOOLEAN NvxGspCreateObjects(PNVX_DEVICE_EXTENSION dev,ULONG rxSequence)
        failure leaves graphics unavailable while preserving display/copy. */
     if(!NvxGspCreateGraphicsProbe(dev))
         LogStr("NVX [GR]: bring-up probe incomplete; display remains enabled.\n");
+    LogStr("NVX [GR]: startup context setup returned ready=");
+    LogHex(dev->GspGraphicsChannelReady);
+    LogStr(" promoted=");LogHex(dev->GspGrPromotionAccepted);
+    LogStr(" client-layout-buffers=");LogHex(dev->GspClientGrLayout.count);
+    LogStr("\n");
 #else
     LogStr("NVX [GR]: isolated RM graphics channel initialization disabled.\n");
 #endif
+    LogStr("NVX [RM]: base objects, CE, and optional GR setup complete; returning.\n");
     return TRUE;
 }
 

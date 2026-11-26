@@ -699,6 +699,11 @@ BOOLEAN NvxGspUploadSpans(PVOID extension,ULONG64 dstVa,
                           const NVX_3D_UPLOAD_SPANS *request);
 BOOLEAN NvxGspSubmitCopy2D(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG64 srcVa,
                            ULONG srcPitch,ULONG dstPitch,ULONG bytesPerLine,ULONG lineCount);
+/* Overlap-safe 2D move through reserved CE scratch; reverseRows is TRUE when
+ * the destination starts below the source in the same pitched surface. */
+BOOLEAN NvxGspSubmitMemmove2D(PVOID HwDeviceExtension,ULONG64 dstVa,
+    ULONG64 srcVa,ULONG pitch,ULONG bytesPerLine,ULONG lineCount,
+    BOOLEAN reverseRows);
 /* Internal variants for callers that already own NvxGrUserSubmitBusy. */
 BOOLEAN NvxGspSubmitCopy2DLocked(PVOID HwDeviceExtension,ULONG64 dstVa,
                                  ULONG64 srcVa,ULONG srcPitch,ULONG dstPitch,

@@ -667,6 +667,76 @@ BOOLEAN NvxGspSubmitCopy2DLocked(PVOID extension,ULONG64 dstVa,ULONG64 srcVa,
     return result;
 }
 
+/* CE copies are not assumed to have memmove semantics. Preserve GDI screen
+ * moves by staging each vertical strip in a reserved part of the GSP scratch
+ * allocation, then copying it to the destination. The CE queue executes the
+ * source->scratch and scratch->destination descriptors in order. Strips run
+ * bottom-up for downward moves, so earlier writes cannot clobber unread rows.
+ */
+BOOLEAN NvxGspSubmitMemmove2D(PVOID extension,ULONG64 dstVa,ULONG64 srcVa,
+    ULONG pitch,ULONG bytesPerLine,ULONG lineCount,BOOLEAN reverseRows)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)extension;
+    NVX_GPU_COPY_RECT rects[NVX_3D_MAX_COPY_RECTS];
+    const ULONG scratchOffset=0x12000U;
+    ULONG scratchBytes,rowsPerStrip,done=0,count=0;
+    ULONG64 scratchVa;
+    BOOLEAN result=FALSE;
+
+    if(!dev||!dev->GspInitialized||!dev->GspCopyVerified||
+       dev->GspChannelFaulted||!dev->GspScratchGpuVa||!dev->GspDmaVirtual||
+       dev->GspDmaLength<GSP_SCRATCH_OFFSET+GSP_SCRATCH_SIZE||
+       !pitch||!bytesPerLine||!lineCount||pitch<bytesPerLine||
+       (pitch&3U)||(bytesPerLine&3U)||
+       bytesPerLine>0x01000000U||lineCount>0x10000U)
+        return FALSE;
+    scratchBytes=GSP_SCRATCH_SIZE-scratchOffset;
+    if(bytesPerLine>scratchBytes) return FALSE;
+    rowsPerStrip=scratchBytes/bytesPerLine;
+    if(!rowsPerStrip) return FALSE;
+    scratchVa=dev->GspScratchGpuVa+scratchOffset;
+
+    if(!NvxGspLockUserScratch()) return FALSE;
+    if(!NvxGspLockEngine()) {
+        __sync_lock_release(&NvxGrUserSubmitBusy);
+        return FALSE;
+    }
+
+    result=TRUE;
+    while(done<lineCount) {
+        ULONG rows,rowOffset;
+        if(count+2U>NVX_3D_MAX_COPY_RECTS) {
+            if(!NvxGspSubmitCopyRectsUnlocked(dev,rects,count)) {
+                result=FALSE;break;
+            }
+            count=0;
+        }
+        rows=lineCount-done;
+        if(rows>rowsPerStrip) rows=rowsPerStrip;
+        rowOffset=reverseRows?lineCount-done-rows:done;
+        rects[count].SrcVa=srcVa+(ULONG64)rowOffset*pitch;
+        rects[count].DstVa=scratchVa;
+        rects[count].SrcPitch=pitch;
+        rects[count].DstPitch=bytesPerLine;
+        rects[count].BytesPerLine=bytesPerLine;
+        rects[count].LineCount=rows;
+        count++;
+        rects[count].SrcVa=scratchVa;
+        rects[count].DstVa=dstVa+(ULONG64)rowOffset*pitch;
+        rects[count].SrcPitch=bytesPerLine;
+        rects[count].DstPitch=pitch;
+        rects[count].BytesPerLine=bytesPerLine;
+        rects[count].LineCount=rows;
+        count++;
+        done+=rows;
+    }
+    if(result&&count)
+        result=NvxGspSubmitCopyRectsUnlocked(dev,rects,count);
+    NvxGspUnlockEngine();
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return result;
+}
+
 /* Keep display verification off live RAMIN and hold both shared scratch
  * and CE ownership until the CPU has consumed the GPU readback. */
 static BOOLEAN NvxGspVerifyZeroRange(PNVX_DEVICE_EXTENSION dev,ULONG64 srcVa,

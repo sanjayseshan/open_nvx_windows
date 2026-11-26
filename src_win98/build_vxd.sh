@@ -15,8 +15,15 @@ LIBGCC="${LIBGCC:-$($CC -print-libgcc-file-name)}"
 
 OPEN_GPU_DIR="$ROOT_DIR/open-gpu-kernel-modules"
 WIN98_SINGLE_MONITOR="${WIN98_SINGLE_MONITOR:-1}"
+# Win98's Mesa ICD and per-client channel path require the shared OpenRM GR
+# context to be initialized during GSP startup. Keep this enabled by default;
+# the bounded triangle/submission diagnostics remain separately opt-in.
+NVX_ENABLE_GR_CHANNEL_PROBE="${NVX_ENABLE_GR_CHANNEL_PROBE:-1}"
+NVX_ENABLE_GR_PROMOTE_PROBE="${NVX_ENABLE_GR_PROMOTE_PROBE:-1}"
+NVX_ENABLE_GR_SUBMISSION_PROBE="${NVX_ENABLE_GR_SUBMISSION_PROBE:-0}"
+NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE="${NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE:-0}"
 CONTAINER_DIR="$OPEN_GPU_DIR/src/nvidia/src/libraries/containers"
-CFLAGS="-m32 -O2 -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wno-pointer-to-int-cast -fno-pie -fno-stack-protector -falign-functions=32 -falign-labels=16 -falign-loops=16 -falign-jumps=16 -D__VXDKERNEL__ -DNVX_WIN98=1 -DNVX_WIN98_SINGLE_MONITOR=$WIN98_SINGLE_MONITOR -DNVX_ENABLE_EXPERIMENTAL_GSP=1 -I$ROOT_DIR/src_driver -I$ROOT_DIR/src_driver/include -I$ROOT_DIR/src_driver/openrm_xp -I$OPEN_GPU_DIR/src/common/sdk/nvidia/inc -I$OPEN_GPU_DIR/src/common/inc -I$OPEN_GPU_DIR/src/nvidia/arch/nvalloc/common/inc -I$OPEN_GPU_DIR/src/common/shared/msgq/inc -I$OPEN_GPU_DIR/kernel-open/common/inc -I$OPEN_GPU_DIR/src/nvidia/inc -I$OPEN_GPU_DIR/src/nvidia/inc/libraries -I$SCRIPT_DIR/shim -nostdlib -fno-builtin"
+CFLAGS="-m32 -O2 -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wno-pointer-to-int-cast -fno-pie -fno-stack-protector -falign-functions=32 -falign-labels=16 -falign-loops=16 -falign-jumps=16 -D__VXDKERNEL__ -DNVX_WIN98=1 -DNVX_WIN98_SINGLE_MONITOR=$WIN98_SINGLE_MONITOR -DNVX_ENABLE_EXPERIMENTAL_GSP=1 -DNVX_ENABLE_GR_CHANNEL_PROBE=$NVX_ENABLE_GR_CHANNEL_PROBE -DNVX_ENABLE_GR_PROMOTE_PROBE=$NVX_ENABLE_GR_PROMOTE_PROBE -DNVX_ENABLE_GR_SUBMISSION_PROBE=$NVX_ENABLE_GR_SUBMISSION_PROBE -DNVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE=$NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE -I$ROOT_DIR/src_driver -I$ROOT_DIR/src_driver/include -I$ROOT_DIR/src_driver/openrm_xp -I$OPEN_GPU_DIR/src/common/sdk/nvidia/inc -I$OPEN_GPU_DIR/src/common/inc -I$OPEN_GPU_DIR/src/nvidia/arch/nvalloc/common/inc -I$OPEN_GPU_DIR/src/common/shared/msgq/inc -I$OPEN_GPU_DIR/kernel-open/common/inc -I$OPEN_GPU_DIR/src/nvidia/inc -I$OPEN_GPU_DIR/src/nvidia/inc/libraries -I$SCRIPT_DIR/shim -nostdlib -fno-builtin"
 
 echo "==> 1. Assembling VxD entry and VMM wrappers..."
 nasm -f win32 "$SCRIPT_DIR/vxd_entry.asm" -o "$OBJ_DIR/vxd_entry.o"

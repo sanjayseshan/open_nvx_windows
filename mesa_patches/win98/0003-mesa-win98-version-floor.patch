@@ -1,0 +1,15 @@
+diff --git a/meson.options b/meson.options
+--- a/meson.options
++++ b/meson.options
+@@ -753,8 +753,8 @@ option(
+ option(
+   'min-windows-version',
+   type : 'integer',
+-  min : 5,
++  min : 4,
+   max : 11,
+-  value : 5,
+-  description : 'Minimum Windows version to support (5 = Windows XP).'
++  value : 4,
++  description : 'Minimum Windows version for NVX Win9x compatibility build.'
+ )

@@ -63,7 +63,7 @@ void mesa99_printf(const char *file, const char *fn, int line, const char *fmt, 
 	if (!s_debug_enabled) return;
   va_list args;
 	FILE *fa;
-	
+
 	fa = fopen("C:\\mesa99.log", "ab");
 	if(fa)
 	{
@@ -134,31 +134,43 @@ static BOOL GetGLICD(char *OutDllName, size_t OutDllNameSize)
 	HWND hDesktop = GetDesktopWindow();
 	HDC hdc = GetDC(hDesktop);
 	DWORD testData = OPENGL_GETINFO;
-	
+	BOOL found = FALSE;
+	static const char *const driverKeys[] = {
+		/* Windows 9x (the path used by OPENGL32.DLL and the display INF). */
+		"Software\\Microsoft\\Windows\\CurrentVersion\\OpenGLDrivers",
+		/* Keep the XP/Wine NT-style registry location as a fallback. */
+		"Software\\Microsoft\\Windows NT\\CurrentVersion\\OpenGLDrivers",
+	};
+
+	if (!hdc)
+		return FALSE;
 	if(ExtEscape(hdc, QUERYESCSUPPORT, sizeof(DWORD), (LPCSTR)&testData, 0, NULL))
 	{
 		opengl_icd_t icd = {};
 		if(ExtEscape(hdc, OPENGL_GETINFO, 0, NULL, sizeof(opengl_icd_t), (LPSTR)&icd))
 		{
-			HKEY hKey;
-			LSTATUS lResult;
-			lResult = RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows NT\\CurrentVersion\\OpenGLDrivers", 0, KEY_READ, &hKey);
-			if(lResult == ERROR_SUCCESS)
-			{
-				DWORD type;
-				DWORD size = OutDllNameSize;
-				lResult = RegQueryValueExA(hKey, icd.DLL, NULL, &type, (LPBYTE)OutDllName, &size);
-				if(lResult == ERROR_SUCCESS)
-				{
-					if(type == REG_SZ)
-					{
-						return TRUE;
-					}
+			unsigned int i;
+			for (i = 0; i < sizeof(driverKeys) / sizeof(driverKeys[0]); i++) {
+				HKEY hKey;
+				DWORD type = 0;
+				DWORD size = (DWORD)OutDllNameSize;
+				if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, driverKeys[i], 0,
+				                  KEY_READ, &hKey) != ERROR_SUCCESS)
+					continue;
+				if (RegQueryValueExA(hKey, icd.DLL, NULL, &type,
+				                     (LPBYTE)OutDllName, &size) == ERROR_SUCCESS &&
+				    type == REG_SZ && size > 1 && size <= OutDllNameSize) {
+					OutDllName[size - 1] = '\0';
+					found = TRUE;
 				}
+				RegCloseKey(hKey);
+				if (found)
+					break;
 			}
 		}
 	}
-	return FALSE;
+	ReleaseDC(hDesktop, hdc);
+	return found;
 }
 
 #define TRY_LOAD_FUNC(_fname) \
@@ -239,9 +251,15 @@ static HRESULT d3dadapter9_context_create(struct d3dadapter9_context *ctx, struc
 	ctx->throttling                 = FALSE;
 	ctx->throttling_value           = 0;
 	ctx->vblank_mode                = 1;
-	/* Keep presentation work off the application's render thread. Nine's
-	 * separate CSMT path remains gated by Nouveau's persistent-coherent cap. */
+	/* The Win9x WGL present callback maps the Nine render target and copies it
+	 * through GDI. It must run on the same thread as Gallium's context; the
+	 * generic Nine worker-thread present path can deadlock on its second frame.
+	 * Keep the upstream threaded path for XP, where the ICD transport supports it. */
+#ifdef WIN9X
+	ctx->thread_submit              = FALSE;
+#else
 	ctx->thread_submit              = TRUE;
+#endif
 	ctx->discard_delayed_release    = FALSE;
 	ctx->tearfree_discard           = FALSE;
 	ctx->csmt_force                 = FALSE;

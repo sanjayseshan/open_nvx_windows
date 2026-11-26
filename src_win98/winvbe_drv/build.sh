@@ -7,7 +7,7 @@ RES=${RES:-../res}
 WIN98_SINGLE_MONITOR=${WIN98_SINGLE_MONITOR:-1}
 python3 ../tools/mkres.py ../res >/dev/null
 
-# ----------------- 1. Build Primary Driver (Head 0, 1080p, LFB 0xE0000000) -----------------
+# ----------------- 1. Build Primary Driver (Head 0, GSP native timing, LFB 0xE0000000) -----------------
 echo "==> Building Primary Driver (nvx.drv)..."
 mkdir -p obj
 CFLAGS="$XCF -q -ml -zc -zu -s -3 -ox -zl -zls -wx -we -wcd=303 -wcd=202 -bt=windows -fpi -zq -i=."

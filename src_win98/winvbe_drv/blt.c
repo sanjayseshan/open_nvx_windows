@@ -3,6 +3,9 @@
  */
 #include "drv.h"
 
+/* Shared scratch used by StretchBlt and source format conversion. */
+BYTE bufT[ROWBUF];
+
 /* build n pixels of pattern for destination row y starting at x */
 void pattern_row(BYTE *dst, LPPBRUSH br, LPDRAWMODE dm, SURF *d, WORD y, WORD x, WORD n)
 {
@@ -61,7 +64,7 @@ void pattern_row(BYTE *dst, LPPBRUSH br, LPDRAWMODE dm, SURF *d, WORD y, WORD x,
 }
 
 /* convert a source row into destination working format in bufS */
-void load_src(SURF *s, SURF *d, WORD y, WORD x, WORD n, LPDRAWMODE dm)
+void load_src(SURF *s, SURF *d, WORD y, WORD x, WORD n, LPDRAWMODE dm, BYTE rop3)
 {
     WORD i;
     if (s->planar) {
@@ -82,22 +85,53 @@ void load_src(SURF *s, SURF *d, WORD y, WORD x, WORD n, LPDRAWMODE dm)
         return;
     }
     if (s->mono) {
-        /* mono -> color: 0 = text color, 1 = background color */
-        DWORD fg = dm ? pix_of(dm->TextColor) : 0;
-        DWORD bg = dm ? pix_of(dm->bkColor) : pix_of(phys_white());
-        BYTE Bpp = d->Bpp;
+        DWORD fg, bg;
+        BYTE Bpp;
+        /* mono -> color text: 0 = text color, 1 = background color */
+        fg = dm ? pix_of(dm->TextColor) : 0;
+        bg = dm ? pix_of(dm->bkColor) : pix_of(phys_white());
+        Bpp = d->Bpp;
         row_read(s, y, x, n, bufS);
         for (i = n; i-- > 0;)
             pix_put(bufS + i * Bpp, bufS[i] ? bg : fg, Bpp);
         return;
     }
-    /* color -> mono: pixels equal to background color become white */
-    {
+    if (d->mono) {
+        /* color -> mono: pixels equal to the background become white */
         DWORD bg = dm ? pix_of(dm->bkColor) : pix_of(phys_white());
         BYTE Bpp = s->Bpp;
         row_read(s, y, x, n, bufS);
         for (i = 0; i < n; i++)
             bufS[i] = (pix_get(bufS + i * Bpp, Bpp) == bg) ? 0xFF : 0x00;
+        return;
+    }
+
+    /* Color-to-color blits may cross formats (notably 24-bit DDBs into the
+       32-bit desktop). The old final branch treated every differing color
+       format as color-to-mono and wrote one byte per pixel into bufS. That
+       corrupted icons and bitmap content, and left most of the destination
+       row uninitialized. Convert each source pixel through logical RGB into
+       the destination's working pixel format instead. */
+    {
+        BYTE srcBpp = s->Bpp, dstBpp = d->Bpp;
+        row_read(s, y, x, n, bufT);
+        for (i = 0; i < n; i++) {
+            const BYTE *src = bufT + i * srcBpp;
+            DWORD rgb;
+            if (srcBpp == 1) {
+                BYTE index = src[0];
+                rgb = (DWORD)g.pal[index * 4] |
+                      ((DWORD)g.pal[index * 4 + 1] << 8) |
+                      ((DWORD)g.pal[index * 4 + 2] << 16);
+            } else if (srcBpp == 3) {
+                /* DIB/DDB 24-bit pixels are stored B, G, R. */
+                rgb = (DWORD)src[2] | ((DWORD)src[1] << 8) |
+                      ((DWORD)src[0] << 16);
+            } else {
+                rgb = pixel_to_rgb(pix_get(src, srcBpp));
+            }
+            pix_put(bufS + i * dstBpp, pix_of(rgb_to_phys(rgb)), dstBpp);
+        }
     }
 }
 
@@ -110,20 +144,40 @@ void solid_rect(SURF *d, SHORT x, SHORT y, SHORT w, SHORT h, DWORD phys, BYTE ro
     if (w <= 0 || h <= 0) return;
     if (rop3 == 0xF0 && d->screen) {
         static WORD fill_count = 0;
+        static WORD gpu_fill_ok = 0, gpu_fill_fail = 0;
+        DWORD gpu_pix = pix;
         if (fill_count < 10 || (fill_count % 100) == 0) {
             DBG("NVX [2D-FILL #%u]: screen solid fill (%d,%d) %dx%d color=%08lx (wc=%u shadow=%u)\n",
                 fill_count, x, y, w, h, pix, g.wc ? 1 : 0, g.shadow);
         }
         fill_count++;
         if (g.svga && (DWORD)w * h >= 2048 && svga_fill(pix, x, y, w, h)) return;
-        if (g.ini_gpufill && Bpp == 4 && !g.xf && !g.in_background && !lut_hc &&
-            nvx_accel_fill_rect(x, y, w, h, pix)) {
+        /* The CPU scanout path makes XRGB pixels opaque before writing the
+           A8R8G8B8 mode. Match that behavior for the GPU path. Avoid a VxD
+           call for tiny glyph/edge spans; its synchronous CE fence costs more
+           than filling a few pixels on the CPU. */
+        if (Bpp == 4 && g.pf == PF_32)
+            gpu_pix |= 0xFF000000UL;
+        if (g.ini_gpufill && Bpp == 4 && (DWORD)w * (DWORD)h >= 256UL &&
+            !g.xf && !g.in_background && !lut_hc &&
+            nvx_accel_fill_rect(x, y, w, h, gpu_pix)) {
+            if (gpu_fill_ok < 4) {
+                DBG("NVX [2D-GPU]: fill rect %dx%d at (%d,%d) color=%08lx\n",
+                    w, h, x, y, gpu_pix);
+                ++gpu_fill_ok;
+            }
             /* Keep GDI's RAM shadow coherent; the VxD has already filled the
                GPU scanout. Do not fall through to the CPU framebuffer copy. */
             if (g.shadow)
                 for (r = 0; r < (WORD)h; ++r)
                     scr_fill_shadow((WORD)(y + r), (WORD)x, (WORD)w, pix);
             return;
+        }
+        if (g.ini_gpufill && Bpp == 4 && (DWORD)w * (DWORD)h >= 256UL &&
+            !g.xf && !g.in_background && !lut_hc && gpu_fill_fail < 4) {
+            DBG("NVX [2D-GPU]: fill rect fell back to CPU %dx%d at (%d,%d)\n",
+                w, h, x, y);
+            ++gpu_fill_fail;
         }
         for (r = 0; r < (WORD)h; r++)
             scr_fill(y + r, x, w, pix);
@@ -203,6 +257,12 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
     SHORT r, rstart, rend, rstep;
     BYTE rtl = 0, same = 0;
     SHORT el, et, er, eb;
+    static WORD icon_rop_trace_count;
+    BYTE trace_icon = 0, trace_memory = 0;
+    static WORD memory_trace_count;
+    DWORD memory_source_chroma = 0, memory_output_chroma = 0;
+    DWORD icon_color_pixels = 0, icon_nonwhite_pixels = 0, icon_chroma_pixels = 0;
+    DWORD icon_output_chroma = 0;
 
     if (g.debug && blt_probe_count < 24) {
         BYTE dstType = lpDst ? ((LPGBITMAP)lpDst)->bmType : 0xFF;
@@ -251,6 +311,31 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
         if (!lpSrc) return 0;
         surf_from_dev(&s, lpSrc);
     }
+    /* Capture one real 32x32 icon mask/color pair at the driver boundary.
+       Win98 draws color icons as MERGEPAINT(mask), then SRCAND(color). This
+       trace records the input pixels and destination around each real ROP so
+       mask interpretation can be checked without substituting a new rule. */
+    if (d.screen && needS && lpSrc && w == 32 && h == 32 &&
+        ((rop3 == 0xBB && s.mono) || (rop3 == 0x88 && !s.mono)) &&
+        icon_rop_trace_count < 4) {
+        trace_icon = 1;
+        ++icon_rop_trace_count;
+        DBG("NVX [ICON-ROP #%u]: rop=%02x src=(%d,%d) dst=(%d,%d) srcfmt=%ux%ubpp/%u mono=%u pitch=%u\n",
+            icon_rop_trace_count - 1, rop3, sx, sy, dx, dy, s.width, s.height,
+            ((LPGBITMAP)lpSrc)->bmBitsPixel, s.mono, s.pitch);
+        DBG("NVX [ICON-ROP-OBJ]: bitmap=%x:%x bits=%x:%x\n",
+            FP_SEG(lpSrc), FP_OFF(lpSrc), FP_SEG(((LPGBITMAP)lpSrc)->bmBits),
+            FP_OFF(((LPGBITMAP)lpSrc)->bmBits));
+    }
+    if (needS && !d.screen && !s.screen && w >= 16 && w <= 128 &&
+        h >= 16 && h <= 32 && memory_trace_count < 48) {
+        trace_memory = 1;
+        ++memory_trace_count;
+        DBG("NVX [BITMAP-XFER]: rop=%02x src=%x:%x %ux%u/%u mono=%u (%d,%d) dst=%x:%x %ux%u/%u mono=%u (%d,%d) size=%dx%d text=%lx bk=%lx\n",
+            rop3, s.sel, s.off, s.width, s.height, s.Bpp, s.mono, sx, sy,
+            d.sel, d.off, d.width, d.height, d.Bpp, d.mono, dx, dy, w, h,
+            dm ? dm->TextColor : 0UL, dm ? dm->bkColor : 0UL);
+    }
     /* clip destination */
     if (dx < 0) { w += dx; if (needS) sx -= dx; dx = 0; }
     if (dy < 0) { h += dy; if (needS) sy -= dy; dy = 0; }
@@ -263,6 +348,7 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
         if (sy + h > (SHORT)s.height) h = s.height - sy;
     }
     if (w <= 0 || h <= 0) return 1;
+
 #ifdef BLTDBG
     if (g.debug == 1 && needS && !s.screen && s.Bpp == 4 && !s.mono && w == 32 && h == 32) {
         WORD k;
@@ -312,10 +398,33 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
     } else if (d.screen && needS) {
         static WORD blt_src_count = 0;
         if (blt_src_count < 5) {
-            DBG("NVX [2D-BLT #%u]: src->screen blt (%d,%d)->(%d,%d) %dx%d rop=%02x (wc=%u shadow=%u)\n",
-                blt_src_count, sx, sy, dx, dy, w, h, rop3, g.wc ? 1 : 0, g.shadow);
+            DBG("NVX [2D-BLT #%u]: src->screen blt (%d,%d)->(%d,%d) %dx%d rop=%02x src=%ux%ux%u pitch=%u (wc=%u shadow=%u)\n",
+                blt_src_count, sx, sy, dx, dy, w, h, rop3, s.width, s.height,
+                ((LPGBITMAP)lpSrc)->bmBitsPixel, ((LPGBITMAP)lpSrc)->bmWidthBytes,
+                g.wc ? 1 : 0, g.shadow);
         }
         blt_src_count++;
+    }
+    /* A WC framebuffer is cheap to write but expensive to read back on the
+       CPU. Route large 32bpp copies through the verified CE path. The miniport
+       uses reserved scratch for overlap so BitBlt keeps memmove semantics. */
+    if (d.screen && s.screen && rop3 == 0xCC && !g.shadow && !g.xf &&
+        !lut_hc && g.ini_gpucopy && d.Bpp == 4 && s.Bpp == 4 &&
+        !s.planar && !s.mono && (DWORD)w * (DWORD)h >= 1024UL) {
+        static WORD gpu_copy_ok = 0, gpu_copy_fail = 0;
+        if (nvx_accel_copy_rect(sx, sy, dx, dy, w, h)) {
+            if (gpu_copy_ok < 4) {
+                DBG("NVX [2D-GPU]: screen copy %dx%d (%d,%d)->(%d,%d)\n",
+                    w, h, sx, sy, dx, dy);
+                ++gpu_copy_ok;
+            }
+            goto done;
+        }
+        if (gpu_copy_fail < 4) {
+            DBG("NVX [2D-GPU]: screen copy fell back to CPU %dx%d (%d,%d)->(%d,%d)\n",
+                w, h, sx, sy, dx, dy);
+            ++gpu_copy_fail;
+        }
     }
     /* VMware SVGA II: screen to screen copy by the host */
     if (d.screen && s.screen && rop3 == 0xCC && g.svga && svga_copy(sx, sy, dx, dy, w, h)) goto done;
@@ -338,9 +447,63 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
                     row_read(&s, sy + r, sx + xo, c, bufD);
                 } else {
                     if (needD) row_read(&d, dy + r, dx + xo, c, bufD);
-                    load_src(&s, &d, sy + r, sx + xo, c, dm);
+                    load_src(&s, &d, sy + r, sx + xo, c, dm, rop3);
                     if (needP) pattern_row(bufP, br, dm, &d, dy + r, dx + xo, c);
+                    if (trace_memory && !d.mono && Bpp >= 3) {
+                        WORD k;
+                        for (k = 0; k < c; ++k) {
+                            DWORD v = pix_get(bufS + k * Bpp, Bpp);
+                            if ((BYTE)v != (BYTE)(v >> 8) || (BYTE)(v >> 8) != (BYTE)(v >> 16))
+                                ++memory_source_chroma;
+                        }
+                    }
+
+                    if (trace_icon && rop3 == 0x88 && d.Bpp >= 3) {
+                        WORD k;
+                        for (k = 0; k < c; ++k) {
+                            DWORD v = pix_get(bufS + k * Bpp, Bpp);
+                            BYTE b0 = (BYTE)v, b1 = (BYTE)(v >> 8), b2 = (BYTE)(v >> 16);
+                            ++icon_color_pixels;
+                            if ((v & 0x00FFFFFFUL) != 0x00FFFFFFUL) ++icon_nonwhite_pixels;
+                            if (b0 != b1 || b1 != b2) ++icon_chroma_pixels;
+                        }
+                    }
+                    if (trace_icon && (r & 3) == 0 && xo == 0) {
+                        WORD k;
+                        DBG("NVX [ICON-ROP]: row%u x0/4/8/12/16/20/24/28 pre/src=", r);
+                        for (k = 0; k < 8; ++k) {
+                            WORD q = (WORD)(k * 4);
+                            DWORD before = pix_get(bufD + q * Bpp, Bpp);
+                            DWORD source = pix_get(bufS + q * Bpp, Bpp);
+                            DBG(" %06lx/%06lx", before, source);
+                        }
+                        DBG("\n");
+                    }
                     rop_apply(rop3, bufD, bufS, bufP, c * Bpp);
+                    if (trace_icon && rop3 == 0x88 && d.Bpp >= 3) {
+                        WORD k;
+                        for (k = 0; k < c; ++k) {
+                            DWORD rgb = pixel_to_rgb(pix_get(bufD + k * Bpp, Bpp));
+                            if ((BYTE)rgb != (BYTE)(rgb >> 8) ||
+                                (BYTE)(rgb >> 8) != (BYTE)(rgb >> 16))
+                                ++icon_output_chroma;
+                        }
+                    }
+                    if (trace_icon && (r & 3) == 0 && xo == 0) {
+                        WORD k;
+                        DBG("NVX [ICON-ROP]: row%u out=", r);
+                        for (k = 0; k < 8; ++k)
+                            DBG(" %06lx", pix_get(bufD + k * 4 * Bpp, Bpp));
+                        DBG("\n");
+                    }
+                }
+                if (trace_memory && !d.mono && Bpp >= 3) {
+                    WORD k;
+                    for (k = 0; k < c; ++k) {
+                        DWORD v = pix_get(bufD + k * Bpp, Bpp);
+                        if ((BYTE)v != (BYTE)(v >> 8) || (BYTE)(v >> 8) != (BYTE)(v >> 16))
+                            ++memory_output_chroma;
+                    }
                 }
                 row_write(&d, dy + r, dx + xo, c, bufD);
                 left -= c;
@@ -348,6 +511,13 @@ WORD EXPORT BitBlt(LPVOID lpDst, SHORT dx, SHORT dy, LPVOID lpSrc, SHORT sx, SHO
         }
     }
 done:
+    if (trace_memory)
+        DBG("NVX [BITMAP-XFER-RESULT]: source-chromatic=%lu output-chromatic=%lu\n",
+            memory_source_chroma, memory_output_chroma);
+    if (trace_icon && rop3 == 0x88)
+        DBG("NVX [ICON-COLOR]: source pixels=%lu nonwhite=%lu chromatic=%lu output-chromatic=%lu\n",
+            icon_color_pixels, icon_nonwhite_pixels, icon_chroma_pixels,
+            icon_output_chroma);
     if (d.screen || (needS && s.screen)) {
         cursor_unexclude();
         screen_busy--;
@@ -371,8 +541,6 @@ void stretch_row(BYTE *out, const BYTE *src, WORD sw, WORD dw, WORD dfirst, WORD
         }
     }
 }
-
-BYTE bufT[ROWBUF];
 
 WORD EXPORT StretchBlt(LPVOID lpDst, SHORT dx, SHORT dy, SHORT dw, SHORT dh, LPVOID lpSrc,
                        SHORT sx, SHORT sy, SHORT sw, SHORT sh, DWORD rop, LPPBRUSH br,
@@ -437,7 +605,7 @@ WORD EXPORT StretchBlt(LPVOID lpDst, SHORT dx, SHORT dy, SHORT dw, SHORT dh, LPV
         SHORT srow = flipy ? sy + sh - 1 - ry : sy + ry;
         SHORT x0 = cl;
         if (srow != lastsy) {
-            load_src(&s, &d, srow, sx, sw, dm);
+            load_src(&s, &d, srow, sx, sw, dm, rop3);
             memcpy(bufT, bufS, sw * d.Bpp);
             lastsy = srow;
         }

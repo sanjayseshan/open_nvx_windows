@@ -1,0 +1,28 @@
+--- a/src/thread.c
++++ b/src/thread.c
+@@ -691,18 +691,23 @@
+ /* Compatibility routine for pthread-win32.  It returns the
+    amount of available CPUs on system.  */
+ int
+-pthread_num_processors_np(void) 
++pthread_num_processors_np(void)
+ {
++#ifdef WIN9X
++  /* The Win9x subset has no process-affinity query; keep a safe worker count. */
++  return 1;
++#else
+   int r = 0;
+   DWORD_PTR ProcessAffinityMask, SystemAffinityMask;
+ 
+   if (GetProcessAffinityMask(GetCurrentProcess(), &ProcessAffinityMask, &SystemAffinityMask))
+     {
+       for(; ProcessAffinityMask != 0; ProcessAffinityMask >>= 1)
+-	r += (ProcessAffinityMask & 1) != 0;
++        r += (ProcessAffinityMask & 1) != 0;
+     }
+   /* assume at least 1 */
+   return r ? r : 1;
++#endif
+ }
+ 
+ /* Compatiblity routine for pthread-win32.  Allows to set amount of used

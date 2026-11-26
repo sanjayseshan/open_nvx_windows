@@ -1,0 +1,44 @@
+--- a/src/gallium/frontends/wgl/stw_tls.c
++++ b/src/gallium/frontends/wgl/stw_tls.c
+@@ -39,9 +39,10 @@
+  * Static mutex to protect the access to g_pendingTlsData global and
+  * stw_tls_data::next member.
+  */
+-static CRITICAL_SECTION g_mutex = {
+-   (PCRITICAL_SECTION_DEBUG)-1, -1, 0, 0, 0, 0
+-};
++/* Win9x does not support the NT static-initializer sentinel for critical
++ * sections. Initialize it explicitly before any TLS-list operation. */
++static CRITICAL_SECTION g_mutex;
++static bool g_mutex_initialized;
+ 
+ /**
+  * There is no way to invoke TlsSetValue for a different thread, so we
+@@ -60,8 +61,15 @@
+ bool
+ stw_tls_init(void)
+ {
++   if (!g_mutex_initialized) {
++      InitializeCriticalSection(&g_mutex);
++      g_mutex_initialized = true;
++   }
++
+    tlsIndex = TlsAlloc();
+    if (tlsIndex == TLS_OUT_OF_INDEXES) {
++      DeleteCriticalSection(&g_mutex);
++      g_mutex_initialized = false;
+       return false;
+    }
+ 
+@@ -234,6 +242,11 @@
+       TlsFree(tlsIndex);
+       tlsIndex = TLS_OUT_OF_INDEXES;
+    }
++
++   if (g_mutex_initialized) {
++      DeleteCriticalSection(&g_mutex);
++      g_mutex_initialized = false;
++   }
+ }
+ 
+ /*

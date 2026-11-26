@@ -1,0 +1,8 @@
+Wine9x: 3fbe3fd43e6c9466a9fbb03941e96e2a8c620a7c
+Wine9x no-CRT: d4c45d2acd0c6d5f656e71501d6c779719a640fb
+Wine9x pthread9x: 9c1ec5a655849f99f1e9c4e3b04609f446c92551
+7ca78cfc38f734200ca8cf33142be553d6f6047784c3682fa8a28243fab5497d  /home/sanjay/temp/xddm/dist_win98/legacy/ddraw.dll
+2d79bbd2b9ae7739a6ff81bf171551bc3157163958cabbc810b96b77c709c105  /home/sanjay/temp/xddm/dist_win98/legacy/wined3d.dll
+dfb7674668b9f5a9ad1843617d058367f434a76d0e90e212fabc45eb469fa969  /home/sanjay/temp/xddm/dist_win98/legacy/winedd.dll
+c2dd538831ef8d7a2ebf388e6aade008d4dc7622af2050d2fbed5ec1f21929a3  /home/sanjay/temp/xddm/dist_win98/legacy/legacy_ddraw.exe
+205bd5acf0f49f12cadfab5df2d1b8c8947c81ab5748c31e65de05333489b530  /home/sanjay/temp/xddm/dist_win98/legacy/nine_d3d9.exe

@@ -8,7 +8,7 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 * **Windows XP Professional x64 Edition (NT 5.2):** Main development and hardware-validation target; tested with an RTX 3070, including VFIO passthrough.
 * **Windows XP Professional x86 (NT 5.1):** Separate 32-bit build; tested in a VFIO guest. Feature coverage differs from x64.
 * **Windows 98 Second Edition (SE, 4.10):** Experimental VxD/DIB path tested in a VFIO guest.
-* **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated. Compatibility should not be assumed.
+* **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated. Compatibility assumed.
 
 ### Hardware Validation & GPU Scope
 * **Host Platform:** AMD AM5 (Ryzen 9000 series, IOMMU / VFIO passthrough)
@@ -26,10 +26,10 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 | **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
 | **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0); optional `nvx2.drv` Head 1 build |
 | **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | GPU-backed 32bpp GDI solid fills via VxD/OpenRM; CPU fallback for other operations |
-| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | No NVX GPU 3D client connected yet |
+| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | NV170 OpenGL cube/gears and bounded Gallium Nine 60-frame D3D9 smoke test pass on RTX 3070; general app coverage is unproven |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
-| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Single-head package tested; optional `nvx2.drv`/`attach_sec.exe` path builds but is not runtime validated |
-| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 1920×1080 @ 32bpp primary; QHD head 1 is not yet runtime validated |
+| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Win98 single-monitor package; native EVO reports both heads active, GDI dual-view not validated |
+| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 @ 32bpp primary; GSP/EVO modeset and matching 10,240-byte pitch boot-tested, physical image confirmation pending |
 
 ---
 ## Architecture

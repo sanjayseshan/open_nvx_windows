@@ -22,11 +22,13 @@ extern MesaDimensionsH MesaDimensionsProc;
 void nine_lock_proc();
 void nine_unlock_proc();
 void nine_restore_screen();
+void nine_note_display_mode_changed(void);
 
 #define nine_lock() do{mesa99_dbg("-> lock");nine_lock_proc();}while(0)
 #define nine_unlock() do{mesa99_dbg("<- unlock");nine_lock_proc();}while(0)
 
 extern volatile BOOL wine_hook_disabled;
+
 
 BOOL nine_init();
 void nine_deinit();
@@ -35,6 +37,7 @@ BOOL mesa99_init();
 void mesa99_cleanup();
 
 void mesa99_printf(const char *file, const char *fn, int line, const char *fmt, ...);
+void mesa99_report(const char *message);
 
 #ifdef DEBUG
 #define mesa99_dbg(_fmt, ...) mesa99_printf(__FILE__, __FUNCTION__, __LINE__, _fmt __VA_OPT__(,) __VA_ARGS__)
@@ -43,3 +46,4 @@ void mesa99_printf(const char *file, const char *fn, int line, const char *fmt, 
 #endif
 
 #endif /* __MESA99_H__INCLUDED__ */
+

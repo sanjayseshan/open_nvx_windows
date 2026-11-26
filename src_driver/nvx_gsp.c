@@ -22,6 +22,7 @@
 #include <class/clb069.h>
 #include <ctrl/ctrlb069.h>
 #include <ctrl/ctrl2080/ctrl2080internal.h>
+#include <ctrl/ctrl2080/ctrl2080gpu.h>
 #include <ctrl/ctrl2080/ctrl2080nvd.h>
 #include <ctrl/ctrl2080/ctrl2080dma.h>
 #include <stddef.h>
@@ -888,14 +889,28 @@ static BOOLEAN NvxGspAlloc(PNVX_DEVICE_EXTENSION dev,ULONG parent,ULONG object,
 static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
                             const void *params,ULONG bytes)
 {
-    ULONG stackPayload[522]={0};
-    ULONG *payload=stackPayload;
+    ULONG *payload;
     const ULONG *words=(const ULONG *)dev->RpcRxRecord;
+    ULONG wait;
+    BOOLEAN result;
     if(bytes>sizeof(dev->RpcControlPayload)-24) return FALSE;
-    if(bytes>2064) {
-        payload=(ULONG *)dev->RpcControlPayload;
-        VideoPortZeroMemory(payload,24+bytes);
+    if(bytes&&!params) return FALSE;
+
+    /* The VxD executes on a small system stack. A 2 KB local RPC packet was
+     * inlined into callers, making GR startup exceed that stack when
+     * NvxGspCreateObjects called NvxGspCreateGraphicsProbe. Serialize before
+     * constructing the shared packet so concurrent RM callers cannot
+     * overwrite one another's request before submission. */
+    for(wait=0;wait<500000U;wait++) {
+        if(!__sync_lock_test_and_set(&dev->GspRpcBusy,1)) break;
+        VideoPortStallExecution(10U);
     }
+    if(wait==500000U) {
+        LogStr("NVX [RM]: RPC queue lock timeout before control packet construction.\n");
+        return FALSE;
+    }
+    payload=(ULONG *)dev->RpcControlPayload;
+    VideoPortZeroMemory(payload,24+bytes);
     payload[0]=dev->GspClientHandle;
     payload[1]=object;
     payload[2]=cmd;
@@ -903,7 +918,9 @@ static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
     payload[4]=bytes;
     payload[5]=0; /* flags */
     if(bytes&&params) VideoPortMoveMemory(payload+6,(PVOID)params,bytes);
-    if(!NvxGspCall(dev,76,payload,24+bytes)) return FALSE;
+    result=NvxGspCallLocked(dev,76,payload,24+bytes);
+    __sync_lock_release(&dev->GspRpcBusy);
+    if(!result) return FALSE;
     if(words[14]<56+bytes||words[20]!=payload[0]||words[21]!=object||
        words[22]!=cmd||words[23]!=0||words[24]!=bytes) {
         LogStr("NVX [RM]: control rejected cmd=");LogHex(cmd);
@@ -913,6 +930,91 @@ static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
         }
         LogStr(" expected bytes=");LogHex(bytes);LogStr("\n");return FALSE;
     }
+    return TRUE;
+}
+
+/* Resolve the GR runlist through RM's advertised engine list and runlist map.
+ * OpenRM consumers discover engines before binding a channel; doing the same
+ * here also makes a missing GR engine distinguishable from a bad runlist map.
+ */
+static BOOLEAN NvxGspQueryGraphicsRunlist(PNVX_DEVICE_EXTENSION dev,
+                                          ULONG *runlistBase)
+{
+    /* Use the RPC transmit staging area for these small parameter blocks.
+     * The VxD path has a much smaller stack than the XP kernel build. */
+    NV2080_CTRL_GPU_GET_ENGINES_V2_PARAMS *engines;
+    ULONG *query;
+    const NV2080_CTRL_GPU_GET_ENGINES_V2_PARAMS *engineReply;
+    const ULONG *runlistReply;
+    ULONG i,count,assertBefore;
+    BOOLEAN graphicsFound=FALSE;
+
+    if(!dev||!runlistBase||!dev->GspSubdeviceHandle) return FALSE;
+    *runlistBase=0;
+    engines=(NV2080_CTRL_GPU_GET_ENGINES_V2_PARAMS *)dev->RpcTxRecord;
+    query=(ULONG *)dev->RpcTxRecord;
+    VideoPortZeroMemory(engines,sizeof(*engines));
+    assertBefore=dev->GspAssertCount;
+    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
+                      NV2080_CTRL_CMD_GPU_GET_ENGINES_V2,
+                      engines,sizeof(*engines))) {
+        LogStr("NVX [GR-RUNLIST]: OpenRM engine discovery failed.\n");
+        return FALSE;
+    }
+    engineReply=(const NV2080_CTRL_GPU_GET_ENGINES_V2_PARAMS *)
+                (dev->RpcRxRecord+104);
+    count=engineReply->engineCount;
+    if(count>NV2080_GPU_MAX_ENGINES_LIST_SIZE) {
+        LogStr("NVX [GR-RUNLIST]: RM returned invalid engine count=");
+        LogHex(count);LogStr("\n");
+        return FALSE;
+    }
+    for(i=0;i<count;i++) {
+        if(engineReply->engineList[i]==NV2080_ENGINE_TYPE_GRAPHICS) {
+            graphicsFound=TRUE;
+            break;
+        }
+    }
+    LogStr("NVX [GR-RUNLIST]: RM engine count=");LogHex(count);
+    LogStr(" graphics=" );LogHex(graphicsFound);
+    if(graphicsFound) { LogStr(" index=");LogHex(i); }
+    LogStr(" assert-count=" );LogHex(dev->GspAssertCount);
+    LogStr("\n");
+    if(!graphicsFound) return FALSE;
+
+    VideoPortZeroMemory(query,2*NV2080_GPU_MAX_ENGINES_LIST_SIZE*sizeof(ULONG));
+    query[0]=NV2080_ENGINE_TYPE_GRAPHICS;
+    assertBefore=dev->GspAssertCount;
+    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
+                      NV2080_CTRL_CMD_GPU_GET_ENGINE_RUNLIST_PRI_BASE,
+                      query,2*NV2080_GPU_MAX_ENGINES_LIST_SIZE*sizeof(ULONG))) {
+        const ULONG *words=(const ULONG *)dev->RpcRxRecord;
+        if(words[14]>=56+2*NV2080_GPU_MAX_ENGINES_LIST_SIZE*sizeof(ULONG)) {
+            runlistReply=words+26+NV2080_GPU_MAX_ENGINES_LIST_SIZE;
+            LogStr("NVX [GR-RUNLIST]: graphics engine=0x1 mapped base=");
+            LogHex(runlistReply[0]);LogStr(" null-base=");
+            LogHex(NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_NULL);
+            LogStr(" error-base=");
+            LogHex(NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_ERROR);
+            LogStr(" assert-before=");LogHex(assertBefore);
+            LogStr(" assert-after=");LogHex(dev->GspAssertCount);
+            LogStr("\n");
+        }
+        return FALSE;
+    }
+    runlistReply=(const ULONG *)dev->RpcRxRecord+26+
+                 NV2080_GPU_MAX_ENGINES_LIST_SIZE;
+    *runlistBase=runlistReply[0];
+    if(!*runlistBase||
+       *runlistBase==NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_NULL||
+       *runlistBase==NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_ERROR) {
+        LogStr("NVX [GR-RUNLIST]: RM returned invalid base=");
+        LogHex(*runlistBase);LogStr("\n");
+        return FALSE;
+    }
+    LogStr("NVX [GR-RUNLIST]: OpenRM graphics runlist base=");
+    LogHex(*runlistBase);LogStr(" assert-before=");LogHex(assertBefore);
+    LogStr(" assert-after=");LogHex(dev->GspAssertCount);LogStr("\n");
     return TRUE;
 }
 
@@ -1570,7 +1672,8 @@ static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
     LogStr("NVX [RM]: scratch memory mapped at GPU VA 0x10000000.\n");return TRUE;
 }
 
-static BOOLEAN NvxGspGetFbLayout(PNVX_DEVICE_EXTENSION dev)
+/* Keep this ~2.2 KB RPC request off callers' Win9x system stacks. */
+static __attribute__((noinline)) BOOLEAN NvxGspGetFbLayout(PNVX_DEVICE_EXTENSION dev)
 {
     /* Verified against 535 SDK types: GspStaticConfigInfo.fbRegionInfoParams
        is at 840, contains an 8-byte prefix and sixteen 48-byte entries.
@@ -2003,7 +2106,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     BOOLEAN grStatusAvailable=FALSE;
     ULONG classCount,classIndex,grClass=0;
     BOOLEAN ampereAFound=FALSE,ampereBFound=FALSE;
-    ULONG runlistQuery[124]={0},token=0,runlistBase=0;
+    ULONG token=0,runlistBase=0;
     ULONG dbcfg,chcfg,enable,wait,chramBase,fault[26]={0},assertCountBefore;
     ULONG64 pushVa,grFenceVa,grDataVa;
 #if NVX_ENABLE_GR_SUBMISSION_PROBE
@@ -2474,14 +2577,10 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
 
     /* Prove the GR runlist consumes a harmless SET_OBJECT packet. This tests
        command fetch/dispatch only; it does not draw or touch scanout. */
-    runlistQuery[0]=NV2080_ENGINE_TYPE_GRAPHICS;
-    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
-                      NV2080_CTRL_CMD_GPU_GET_ENGINE_RUNLIST_PRI_BASE,
-                      runlistQuery,sizeof(runlistQuery))) {
+    if(!NvxGspQueryGraphicsRunlist(dev,&runlistBase)) {
         LogStr("NVX [GR]: graphics runlist query failed; channel remains isolated.\n");
         return FALSE;
     }
-    runlistBase=((const ULONG *)dev->RpcRxRecord)[26+62];
     if(dev->Bar0Length<0x304||!runlistBase||(runlistBase&0x3ff)||
        runlistBase>dev->Bar0Length-0x304) {
         LogStr("NVX [GR]: invalid graphics runlist base=");LogHex(runlistBase);LogStr("\n");
@@ -3000,6 +3099,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     } else {
         LogStr("NVX [GR]: GR semaphore release completed with guards intact; no drawing tested.\n");
     }
+    LogStr("NVX [GR]: probe returning to RM object initialization.\n");
     return TRUE;
 }
 #else

@@ -8,6 +8,12 @@
 #include "drv.h"
 
 BYTE bufD[ROWBUF], bufS[ROWBUF], bufP[ROWBUF];
+/* NVX native scanout is programmed as A8R8G8B8. WINVBE's logical 32bpp
+   pixels are X8R8G8B8, so explicitly make the unused high byte opaque when
+   copying the shadow/CPU image to the display BAR. Without this, an EVO
+   window that honors per-pixel alpha can show a black desktop with only
+   cursor/overlay pixels visible. */
+static BYTE scanout_row[240];
 
 /* far pointer into video memory for a screen offset (without fbofs) and
    the number of bytes reachable through it */
@@ -55,13 +61,28 @@ static void vram_read(DWORD off, WORD len, BYTE *buf)
     }
 }
 
-static void vram_put_raw(DWORD off, WORD len, const BYTE *buf)
+static void vram_put_raw(DWORD off, WORD len, const BYTE FAR *buf)
 {
+    static BYTE alpha_copy_logged;
     while (len) {
         WORD av, c;
         LPBYTE p = scr_ptr(off, &av, 0);
         c = len < av ? len : av;
-        far_memcpy(p, (LPVOID)buf, c);
+        if (g.pf == PF_32 && g.Bpp == 4 && !(off & 3) && c >= 4) {
+            WORD i;
+            if (c > sizeof(scanout_row)) c = sizeof(scanout_row);
+            c &= (WORD)~3;
+            far_memcpy((LPVOID)scanout_row, (LPVOID)buf, c);
+            if (!alpha_copy_logged) {
+                DBG("NVX [SCANOUT-ALPHA]: XRGB upload pf=%u Bpp=%u sourceA=%02x; forcing A=FF\n",
+                    g.pf, g.Bpp, scanout_row[3]);
+                alpha_copy_logged = 1;
+            }
+            for (i = 3; i < c; i += 4) scanout_row[i] = 0xFF;
+            far_memcpy(p, (LPVOID)scanout_row, c);
+        } else {
+            far_memcpy(p, (LPVOID)buf, c);
+        }
         buf += c; off += c; len -= c;
     }
 }
@@ -258,10 +279,13 @@ static void sh_to_vram(DWORD off, DWORD len)
     while (len) {
         WORD a1, a2, c;
         LPBYTE s = sh_ptr(off, &a1);
-        LPBYTE d = scr_ptr(off, &a2, 0);
+        (void)scr_ptr(off, &a2, 0);
         c = a1 < a2 ? a1 : a2;
         if ((DWORD)c > len) c = (WORD)len;
-        far_memcpy(d, s, c);
+        /* Route shadow uploads through the same format normalization as
+           ordinary CPU writes. The old memcpy bypassed vram_put_raw(), so
+           X8R8G8B8 shadow pixels reached the A8R8G8B8 scanout with alpha=0. */
+        vram_put_raw(off, c, s);
         off += c; len -= c;
     }
 }
@@ -496,13 +520,24 @@ static void span_fill(LPBYTE p, WORD len, DWORD pix)
         far_memset32(p, v, len >> 2);
         if (len & 2) *(WORD FAR *)(p + (len & ~3)) = (WORD)pix;
         } break;
-    default: far_memset32(p, pix & PIXMASK, len >> 2); break;
+    default: far_memset32(p, pix, len >> 2); break;
     }
 }
 
 /* fill a span: through the given pointer function, in tile-sized pieces */
 static void fill_bytes(DWORD off, WORD len, DWORD pix, BYTE shadow)
 {
+    static BYTE alpha_fill_logged;
+    /* The display window is configured as ARGB8888 (A8R8G8B8), while
+       WINVBE/GDI tracks XRGB8888. Preserve XRGB in the system shadow, but
+       make every CPU-generated scanout fill opaque. */
+    if (!shadow && g.pf == PF_32 && g.Bpp == 4) {
+        if (!alpha_fill_logged) {
+            DBG("NVX [SCANOUT-ALPHA]: opaque fill source=%08lx\n", pix);
+            alpha_fill_logged = 1;
+        }
+        pix |= 0xFF000000UL;
+    }
     while (len) {
         WORD av, c;
         LPBYTE p = shadow ? sh_ptr(off, &av) : scr_ptr(off, &av, 0);

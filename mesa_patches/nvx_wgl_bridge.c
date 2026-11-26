@@ -33,6 +33,23 @@ uint32_t nvx_wgl_present_elapsed_us(uint64_t start);
 void nvx_wgl_trace_stage_timing(uint32_t blit_us, uint32_t flush_us);
 static void nvx_bridge_nouveau_trace(const char *message);
 static int nvx_wgl_timing_trace_enabled(void);
+
+/* GetRandomRgn is absent on some Win9x GDI builds. Resolve it dynamically so
+ * the ICD can still load there; windowed presentation safely fails if the
+ * system-region query is unavailable. The fullscreen fast path needs no API. */
+static int
+nvx_wgl_get_system_region(HDC hdc, HRGN region)
+{
+   typedef int (WINAPI *get_random_rgn_fn)(HDC, HRGN, int);
+   static get_random_rgn_fn get_random_rgn;
+   if (!get_random_rgn) {
+      HMODULE gdi = GetModuleHandleA("GDI32.DLL");
+      if (gdi)
+         get_random_rgn = (get_random_rgn_fn)GetProcAddress(gdi, "GetRandomRgn");
+   }
+   return get_random_rgn ? get_random_rgn(hdc, region, SYSRGN) : 0;
+}
+
 int NvxXf86DrmWaitBufferFence(int fd, uint32_t handle);
 int nvx_wgl_xf86drm_fd(void);
 int nvx_wgl_wait_gpu_buffer(uint32_t handle);
@@ -582,7 +599,7 @@ nvx_wgl_present_gpu_copy(HDC hdc, uint32_t handle, uint32_t stride,
       NVX_PRESENT_COPY_FAIL("CreateRectRgn failed");
       NVX_PRESENT_COPY_RETURN(0);
    }
-   if (GetRandomRgn(hdc, visible, SYSRGN) != 1) {
+   if (nvx_wgl_get_system_region(hdc, visible) != 1) {
       DeleteObject(visible);
       NVX_PRESENT_COPY_FAIL("GetRandomRgn failed");
       NVX_PRESENT_COPY_RETURN(0);

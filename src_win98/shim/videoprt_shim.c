@@ -888,6 +888,129 @@ static int NvxVxDSubmitSolidRect(uint32_t x, uint32_t y,
                                         NULL);
 }
 
+/* Screen copies use the same verified CE engine as the XP miniport. The
+ * miniport stages intersecting rectangles through reserved scratch memory,
+ * retaining BitBlt's overlap/memmove behavior without CPU reads from VRAM. */
+static int NvxVxDSubmitCopyRect(uint32_t sx, uint32_t sy,
+                                uint32_t dx, uint32_t dy,
+                                uint32_t width, uint32_t height) {
+    PVIDEO_MODE_INFORMATION mode;
+    NVX_ACCEL_COPY_PARAMS params;
+    ULONG64 scanoutGpuVa, srcOffset, dstOffset, srcSpan, dstSpan, rowBytes;
+    uint32_t bytesReturned = 0;
+    if (!g_pPrimaryDevExt ||
+        g_PrimaryDevExt.CurrentModeIndex >= g_PrimaryDevExt.NumModes ||
+        !g_PrimaryDevExt.GspInitialized || !g_PrimaryDevExt.GspCopyVerified ||
+        g_PrimaryDevExt.GspChannelFaulted || !width || !height ||
+        width > 4096U || height > 4096U)
+        return -1;
+    mode = &g_PrimaryDevExt.Modes[g_PrimaryDevExt.CurrentModeIndex];
+    if (mode->BitsPerPlane * mode->NumberOfPlanes != 32U ||
+        sx > mode->VisScreenWidth || dx > mode->VisScreenWidth ||
+        sy > mode->VisScreenHeight || dy > mode->VisScreenHeight ||
+        width > mode->VisScreenWidth - sx ||
+        width > mode->VisScreenWidth - dx ||
+        height > mode->VisScreenHeight - sy ||
+        height > mode->VisScreenHeight - dy ||
+        mode->ScreenStride < mode->VisScreenWidth * 4U)
+        return -1;
+    rowBytes = (ULONG64)width * 4ULL;
+    srcOffset = (ULONG64)sy * mode->ScreenStride + (ULONG64)sx * 4ULL;
+    dstOffset = (ULONG64)dy * mode->ScreenStride + (ULONG64)dx * 4ULL;
+    srcSpan = (ULONG64)(height - 1U) * mode->ScreenStride + rowBytes;
+    dstSpan = srcSpan;
+    if (rowBytes * height < 4096ULL || srcSpan > 0x01000000ULL ||
+        dstSpan > 0x01000000ULL)
+        return -1;
+
+    if (g_NvxScanoutGpuVa != g_PrimaryDevExt.GspVramGpuVa)
+        g_NvxScanoutGpuVa = 0;
+    if (!g_NvxScanoutGpuVa) {
+        ULONG64 queried = 0;
+        if (NvxShimDispatchMiniportIoctl(IOCTL_NVX_SCANOUT_GPU_VA,
+                                         NULL, 0, &queried, sizeof(queried),
+                                         &bytesReturned) ||
+            bytesReturned != sizeof(queried) || !queried)
+            return -1;
+        g_NvxScanoutGpuVa = queried;
+    }
+    scanoutGpuVa = g_NvxScanoutGpuVa;
+    params.SrcGpuVa = scanoutGpuVa + srcOffset;
+    params.DstGpuVa = scanoutGpuVa + dstOffset;
+    params.BytesPerLine = (ULONG)rowBytes;
+    params.SrcPitch = mode->ScreenStride;
+    params.DstPitch = mode->ScreenStride;
+    params.LineCount = height;
+    return NvxShimDispatchMiniportIoctl(IOCTL_NVX_ACCEL_COPY,
+                                        &params, sizeof(params), NULL, 0,
+                                        NULL);
+}
+
+/* Primary mode changes arrive from WINVBE's protected-mode VxD API. Keep
+ * mode discovery/validation in the shared miniport state, and submit the
+ * same native EVO scanout transaction used by the XP path. */
+static int NvxVxDSetPrimaryNativeMode(uint32_t width, uint32_t height,
+                                      uint32_t bpp) {
+    PNVX_DEVICE_EXTENSION dev = &g_PrimaryDevExt;
+    ULONG index, oldIndex, oldWidth, oldHeight, oldBpp, oldFreq;
+    PVOID oldMapping;
+
+    if (!g_pPrimaryDevExt || bpp != 32 || width < 640 || height < 480 ||
+        width > 4096 || height > 4096 || !dev->GspInitialized ||
+        dev->NativeDisplayFaulted || !dev->MonitorCount ||
+        dev->MonitorTiming[0].hActive != width ||
+        dev->MonitorTiming[0].vActive != height)
+        return -1;
+
+    for (index = 0; index < dev->NumModes; ++index) {
+        if (dev->Modes[index].VisScreenWidth == width &&
+            dev->Modes[index].VisScreenHeight == height &&
+            dev->Modes[index].BitsPerPlane == bpp)
+            break;
+    }
+    if (index == dev->NumModes)
+        return -1;
+
+    oldIndex = dev->CurrentModeIndex;
+    oldWidth = dev->ActiveWidth;
+    oldHeight = dev->ActiveHeight;
+    oldBpp = dev->ActiveBpp;
+    oldFreq = dev->ActiveFreq;
+    oldMapping = dev->FramebufferVirtual;
+
+    if (!dev->FramebufferVirtual && dev->PhysicalBar1.LowPart) {
+        /* QHD 32bpp is 14.1 MiB; leave margin for the mapped LFB window. */
+        dev->FramebufferVirtual = _MapPhysToLinear(
+            dev->PhysicalBar1.LowPart, 0x01000000, 0);
+    }
+    if (!dev->FramebufferVirtual)
+        return -1;
+
+    dev->CurrentModeIndex = index;
+    dev->ActiveWidth = width;
+    dev->ActiveHeight = height;
+    dev->ActiveBpp = bpp;
+    dev->ActiveFreq = dev->Modes[index].Frequency;
+
+    if (!NvxNativeSetSecondaryScanout(dev)) {
+        dev->CurrentModeIndex = oldIndex;
+        dev->ActiveWidth = oldWidth;
+        dev->ActiveHeight = oldHeight;
+        dev->ActiveBpp = oldBpp;
+        dev->ActiveFreq = oldFreq;
+        dev->FramebufferVirtual = oldMapping;
+        NvxShimLog("NVX [MODE]: native primary mode commit failed\n");
+        return -1;
+    }
+
+    NvxShimLog("NVX [MODE]: native primary mode active ");
+    NvxShimLogHex(width);
+    NvxShimLog("x");
+    NvxShimLogHex(height);
+    NvxShimLog("x32\n");
+    return 0;
+}
+
 void NvxVxDPMDispatch(uint32_t vmHandle, NVX_CLIENT_REGS32 *clientRegs) {
     uint32_t result = 1U;
     (void)vmHandle;
@@ -896,13 +1019,56 @@ void NvxVxDPMDispatch(uint32_t vmHandle, NVX_CLIENT_REGS32 *clientRegs) {
             clientRegs->ecx, clientRegs->edx,
             clientRegs->esi, clientRegs->edi, clientRegs->eax) == 0 ? 0U : 1U;
         clientRegs->eax = result;
+    } else if (clientRegs && clientRegs->ebx == 2U) {
+        result = NvxVxDSetPrimaryNativeMode(clientRegs->ecx,
+                                            clientRegs->edx,
+                                            clientRegs->esi) == 0 ? 0U : 1U;
+        clientRegs->eax = result;
+    } else if (clientRegs && clientRegs->ebx == 3U) {
+        PNVX_DEVICE_EXTENSION dev = &g_PrimaryDevExt;
+        if (g_pPrimaryDevExt && dev->GspInitialized && dev->MonitorCount &&
+            dev->MonitorTiming[0].hActive >= 640 &&
+            dev->MonitorTiming[0].vActive >= 480 &&
+            dev->MonitorTiming[0].hActive <= 4096 &&
+            dev->MonitorTiming[0].vActive <= 4096) {
+            clientRegs->eax = (dev->MonitorTiming[0].hActive << 16) |
+                               (dev->MonitorTiming[0].vActive & 0xffffU);
+        } else {
+            clientRegs->eax = 0;
+        }
+    } else if (clientRegs && clientRegs->ebx == 4U) {
+        result = NvxVxDSubmitCopyRect(
+            clientRegs->ecx & 0xffffU, clientRegs->ecx >> 16,
+            clientRegs->edx & 0xffffU, clientRegs->edx >> 16,
+            clientRegs->esi & 0xffffU, clientRegs->esi >> 16) == 0 ? 0U : 1U;
+        clientRegs->eax = result;
     } else if (clientRegs) {
         clientRegs->eax = result;
     }
 }
 
 int NvxVxDDeviceIoControl(DIOCParams *params) {
-    if (!params || params->lpoOverlapped) return -1;
+    static uint32_t g_diocOpenTraceCount;
+    if (!params) return -1;
+    /* CreateFile probes DIOC_OPEN/DIOC_GETVERSION synchronously. Some Win9x
+       builds populate the overlapped slot even for that handshake; do not
+       reject the VxD open before we can acknowledge the required probe. */
+    if ((params->dwIoControlCode == 0 ||
+         params->dwIoControlCode == 0xFFFFFFFFUL) &&
+        g_diocOpenTraceCount < 8) {
+        ++g_diocOpenTraceCount;
+        NvxShimLog("NVX [DIOC]: open/close code=");
+        NvxShimLogHex(params->dwIoControlCode);
+        NvxShimLog(" overlapped=");
+        NvxShimLogHex((uint32_t)(uintptr_t)params->lpoOverlapped);
+        NvxShimLog(" input=");
+        NvxShimLogHex(params->cbInBuffer);
+        NvxShimLog(" output=");
+        NvxShimLogHex(params->cbOutBuffer);
+        NvxShimLog("\n");
+    }
+    if (params->lpoOverlapped && params->dwIoControlCode != 0 &&
+        params->dwIoControlCode != 0xFFFFFFFFUL) return -1;
     switch (params->dwIoControlCode) {
         case 0: /* DIOC_OPEN */
         case -1: /* DIOC_CLOSEHANDLE */

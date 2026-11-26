@@ -1,7 +1,7 @@
 ;
 ; NVX Display Driver Installation File for Windows 98 SE
 ; Architecture: NVIDIA GA104 (GeForce RTX 3070 / RTX 3060 Ti)
-; Target: modes validated by the current VBE scanout path (native 2560x1440 is not implemented)
+; Target: VBE-compatible modes plus GSP-confirmed native primary timing (QHD)
 ;
 
 [Version]
@@ -9,7 +9,7 @@ Signature   = "$CHICAGO$"
 Provider    = %Mfg%
 Class       = DISPLAY
 ClassGUID   = {4D36E968-E325-11CE-BFC1-08002BE10318}
-DriverVer   = 11/25/2026, 2.0.0.4
+DriverVer   = 11/25/2026, 2.0.0.15
 
 [DestinationDirs]
 DefaultDestDir = 11    ; LDID_SYS (C:\WINDOWS\SYSTEM)
@@ -21,6 +21,7 @@ Firmware.Copy = 11
 
 [SourceDisksFiles]
 nvx.drv = 1
+nvxogl32.dll = 1
 nvx.vxd = 1
 GSPGA104.BIN = 1
 
@@ -36,14 +37,17 @@ GSPGA104.BIN = 1
 %NV3060_GA104%= NVX_Inst, PCI\VEN_10DE&DEV_24C7
 
 [NVX_Inst]
-CopyFiles = Driver.Copy, Firmware.Copy
+CopyFiles = Driver.Copy, Firmware.Copy, MesaICD.Copy
 DelReg    = Driver.DelReg
-AddReg    = Driver.AddReg
+AddReg    = Driver.AddReg, MesaICD.AddReg
 UpdateInis= Driver.Inis
 
 [Driver.Copy]
 nvx.drv
 nvx.vxd
+
+[MesaICD.Copy]
+nvxogl32.dll
 
 [Firmware.Copy]
 GSPGA104.BIN
@@ -88,3 +92,6 @@ NV3060TI      = "NVIDIA GeForce RTX 3060 Ti (GA104 Win98)"
 NV3060TI_LHR  = "NVIDIA GeForce RTX 3060 Ti LHR (GA104 Win98)"
 NV3060        = "NVIDIA GeForce RTX 3060 (GA104 Win98)"
 NV3060_GA104  = "NVIDIA GeForce RTX 3060 GA104 (GA104 Win98)"
+
+[MesaICD.AddReg]
+HKLM,"Software\Microsoft\Windows\CurrentVersion\OpenGLDrivers",NVX,,nvxogl32.dll

@@ -512,7 +512,7 @@ typedef struct {
        KERNEL (profile/registry) may not be called, e.g. after a resume */
     BYTE  ini_timing;           /* Timing: 0 CVT, 1 reduced blanking, 2 auto */
     BYTE  ini_vgareserve, ini_dac8, ini_repost, ini_vmaccel, ini_vmfifo, ini_hwcursor;
-    BYTE  ini_shadow, ini_wc, ini_dibeng, ini_gpufill;
+    BYTE  ini_shadow, ini_wc, ini_dibeng, ini_gpufill, ini_gpucopy;
 
     /* shadow frame buffer: a copy of the screen in system memory. Reading
        video memory over PCI/AGP/PCIe is very slow (uncached, one bus round
@@ -527,7 +527,7 @@ typedef struct {
        shadow, rows of spitch bytes), surf.c puts it on the xres x yres mode;
        without either lw/lh/spitch are xres/yres/pitch */
     BYTE  ini_rotate, ini_scale;
-    BYTE  ini_opengl;           /* OpenGL=1: OPENGL_GETINFO names the ICD (WVBGL32.DLL) */
+    BYTE  ini_opengl;           /* OpenGL=1: WINVBE ICD; OpenGL=2: NVX ICD; 0: disabled */
     BYTE  xf;                   /* 0 none, 1 turned, 2 scaled */
     BYTE  rot;                  /* 1 90, 2 180, 3 270 degrees (clockwise) */
     WORD  lw, lh, spitch;
@@ -555,7 +555,7 @@ typedef struct {
 
 /* row buffers */
 extern BYTE bufD[ROWBUF], bufS[ROWBUF], bufP[ROWBUF], bufT[ROWBUF];
-void load_src(SURF *s, SURF *d, WORD y, WORD x, WORD n, LPDRAWMODE dm);
+void load_src(SURF *s, SURF *d, WORD y, WORD x, WORD n, LPDRAWMODE dm, BYTE rop3);
 void stretch_row(BYTE *out, const BYTE *src, WORD sw, WORD dw, WORD dfirst, WORD dn, BYTE flip, BYTE Bpp);
 
 /* screen busy / cursor */
@@ -674,6 +674,10 @@ void vram_write(WORD y, WORD x, WORD n, const BYTE *buf);   /* not the shadow (c
 void shadow_flush(WORD l, WORD t, WORD r, WORD b);
 void scr_fill_shadow(WORD y, WORD x, WORD n, DWORD pix);
 BOOL nvx_accel_fill_rect(SHORT x, SHORT y, SHORT w, SHORT h, DWORD color);
+BOOL nvx_accel_copy_rect(SHORT sx, SHORT sy, SHORT dx, SHORT dy, SHORT w, SHORT h);
+BOOL nvx_accel_copy_rect(SHORT sx, SHORT sy, SHORT dx, SHORT dy, SHORT w, SHORT h);
+BOOL nvx_get_native_display_mode(WORD *width, WORD *height);
+BOOL nvx_set_native_display_mode(WORD width, WORD height, WORD bpp);
 void vram_clear(void);                                       /* the whole mode, black */           /* shadow -> video memory */
 /* colour correction (surf.c) */
 extern BYTE lut_on, lut_hc, lutc[3][256];

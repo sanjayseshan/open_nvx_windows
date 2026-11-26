@@ -21,6 +21,8 @@ const GUID IID_ID3DPresentGroup = { 0xB9C3016E, 0xF32A, 0x11DF, { 0x9C, 0x18, 0x
 #define D3DADAPTER_DRIVER_PRESENT_VERSION_MAJOR 1
 #define D3DADAPTER_DRIVER_PRESENT_VERSION_MINOR 0
 
+static void release_d3d_drawable(struct d3d_drawable *d3d);
+
 /******************************************************************************
    Present
 ******************************************************************************/
@@ -39,6 +41,10 @@ static ULONG WINAPI DRIPresent_Release(ID3DPresentM99 *This)
 	mesa99_dbg("release: %d", cnt);
 	if(cnt == 0)
 	{
+		/* PresentBuffer replaces this per-frame drawable. Release the last one
+		 * too when the device is destroyed; otherwise its cached GDI state leaks. */
+		release_d3d_drawable(This->d3d);
+		This->d3d = NULL;
 		nine_unregister_present(This);
 		nine_restore_screen();
 		
@@ -83,6 +89,7 @@ static HRESULT ChangeDisplaySettingsIfNeccessary(ID3DPresentM99 *This, DEVMODEA 
 		{
 			if(ChangeDisplaySettingsA(pMode, CDS_FULLSCREEN) == DISP_CHANGE_SUCCESSFUL)
 			{
+				nine_note_display_mode_changed();
 				mesa99_dbg("success - changed");
 				return S_OK;
 			}
@@ -356,7 +363,9 @@ struct d3d_drawable *get_d3d_drawable(HWND hwnd)
 	if(d3d != NULL)
 	{
 		d3d->wnd = hwnd;
-		d3d->hdc = GetDC(hwnd);
+		/* PresentBuffer acquires/releases its own DC. Keeping another DC here
+		 * leaks one GDI handle per frame on Win9x and can black out the display. */
+		d3d->hdc = NULL;
 		GetClientRect(hwnd, &(d3d->windowRect));
 		d3d->width  = d3d->windowRect.right - d3d->windowRect.left;
 		d3d->height = d3d->windowRect.bottom - d3d->windowRect.top;
@@ -366,7 +375,7 @@ struct d3d_drawable *get_d3d_drawable(HWND hwnd)
 	return d3d;
 }
 
-void release_d3d_drawable(struct d3d_drawable *d3d)
+static void release_d3d_drawable(struct d3d_drawable *d3d)
 {
 	free(d3d);
 }

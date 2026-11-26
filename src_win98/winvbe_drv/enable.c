@@ -77,20 +77,52 @@ static BYTE nvx_vxd_api_queried;
     "pop es" \
     value [dx ax] modify [bx cx];
 extern DWORD __far __cdecl nvx_pm_fill_call(WORD, WORD, WORD, WORD, DWORD);
+extern DWORD __far __cdecl nvx_pm_copy_call(WORD, WORD, WORD, WORD, WORD, WORD);
+extern DWORD __far __cdecl nvx_pm_mode_call(WORD, WORD, WORD);
+extern DWORD __far __cdecl nvx_pm_query_mode_call(void);
 
-BOOL nvx_accel_fill_rect(SHORT x, SHORT y, SHORT w, SHORT h, DWORD color)
+static BOOL nvx_ensure_vxd_api(void)
 {
-    if (x < 0 || y < 0 || w <= 0 || h <= 0) return FALSE;
     if (!nvx_vxd_api_queried) {
         nvx_vxd_api_queried = 1;
         nvx_vxd_api_entry_asm = get_nvx_vxd_api();
         if (nvx_vxd_api_entry_asm)
-            DBG("NVX [2D]: Win98 VxD PM API connected\n");
+            DBG("NVX [MODE]: Win98 VxD native modeset API connected\n");
         else
-            DBG("NVX [2D]: Win98 VxD PM API lookup failed (ID=7D00)\n");
+            DBG("NVX [MODE]: Win98 VxD API lookup failed (ID=7D00)\n");
     }
-    if (!nvx_vxd_api_entry_asm) return FALSE;
+    return nvx_vxd_api_entry_asm != 0;
+}
+
+BOOL nvx_get_native_display_mode(WORD *width, WORD *height)
+{
+    DWORD packed;
+    if (!width || !height || !nvx_ensure_vxd_api()) return FALSE;
+    packed = nvx_pm_query_mode_call();
+    *width = HIWORD(packed);
+    *height = LOWORD(packed);
+    return *width >= 640 && *height >= 480 && *width <= 4096 && *height <= 4096;
+}
+
+BOOL nvx_set_native_display_mode(WORD width, WORD height, WORD bpp)
+{
+    if (!nvx_ensure_vxd_api()) return FALSE;
+    return nvx_pm_mode_call(width, height, bpp) == 0;
+}
+
+BOOL nvx_accel_fill_rect(SHORT x, SHORT y, SHORT w, SHORT h, DWORD color)
+{
+    if (x < 0 || y < 0 || w <= 0 || h <= 0) return FALSE;
+    if (!nvx_ensure_vxd_api()) return FALSE;
     return nvx_pm_fill_call((WORD)x, (WORD)y, (WORD)w, (WORD)h, color) == 0;
+}
+
+BOOL nvx_accel_copy_rect(SHORT sx, SHORT sy, SHORT dx, SHORT dy, SHORT w, SHORT h)
+{
+    if (sx < 0 || sy < 0 || dx < 0 || dy < 0 || w <= 0 || h <= 0) return FALSE;
+    if (!nvx_ensure_vxd_api()) return FALSE;
+    return nvx_pm_copy_call((WORD)sx, (WORD)sy, (WORD)dx, (WORD)dy,
+                            (WORD)w, (WORD)h) == 0;
 }
 
 
@@ -289,6 +321,22 @@ static void win9x_settings(void)
             if (vb == 8 || vb == 15 || vb == 16 || vb == 24 || vb == 32) g.req_bpp = vb;
         }
     }
+#ifndef SECONDARY_HEAD
+    /* On first load, prefer the GSP-confirmed native timing when the saved
+       Win98 setting is below it. ReEnable keeps explicit user changes. */
+    if (!g.enabled) {
+        WORD nativeW = 0, nativeH = 0;
+        if (nvx_get_native_display_mode(&nativeW, &nativeH) &&
+            (g.req_w < nativeW || g.req_h < nativeH)) {
+            g.req_w = nativeW;
+            g.req_h = nativeH;
+            g.req_bpp = 32;
+            g.req_mode = 0;
+            DBG("NVX [MODE]: selecting GSP-confirmed native primary timing %ux%u\n",
+                nativeW, nativeH);
+        }
+    }
+#endif
     DBG("Windows 9x settings: %ux%ux%u\n", g.req_w, g.req_h, g.req_bpp);
 #endif
 }
@@ -356,11 +404,19 @@ static void driver_init(void)
     g.ini_vmaccel = (BYTE)get_ini_int("VMwareAccel", 1);
     g.ini_vmfifo = (BYTE)get_ini_int("VMwareFifo", 1);
     g.ini_hwcursor = (BYTE)get_ini_int("HwCursor", 1);
-    g.ini_shadow = (BYTE)get_ini_int("ShadowBuffer", 1);
-    /* The pitched CE fill path currently causes a blue-patch scanout on this
-       hardware. Keep the validated CPU/shadow path as the safe default until
-       the GPU fill's visible output is corrected. */
+    /* Keep the primary display surface directly backed by scanout VRAM.
+       Nine/D3D can replace the active image without notifying WINVBE's
+       software shadow, leaving the desktop black/stale on return. */
+    g.ini_shadow = (BYTE)get_ini_int("ShadowBuffer", 0);
+    /* Accelerate medium/large solid fills. The BitBlt path preserves the CPU
+       XRGB shadow while submitting opaque A8R8G8B8 scanout colors. Set
+       GpuFill=0 to force the software path during diagnosis. */
+    /* Keep GPU fills disabled by default: the Win98 CE fill path can corrupt
+       scanout on this hardware. Enable explicitly for targeted diagnostics. */
     g.ini_gpufill = (BYTE)get_ini_int("GpuFill", 0);
+    /* Keep CE scanout copies disabled until movement and overlap behavior are
+       verified end to end on Win98. Enable explicitly for targeted tests. */
+    g.ini_gpucopy = (BYTE)get_ini_int("GpuCopy", 0);
     /* DIBENG writes directly into the framebuffer and bypasses BitBlt. Keep
        the driver's BitBlt path active so validated GDI fills can reach NVX. */
     g.ini_dibeng = (BYTE)get_ini_int("DibEngine", 0);
@@ -452,9 +508,11 @@ static void fill_gdiinfo(LPGDIINFO gi)
     gi->dpBitsPixel = g.mi.Bpp == 2 ? 16 : g.mi.Bpp * 8;
     gi->dpPlanes = 1;
     gi->dpNumBrushes = -1;
-    gi->dpNumPens = 100;
+    gi->dpNumPens = g.mi.Bpp > 1 ? -1 : 100;
     gi->dpNumFonts = 0;
-    gi->dpNumColors = 20;
+    /* Match the DIB Engine's true-color capabilities: these modes have
+       no fixed palette limit. */
+    gi->dpNumColors = g.mi.Bpp > 1 ? -1 : 20;
     gi->dpDEVICEsize = sizeof(PDEVICE);
     gi->dpCurves = 0;
     gi->dpLines = 0x22;             /* LC_POLYLINE | LC_STYLED */
@@ -953,6 +1011,20 @@ void __far __cdecl on_int2f(WORD ax, WORD bx)
         DBG("INT2F 4002 (foreground)\n");
         g.fg_4002 = 1;
         if (!g.enabled) { g.in_background = 0; return; }
+        /* NVX deliberately leaves its native scanout running when Windows
+           gives the display to a DOS task (vbe_leave_bg() is a no-op for
+           mode 6000h, and the 4001 notification above is ignored).  Reissuing
+           the native EVO transaction here is unnecessary and can fail while
+           the display notifier/channel is already active.  enable_hw() then
+           treats that transient failure as an initial mode-set failure and
+           drops the desktop to VGA mode 13h.  Keep the confirmed native mode
+           and framebuffer intact on the matching foreground notification. */
+        if ((g.mi.mode & 0xF000) == 0x6000) {
+            DBG("NVX [MODE]: native scanout retained on foreground; skip modeset\n");
+            g.in_background = 0;
+            g.fg_4002 = 0;
+            return;
+        }
         screen_busy++;
         g.curbank = 0xFFFF;
         if (enable_hw(1)) {
@@ -1089,9 +1161,10 @@ void EXPORT UpdateColors(WORD x, WORD y, WORD w, WORD h, LPWORD xlat)
    applied in this mode (high or true colour with the DIB engine or without
    the shadow frame buffer: after a restart) */
 #define WINVBE_COLOR     0x7704
-/* OPENGL_GETINFO (Windows 9x OPENGL32.DLL): the name of the OpenGL ICD,
-   OUT = { DWORD version 2, DWORD driver version, char name[] }; the
-   registry (OpenGLDrivers) maps it to WVBGL32.DLL ([WINVBE] OpenGL=0: none) */
+/* OPENGL_GETINFO (Windows 9x OPENGL32.DLL): the ICD lookup name,
+   OUT = { DWORD version 2, DWORD driver version, char name[] }. Keep the
+   existing WINVBE ICD as OpenGL=1; OpenGL=2 selects the optional NVX Mesa
+   ICD registered by the experimental Win98 package. OpenGL=0 disables it. */
 #define OPENGL_GETINFO   4353
 
 typedef struct {
@@ -1320,12 +1393,22 @@ SHORT EXPORT Control(LPVOID lpDev, WORD func, LPVOID lpIn, LPVOID lpOut)
     case OPENGL_GETINFO: {
         /* Windows 9x's OPENGL32.DLL reads the name as an ANSI string (the
            registry value it looks up; Windows NT: Unicode) */
-        static const char nm[] = "WINVBE";
+        static const char winvbe_nm[] = "WINVBE";
+        static const char nvx_nm[] = "NVX";
+        static BYTE logged = 0;
+        const char *nm;
         LPBYTE b = (LPBYTE)lpOut;
         WORD i;
-        if (!g.win9x || !g.ini_opengl || !b) return 0;
+        if (!g.win9x || !g.ini_opengl || !b || g.ini_opengl > 2) return 0;
+        nm = g.ini_opengl == 2 ? nvx_nm : winvbe_nm;
         ((LPDWORD)b)[0] = 2; ((LPDWORD)b)[1] = 1;
-        for (i = 0; i < sizeof(nm); i++) b[8 + i] = nm[i];
+        for (i = 0; nm[i]; i++) b[8 + i] = nm[i];
+        b[8 + i] = 0;
+        if (!logged) {
+            DBG("OPENGL_GETINFO mode=%u name=%s out=%02x %02x %02x %02x\n",
+                (WORD)g.ini_opengl, nm, b[8], b[9], b[10], b[11]);
+            logged = 1;
+        }
         return 1;
     }
 #endif

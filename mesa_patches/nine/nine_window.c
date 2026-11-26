@@ -31,6 +31,10 @@ typedef struct wnd_list
 
 static wnd_list_t nine_wl = {NULL, NULL};
 static DEVMODEA savedMode = {0};
+/* Restore a display mode only when Nine itself successfully changed one.
+ * Windowed D3D9 devices must not trigger a synthetic mode reset on release;
+ * that reset can tear down a custom Win9x miniport scanout. */
+static BOOL nine_display_mode_changed = FALSE;
 
 static LRESULT CALLBACK nine_winproc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
@@ -42,6 +46,7 @@ BOOL nine_init()
 {
 	nine_wl.first = NULL;
 	nine_wl.last  = NULL;
+	nine_display_mode_changed = FALSE;
 	
 	ZeroMemory(&savedMode, sizeof(DEVMODEA));
 	savedMode.dmSize = sizeof(DEVMODEA);
@@ -55,6 +60,8 @@ BOOL nine_init()
 void nine_restore_screen()
 {
 	DEVMODEA cur;
+	if (!nine_display_mode_changed)
+		return;
 	/* check first if in saved struct isn't some garbage */
 	//if(savedMode.dmSize == sizeof(DEVMODEA))
 	
@@ -73,6 +80,12 @@ void nine_restore_screen()
 			}
 		}
 	}
+	nine_display_mode_changed = FALSE;
+}
+
+void nine_note_display_mode_changed(void)
+{
+	nine_display_mode_changed = TRUE;
 }
 
 void nine_deinit()
@@ -129,12 +142,19 @@ static HRESULT set_display_mode(ID3DPresentM99 *This, DEVMODEA *new_mode)
 					ERR("ChangeDisplaySettingsExA failed with 0x%08x\n", (int)hr);
 					return D3DERR_INVALIDCALL;
 				}
+				nine_note_display_mode_changed();
+				mesa99_report("[NINE_MODE] ChangeDisplaySettingsEx succeeded after retry\r\n");
 			}
 			else
 			{
 				ERR("ChangeDisplaySettingsExA failed with 0x%08x\n", (int)hr);
 				return D3DERR_INVALIDCALL;
 			}
+		}
+		else
+		{
+			nine_note_display_mode_changed();
+			mesa99_report("[NINE_MODE] ChangeDisplaySettingsEx succeeded\r\n");
 		}
 	}
 	return D3D_OK;
@@ -439,23 +459,24 @@ BOOL nine_unregister_present(ID3DPresentM99 *present)
 	{
 		if(item->present == present)
 		{
+			wnd_item_t *removed = item;
+			item = item->next;
 			if(prev)
 			{
-				prev->next = item->next;
+				prev->next = item;
 			}
 			else
 			{
-				nine_wl.first = item->next;
+				nine_wl.first = item;
 			}
 			
-			if(item->next == NULL)
+			if(item == NULL)
 			{
 				nine_wl.last = prev;
 			}
 			
-			mesa99_dbg("removed win: %X", item->window);
-			item = item->next;
-			free(item);
+			mesa99_dbg("removed present window: %X", removed->window);
+			free(removed);
 		}
 		else
 		{

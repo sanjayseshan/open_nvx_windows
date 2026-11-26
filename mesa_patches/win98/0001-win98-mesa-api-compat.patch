@@ -1,0 +1,177 @@
+diff --git a/src/c11/impl/threads_win32.c b/src/c11/impl/threads_win32.c
+index 91870baa1ae9e..e9c8fc87d4daa 100644
+--- a/src/c11/impl/threads_win32.c
++++ b/src/c11/impl/threads_win32.c
+@@ -383,7 +383,12 @@ thrd_sleep(const struct timespec *time_point, struct timespec *remaining)
+ void
+ thrd_yield(void)
+ {
++#if defined(NVX_WIN98_DIOC)
++    /* SwitchToThread was added after Win9x; yield the current time slice. */
++    Sleep(0);
++#else
+     SwitchToThread();
++#endif
+ }
+ 
+ 
+diff --git a/src/util/disk_cache_os.c b/src/util/disk_cache_os.c
+index 30cb5541465b2..32d127c50a7aa 100644
+--- a/src/util/disk_cache_os.c
++++ b/src/util/disk_cache_os.c
+@@ -45,6 +45,12 @@
+ bool
+ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
+ {
++#if defined(NVX_WIN98_DIOC)
++   /* Win98 has no GetModuleHandleExW. Do not key a cache on file identity. */
++   (void)ptr;
++   (void)ctx;
++   return false;
++#else
+    HMODULE mod = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)ptr,
+@@ -75,6 +81,7 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
+       _mesa_sha1_update(ctx, &time, sizeof(time));
+    CloseHandle(mod_as_file);
+    return ret;
++#endif
+ }
+ 
+ #endif
+diff --git a/src/util/os_misc.c b/src/util/os_misc.c
+index 4b7916634b3a8..8c02a1b110471 100644
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -116,6 +116,7 @@ os_log_message(const char *message)
+ #if DETECT_OS_WINDOWS
+    OutputDebugStringA(message);
+ #if !defined(_GAMING_XBOX)
++#if !defined(NVX_WIN98_DIOC)
+    if(GetConsoleWindow() && !IsDebuggerPresent()) {
+       fflush(stdout);
+       fputs(message, fout);
+@@ -125,6 +126,13 @@ os_log_message(const char *message)
+       fputs(message, fout);
+       fflush(fout);
+    }
++#else
++   /* Win98 has no console-window or debugger-presence query. */
++   if (fout != stderr) {
++      fputs(message, fout);
++      fflush(fout);
++   }
++#endif
+ #endif
+ #else /* !DETECT_OS_WINDOWS */
+    fflush(stdout);
+@@ -322,6 +330,13 @@ os_get_total_physical_memory(uint64_t *size)
+    *size = (uint64_t)info.max_pages * (uint64_t)B_PAGE_SIZE;
+    return true;
+ #elif DETECT_OS_WINDOWS
++#if defined(NVX_WIN98_DIOC)
++   MEMORYSTATUS status;
++   status.dwLength = sizeof(status);
++   GlobalMemoryStatus(&status);
++   *size = status.dwTotalPhys;
++   return true;
++#else
+    MEMORYSTATUSEX status;
+    BOOL ret;
+ 
+@@ -329,6 +344,7 @@ os_get_total_physical_memory(uint64_t *size)
+    ret = GlobalMemoryStatusEx(&status);
+    *size = status.ullTotalPhys;
+    return (ret == true);
++#endif
+ #elif DETECT_OS_FUCHSIA
+    *size = zx_system_get_physmem();
+    return true;
+@@ -382,6 +398,13 @@ os_get_available_system_memory(uint64_t *size)
+    *size = MIN2(mem_available, rl.rlim_cur);
+    return true;
+ #elif DETECT_OS_WINDOWS
++#if defined(NVX_WIN98_DIOC)
++   MEMORYSTATUS status;
++   status.dwLength = sizeof(status);
++   GlobalMemoryStatus(&status);
++   *size = status.dwAvailPhys;
++   return true;
++#else
+    MEMORYSTATUSEX status;
+    BOOL ret;
+ 
+@@ -389,6 +412,7 @@ os_get_available_system_memory(uint64_t *size)
+    ret = GlobalMemoryStatusEx(&status);
+    *size = status.ullAvailPhys;
+    return (ret == true);
++#endif
+ #elif DETECT_OS_APPLE
+    vm_statistics64_data_t vm_stats;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+diff --git a/src/util/u_thread.c b/src/util/u_thread.c
+index 255c5f66a4b39..94cc99a425ef9 100644
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -127,6 +127,14 @@ util_set_thread_affinity(thrd_t thread,
+    return pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset) == 0;
+ 
+ #elif defined(_WIN32) && !defined(HAVE_PTHREAD)
++#if defined(NVX_WIN98_DIOC)
++   /* Win9x exposes no supported per-thread affinity API. */
++   (void)thread;
++   (void)mask;
++   (void)old_mask;
++   (void)num_mask_bits;
++   return false;
++#else
+    DWORD_PTR m = mask[0];
+ 
+    if (sizeof(m) > 4 && num_mask_bits > 32)
+@@ -146,6 +154,7 @@ util_set_thread_affinity(thrd_t thread,
+    }
+ 
+    return true;
++#endif
+ #else
+    return false;
+ #endif
+@@ -162,14 +171,19 @@ util_thread_get_time_nano(thrd_t thread)
+    clock_gettime(cid, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+ #elif defined(_WIN32)
++#if defined(NVX_WIN98_DIOC)
++   (void)thread;
++   return 0;
++#else
+    union {
+       FILETIME time;
+       ULONGLONG value;
+    } kernel_time, user_time;
+    GetThreadTimes((HANDLE)thread.handle, NULL, NULL, &kernel_time.time, &user_time.time);
+    return (kernel_time.value + user_time.value) * 100;
++#endif
+ #else
+    (void)thread;
+    return 0;
+ #endif
+ }
+
+diff --git a/src/gallium/auxiliary/hud/hud_cpu.c b/src/gallium/auxiliary/hud/hud_cpu.c
+index 0000000000000..0000000000000 100644
+--- a/src/gallium/auxiliary/hud/hud_cpu.c
++++ b/src/gallium/auxiliary/hud/hud_cpu.c
+@@ -65,5 +65,12 @@ get_cpu_stats(unsigned cpu_index, uint64_t *busy_time, uint64_t *total_time)
+ {
+    SYSTEM_INFO sysInfo;
+    FILETIME ftNow, ftCreation, ftExit, ftKernel, ftUser;
++#if defined(NVX_WIN98_DIOC)
++   /* Win9x does not implement GetProcessTimes; leave CPU HUD unavailable. */
++   (void)cpu_index;
++   (void)busy_time;
++   (void)total_time;
++   return false;
++#endif
+ 
+    GetSystemInfo(&sysInfo);

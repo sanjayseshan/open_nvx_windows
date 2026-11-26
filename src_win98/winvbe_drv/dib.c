@@ -265,11 +265,34 @@ static void dib_to_work(DIBINFO *di, const BYTE *raw, WORD x0, WORD n, BYTE mono
     if (di->bits >= 16) {
         BYTE step = (BYTE)(di->bits >> 3);
         const BYTE *p = raw + x0 * step;
+        BYTE trace_icon_dib = di->bits == 24 && di->width == 32 &&
+                              di->height == 32 && n == 32 && x0 == 0 &&
+                              !mono && Bpp == 4;
+        static WORD icon_dib_rows;
+        static DWORD icon_dib_raw_chroma, icon_dib_work_chroma;
         for (i = 0; i < n; i++, p += step) {
             DWORD rgb = di->bits == 24 ? (DWORD)p[2] | ((DWORD)p[1] << 8) | ((DWORD)p[0] << 16) : dib_hi_rgb(di, p);
             if (mono) *o++ = rgb_is_white(rgb) ? 0xFF : 0;
             else if (g.pf == PF_8) *o++ = dither8(rgb, dx + i, dy);
-            else { pix_put(o, pix_of(dib_phys(rgb, 0)), Bpp); o += Bpp; }
+            else {
+                DWORD pixel = pix_of(dib_phys(rgb, 0));
+                DWORD roundtrip = pixel_to_rgb(pixel);
+                if (trace_icon_dib &&
+                    ((BYTE)rgb != (BYTE)(rgb >> 8) || (BYTE)(rgb >> 8) != (BYTE)(rgb >> 16)))
+                    ++icon_dib_raw_chroma;
+                if (trace_icon_dib &&
+                    ((BYTE)roundtrip != (BYTE)(roundtrip >> 8) || (BYTE)(roundtrip >> 8) != (BYTE)(roundtrip >> 16)))
+                    ++icon_dib_work_chroma;
+                pix_put(o, pixel, Bpp);
+                o += Bpp;
+            }
+        }
+        if (trace_icon_dib && ++icon_dib_rows == 32) {
+            DBG("NVX [ICON-DIB]: 32x32 24bpp upload raw-chromatic=%lu work-chromatic=%lu\n",
+                icon_dib_raw_chroma, icon_dib_work_chroma);
+            icon_dib_rows = 0;
+            icon_dib_raw_chroma = 0;
+            icon_dib_work_chroma = 0;
         }
         return;
     }
@@ -582,13 +605,20 @@ WORD EXPORT DeviceBitmapBits(LPGBITMAP bm, WORD fGet, WORD start, WORD count, LP
                              LPBYTE bmi, LPDRAWMODE dm, LPWORD xlat)
 {
     TRACE("DeviceBitmapBits\n");
+    static WORD icon_dib_object_log_count;
     DIBINFO di;
     SURF s;
     if (!dib_parse(&di, bmi)) return 0;
     surf_from_dev(&s, bm);
     DBG("DBB %x ", FP_SEG(bm->bmBits));
-    DBG("DBB get=%u bm=%ux%ux%u st=%u n=%u dib=%ux%ux%u comp=%u nc=%u core=%u xlat=%p\n", fGet, bm->bmWidth, bm->bmHeight,
-        bm->bmBitsPixel, start, count, di.width, di.height, di.bits, di.comp, di.ncolors, di.core, xlat);
+    DBG("DBB get=%u bm=%ux%ux%u pitch=%u st=%u n=%u dib=%ux%ux%u comp=%u nc=%u core=%u xlat=%p\n", fGet, bm->bmWidth, bm->bmHeight,
+        bm->bmBitsPixel, bm->bmWidthBytes, start, count, di.width, di.height, di.bits, di.comp, di.ncolors, di.core, xlat);
+    if (!fGet && di.width == 32 && di.height == 32 && di.bits == 24 &&
+        icon_dib_object_log_count < 24) {
+        DBG("NVX [ICON-DIB-OBJ #%u]: bitmap=%x:%x bits=%x:%x start=%u count=%u\n",
+            icon_dib_object_log_count++, FP_SEG(bm), FP_OFF(bm),
+            FP_SEG(bm->bmBits), FP_OFF(bm->bmBits), start, count);
+    }
     if (fGet) {
         if (start >= s.height) return 0;
         if (start + count > s.height) count = s.height - start;
@@ -638,7 +668,11 @@ WORD EXPORT DeviceBitmapBits(LPGBITMAP bm, WORD fGet, WORD start, WORD count, LP
         return r;
     }
 #endif
-    return dib_set(&s, 0, (SHORT)(di.height - start - count), start, count, bits, &di, NULL, xlat);
+    {
+        WORD result = dib_set(&s, 0, (SHORT)(di.height - start - count),
+                              start, count, bits, &di, NULL, xlat);
+        return result;
+    }
 }
 
 WORD EXPORT DIBToDevice(LPVOID lpDev, SHORT x, SHORT y, WORD start, WORD count, LPGRECT clip,

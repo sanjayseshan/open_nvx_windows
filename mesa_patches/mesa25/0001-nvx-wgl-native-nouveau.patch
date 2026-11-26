@@ -190,17 +190,22 @@ index 75ec547cfd79e..7e2403f5b937b 100644
           return screen;
        }
        if (i == 0 && drivers[i][0] != '\0')
-@@ -160,6 +294,9 @@ wgl_present(struct pipe_screen *screen,
+@@ -160,6 +294,14 @@ wgl_present(struct pipe_screen *screen,
              struct pipe_resource *res,
              HDC hDC)
  {
++#if defined(WIN9X)
++   if (use_nouveau)
++      nvx_present_trace("Win98 WGL uses mapped GDI present for client clipping");
++#else
 +   if (use_nouveau && nvx_wgl_present_gpu(screen, ctx, res, hDC))
 +      return;
++#endif
 +
     /* This will fail if any interposing layer (trace, debug, etc) has
      * been introduced between the gallium frontends and the pipe driver.
      *
-@@ -199,10 +336,41 @@ wgl_present(struct pipe_screen *screen,
+@@ -199,10 +341,43 @@ wgl_present(struct pipe_screen *screen,
  #endif
  
  #ifdef GALLIUM_SOFTPIPE
@@ -214,10 +219,12 @@ index 75ec547cfd79e..7e2403f5b937b 100644
 +      return;
 +   }
  #endif
++#if !defined(WIN9X)
 +   if (screen->flush_frontbuffer) {
 +      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
 +      return;
 +   }
++#endif
 +   if (ctx && res && hDC && ctx->texture_map && ctx->texture_unmap) {
 +      struct pipe_box box;
 +      memset(&box, 0, sizeof(box));

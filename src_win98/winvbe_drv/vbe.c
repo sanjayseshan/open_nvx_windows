@@ -1013,6 +1013,14 @@ static void nvx_add_mode(WORD w, WORD h, BYTE bpp)
     m->yres = h;
     m->bpp = bpp;
     m->Bpp = (bpp + 7) >> 3;
+    /* nvx_add_mode() constructs modes without a VBE mode-info block, so the
+       zeroed MODEINFO used to leave pf at PF_8 even for 32bpp scanout.  The
+       shadow uploader uses pf to decide whether XRGB pixels need an opaque
+       alpha byte for the native A8R8G8B8 EVO window. */
+    if (m->Bpp == 2) m->pf = (bpp == 15) ? PF_555 : PF_565;
+    else if (m->Bpp == 1) m->pf = PF_8;
+    else if (m->Bpp == 3) m->pf = PF_24;
+    else m->pf = PF_32;
     m->pitch = w * m->Bpp;
     m->lpitch = m->pitch;
     m->memmodel = (bpp == 8) ? 4 : 6;
@@ -1150,10 +1158,23 @@ int vbe_probe(void)
         nvx_add_mode(2560, 1440, 32);
         DBG("NVX2 [MODE]: native head-1 QHD mode added from EDID; primary VBE list unchanged\n");
     }
+#else
+    /* The VBE BIOS on GA104 does not enumerate QHD. Add it only when the
+       ring-0 GSP reports a real native primary timing; the mode setter below
+       commits that timing through the shared EVO scanout path. */
+    if (g.win9x) {
+        WORD native_w = 0, native_h = 0;
+        if (nvx_get_native_display_mode(&native_w, &native_h) &&
+            native_w == 2560 && native_h == 1440) {
+            nvx_add_mode(native_w, native_h, 32);
+            DBG("NVX [MODE]: added GSP-confirmed native primary %ux%u@32\n",
+                native_w, native_h);
+        }
+    }
 #endif
     for (i = 0; i < nmodes; i++)
-        DBG(" mode %x: %ux%ux%u pitch=%u attr=%x win=%x/%x gran=%u size=%u seg=%x lfb=%lx\n",
-            modes[i].mode, modes[i].xres, modes[i].yres, modes[i].bpp, modes[i].pitch, modes[i].attr,
+        DBG(" mode %x: %ux%ux%u pf=%u pitch=%u attr=%x win=%x/%x gran=%u size=%u seg=%x lfb=%lx\n",
+            modes[i].mode, modes[i].xres, modes[i].yres, modes[i].bpp, modes[i].pf, modes[i].pitch, modes[i].attr,
             modes[i].winAattr, modes[i].winBattr, modes[i].wingran, modes[i].winsize, modes[i].winAseg,
             modes[i].physbase);
     return 1;
@@ -1713,9 +1734,17 @@ int vbe_set_mode(void)
                 }
                 DBG("NVX: hardware modeset 0x%04x ax=%x\n", (WORD)(vbe_cand | 0x4000), (WORD)rmr.eax);
             } else {
-                DBG("NVX: refusing synthetic mode without a hardware modeset: %ux%ux%u\n",
+                WORD native_w = 0, native_h = 0;
+                if (g.bpp != 32 ||
+                    !nvx_get_native_display_mode(&native_w, &native_h) ||
+                    native_w != g.xres || native_h != g.yres ||
+                    !nvx_set_native_display_mode(g.xres, g.yres, g.bpp)) {
+                    DBG("NVX: native primary modeset rejected: %ux%ux%u\n",
+                        g.xres, g.yres, g.bpp);
+                    return 0;
+                }
+                DBG("NVX: GSP/EVO native primary modeset committed %ux%ux%u\n",
                     g.xres, g.yres, g.bpp);
-                return 0;
             }
         }
 #endif

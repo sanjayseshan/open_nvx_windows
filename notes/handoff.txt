@@ -1,49 +1,44 @@
-# NVX handoff — 2026-11-25
+Current status — 2026-11-26, Win98 SE
 
-## Current state
+The current VM is running with auto-retry and should be left open. Serial log:
+`test_logs/win98-20261126-135204.log` (`vm_serial.log` points to it). The guest
+is at 2560x1440x32. Its one-shot 2D-only test passed. This run has both
+`GpuFill=0` and `GpuCopy=0`; the log contains no GPU fill/copy submissions.
 
-- RTX 3070 GA104 is the only validated GPU.
-- XP x64 OpenGL/Nouveau is the mature path. Native XP x86 Gallium Nine completed 3DMark05; latest user-reported score: 5,409. Clean release installation still needs validation.
-- Win98 SE has a hardware 2D path for eligible 32bpp GDI solid fills. Commit `abbffc4` added the BitBlt → VxD PM → shared miniport/OpenRM/GSP route.
-- Latest A/B log: `test_logs/win98-20261125-102423.log` (`vm_serial.log` points there). With `[WINVBE] GpuFill=0`, the user confirms the desktop is visible and window movement is smooth. The same driver with GPU fills enabled produced a black screen with a small blue rectangle. This isolates the regression to the CE solid-fill path, not VBE modeset or CPU/shadow presentation.
-- The CE path did complete its commands without timeout, so its defect is in visible fill behavior/coherency rather than submission acceptance. `GpuFill` is now opt-in and defaults to 0; CPU/shadow GDI rendering is the safe default. Driver package version is 2.0.0.4. Re-enable GPU fills only for targeted tests after fixing the CE rectangle output.
-- This confirms stable desktop presentation on the A/B configuration; it does not establish 2D GPU-fill correctness or any Win98 3D acceleration.
-- Other GDI operations still use CPU/shadow writes. The `ATTACH_SEC` helper in the ISO is unrelated to the single-head desktop and repeatedly fails to enumerate a second display.
+Cause of the previous visual regression: the earlier install omitted explicit
+2D acceleration overrides, and `test/update_win98_driver.sh` defaulted both
+`GpuFill` and `GpuCopy` to 1. The previous run's log confirms full-screen GPU
+fills at startup and GPU copies during window updates. The user then saw a black
+wallpaper, window trails, and corruption in windows; 3DMark03's loading scene
+was mostly black except for the top-left area. Both paths are now disabled by
+default in the installer and Win98 driver source. The current 2D-only guest test
+passes, but visual recovery should be confirmed on the monitor. Latest user
+report: 3DMark03 shows only the top-left of its loading screen; the rest is
+black and flickers. The current serial log is from the 2D-only test, so it does
+not capture this 3DMark run. Retest 3DMark03 with both 2D GPU paths disabled
+to separate the 3D rendering issue from desktop corruption; the black/flicker
+problem remains unresolved.
 
-## 1440p
+The Win98 Mesa WGL TLS cleanup fix remains unverified at runtime. Original
+`test4.txt` fault: EIP `BFF7B9A6` in KERNEL32, returning into Mesa WGL
+`stw_tls_cleanup` at `NVXOGL32.DLL` `6E4C46A2`, entering static `g_mutex` at
+`6E731704`. Root patch
+`mesa_patches/win98/0005-wgl-tls-critical-section-init.patch` initializes the
+critical section explicitly. The x86 Mesa ICD build succeeded. The previous
+debugged 3DMark run reported first-chance MSVC C++ exceptions (`E06D7363`), not
+an access violation; its logger's generic “access kind/address” fields are
+misleading for that exception type.
 
-- Primary head: stay with VBE-reported 1920x1080. Synthetic primary QHD mode caused stripes because VBE accepted the mode without a matching native scanout modeset.
-- Optional head 1: source has `nvx2.drv`, an EDID-gated 2560x1440 mode, native scanout commit, and `attach_sec.exe`. `WIN98_SINGLE_MONITOR=0 ./src_win98/build.sh` compiled the dual-head package successfully; tracked single-head outputs were restored afterward.
-- Dual-head QHD has not been runtime-tested. The current VM remains on the single-head image. Next hardware test needs a dual-head image/registry configuration, QHD EDID, `nvx2.drv`, secondary VxD extension, and attach utility. Do not call Win98 QHD supported until that boot is visually validated.
+The Win98 driver package was rebuilt with GPU fill/copy disabled by default and
+the experimental Mesa ICD staged. The running image has explicit settings, so
+rebuilding the package did not alter the active VM.
 
-## Win98 3D: transport bridge in progress
+Relevant files: `test_logs/win98-20261126-132329.log`,
+`test_logs/win98-20261126-134931.log`,
+`test_logs/win98-20261126-135204.log`, `test/update_win98_driver.sh`,
+`src_win98/winvbe_drv/enable.c`, `src_win98/winvbe_drv/blt.c`,
+`test/win98/runner.c`, and `mesa_patches/win98/0005-wgl-tls-critical-section-init.patch`.
 
-```text
-D3D9 app -> Wine9x D3D9 switcher (`nine`) -> Mesa Gallium Nine (`mesa99.dll`)
-  -> Nouveau/NVC0 winsys -> Win98 client transport -> NVX.VXD
-  -> shared miniport/OpenRM/GSP -> GA104
-```
-
-- Added `submodules/wine9x` at upstream revision `3fbe3fd` as a pinned reference. Its D3D9 switcher can route applications to `mesa99.dll`; it is a front-end router, not the GPU driver. Project-specific patches must live outside this submodule.
-- Existing `src_driver/nvxmp.c` has the XP miniport 3D IOCTL set (client/session, BO allocation, upload/download, batch submit, wait fence, present).
-- Commit `23b4d1e` adds a bounded DIOC allowlist for the shared 3D IOCTL ABI, serializes Win9x process-tag selection with `HwStartIO`, maps Mesa escape IDs to VxD IOCTLs in `mesa_patches/nvx_winsys_win9x.c`, and suppresses unsupported direct-map capability in the Win98 build. The Win98 VxD package builds successfully.
-- Current changes route Mesa WGL bridge requests through `NvxWinsysEscape`, include the Win9x adapter in the external Mesa source patch, and let `NVX_WIN98_DIOC` select the DIOC backend. Both the normal x86 Mesa 25.1.6 XP ICD and the full x86 Nouveau/WGL DIOC smoke build compile and link. The DIOC artifact is isolated under `/tmp/nvx-mesa-win98-dioc-build`; it was built with Mesa's XP API floor, so it is not yet a Win98-installable ICD. Its imports are `GDI32`, `KERNEL32`, `MSVCRT`, and `USER32`; Win98 export and subsystem compatibility are still unverified.
-- The VxD package was not installed in the running guest, and no Win98 3D app has exercised the transport or rendered on GPU. Do not report Win98 3D acceleration as working yet.
-- `src_win98/shim/nvx_mdl_win98.c:NvxMdlMapUser()` deliberately fails closed. The Win98 adapter can use upload/download paths, but map-dependent BO behavior and Nouveau screen creation still need to be checked end to end.
-- Next: produce an actual Win98 API-floor ICD (or identify and shim every unavailable Mesa import), audit imports/subsystem against Win98 exports, then install the VxD/ICD in a separate guest snapshot. Prove caps/client/BO upload and GPU clear+readback, then triangle/depth, textures and present. Preserve miniport/OpenRM validation and packet construction. Keep user mapping disabled until a real safe VMM process mapping exists.
-- Do not claim D3D hardware acceleration based on DirectDraw capability bits or a software HAL. Current evidence for Win98 is 2D solid fills only.
-
-## Constraints and current test setup
-
-- The 16-bit driver currently uses private development VxD PM ID `0x7d00`; replace it with a collision-free assigned ID before distribution.
-- `DibEngine=0` is needed for this accelerated BitBlt route. DIBENG otherwise bypasses the driver's callback.
-- Keep SYSTEM.INI mouse settings exactly `[boot] mouse.drv=mouse.drv` and `[386Enh] mouse=*vmouse`; cursor movement still needs visual confirmation.
-- No secondary-monitor/QHD hardware test while the current single-head VM remains running.
-
-## Relevant files
-
-- 2D: `src_win98/winvbe_drv/blt.c`, `surf.c`, `enable.c`; VxD bridge: `src_win98/vxd_entry.asm`, `src_win98/shim/videoprt_shim.c/.h`.
-- Shared GPU ABI: `src_driver/miniport.h`, `nvxmp.c`, `nvx_gsp.h`; Win9x transport: `src_win98/shim/videoprt_shim.c`, `mesa_patches/nvx_winsys_win9x.c/.h`, `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_wgl_bridge.c`.
-- 3D frontends: `submodules/wine9x/`, `submodules/mesa9x/win9x/nine/`, root patches in `mesa_patches/nine/` and `patches/mesa9x/`.
-- Tests: `test/win98_fill_probe.c`, `test/update_win98_driver.sh`, `test/run_vfio_win98_autoretry.sh`.
-- Latest run: `test_logs/win98-20261125-102423.log`; `vm_serial.log` points to this run. Primary QHD is still intentionally not advertised; only option-ROM-verified 1920x1080 is safe on this path. Do not synthesize 1440p until a native primary modeset path is validated.
+The working tree contains many unrelated edits; do not reset or discard them.
+Use `NVX_AUTO_RETRY=1` for Win98 VFIO boots and leave the VM running unless
+asked to stop it.

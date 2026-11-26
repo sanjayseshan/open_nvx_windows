@@ -18,7 +18,7 @@ fi
 
 echo "==> Building x86 Gallium Nine from mesa9x bundled Mesa 25.1.6"
 "$ROOT/test/apply_mesa9x_25_patches.sh"
-for source in mesa99.c nine_present.c nine_window.c nine_memory_helper.c; do
+for source in mesa99.c mesa99.h nine_present.c nine_window.c nine_memory_helper.c; do
     install -m 0644 "$ROOT/mesa_patches/nine/$source" \
         "$MESA9X/win9x/nine/$source"
 done

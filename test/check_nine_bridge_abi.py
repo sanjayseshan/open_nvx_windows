@@ -10,7 +10,7 @@ import os, tempfile
 os.chdir(root)
 work=tempfile.TemporaryDirectory(prefix='nvx-nine-abi-')
 tmp=pathlib.Path(work.name)
-s=(root/'submodules/mesa9x/win9x/nine/mesa99.c').read_text()
+s=(root/'mesa_patches/nine/mesa99.c').read_text()
 build=pathlib.Path(os.environ.get('NVX_MESA_XP32_BUILD', '/tmp/nvx-mesa-xp32-build'))
 cmds=json.load(open(build/'compile_commands.json'))
 e=next(e for e in cmds if e['file'].endswith('/nvc0_context.c'))

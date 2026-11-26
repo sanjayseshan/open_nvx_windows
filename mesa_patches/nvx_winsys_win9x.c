@@ -6,6 +6,8 @@
 
 #include "nvx_winsys_win9x.h"
 
+void NvxWglRecordMesaInitFailure(const char *stage, int error);
+
 #define NVX_FILE_DEVICE_VIDEO 0x00000023U
 #define NVX_METHOD_BUFFERED 0U
 #define NVX_FILE_ANY_ACCESS 0U
@@ -96,13 +98,21 @@ NvxWinsysInitWin9xVxd(NVX_WINSYS_DEVICE *device)
 
    if (!device)
       return 0;
-   vxd = CreateFileA("\\\\.\\NVX", GENERIC_READ | GENERIC_WRITE,
-                     FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-   if (vxd == INVALID_HANDLE_VALUE)
+   /* Win9x exposes a VxD DIOC endpoint with the legacy CreateFile form used
+    * by nvxload/attach_sec: zero access/share/creation and
+    * FILE_FLAG_DELETE_ON_CLOSE. WDM-style OPEN_EXISTING plus GENERIC_READ/
+    * GENERIC_WRITE is rejected by the VxD loader (ERROR_NOT_SUPPORTED), so
+    * no 3D caps or client-open IOCTL ever reached the shared miniport. */
+   vxd = CreateFileA("\\\\.\\NVX", 0, 0, NULL, 0,
+                     FILE_FLAG_DELETE_ON_CLOSE, NULL);
+   if (vxd == INVALID_HANDLE_VALUE) {
+      NvxWglRecordMesaInitFailure("Win98 VxD CreateFile", (int)GetLastError());
       return 0;
+   }
 
    if (!NvxWinsysInit(device, nvx_winsys_escape_vxd, vxd)) {
+      NvxWglRecordMesaInitFailure("Win98 VxD caps/client-open DIOC",
+                                  (int)GetLastError());
       CloseHandle(vxd);
       return 0;
    }

@@ -72,6 +72,14 @@ static LONG CALLBACK nvx_exception_trace(EXCEPTION_POINTERS *exception)
 
 static void nvx_install_exception_trace(void)
 {
-    AddVectoredExceptionHandler(1, nvx_exception_trace);
+    /* Windows 98 lacks AddVectoredExceptionHandler. Resolve it at runtime so
+       these diagnostic binaries remain loadable on Win9x. */
+    typedef PVOID (WINAPI *PFN_ADD_VECTORED_EXCEPTION_HANDLER)(ULONG, PVOID);
+    HMODULE kernel = GetModuleHandleA("KERNEL32.DLL");
+    PFN_ADD_VECTORED_EXCEPTION_HANDLER add_handler = kernel ?
+        (PFN_ADD_VECTORED_EXCEPTION_HANDLER)GetProcAddress(
+            kernel, "AddVectoredExceptionHandler") : NULL;
+    if (add_handler)
+        add_handler(1, (PVOID)nvx_exception_trace);
 }
 #endif

@@ -66,6 +66,70 @@ _nvx_pm_fill_call:
         pop     bp
         retf
 
+; DWORD far cdecl nvx_pm_mode_call(width,height,bpp)
+; EBX=2, ECX=width, EDX=height, ESI=bpp. EAX=0 means committed.
+        global  _nvx_pm_mode_call
+_nvx_pm_mode_call:
+        push    bp
+        mov     bp,sp
+        push    ebx
+        push    esi
+        movzx   ecx,word [bp+6]
+        movzx   edx,word [bp+8]
+        movzx   esi,word [bp+10]
+        mov     ebx,2
+        call    far [_nvx_vxd_api_entry_asm wrt DGROUP]
+        mov     edx,eax
+        shr     edx,16
+        pop     esi
+        pop     ebx
+        pop     bp
+        retf
+
+; DWORD far cdecl nvx_pm_query_mode_call()
+; EBX=3. EAX packs native width in the high word and height in the low word.
+        global  _nvx_pm_query_mode_call
+_nvx_pm_query_mode_call:
+        push    bp
+        mov     bp,sp
+        push    ebx
+        mov     ebx,3
+        call    far [_nvx_vxd_api_entry_asm wrt DGROUP]
+        mov     edx,eax
+        shr     edx,16
+        pop     ebx
+        pop     bp
+        retf
+
+; DWORD far cdecl nvx_pm_copy_call(sx,sy,dx,dy,width,height)
+; EBX=4. Pack each coordinate pair into one 32-bit PM client register:
+; ECX=(sy<<16)|sx, EDX=(dy<<16)|dx, ESI=(height<<16)|width.
+        global  _nvx_pm_copy_call
+_nvx_pm_copy_call:
+        push    bp
+        mov     bp,sp
+        push    ebx
+        push    esi
+        push    edi
+        movzx   ecx,word [bp+8]
+        shl     ecx,16
+        mov     cx,word [bp+6]
+        movzx   edx,word [bp+12]
+        shl     edx,16
+        mov     dx,word [bp+10]
+        movzx   esi,word [bp+16]
+        shl     esi,16
+        mov     si,word [bp+14]
+        mov     ebx,4
+        call    far [_nvx_vxd_api_entry_asm wrt DGROUP]
+        mov     edx,eax
+        shr     edx,16
+        pop     edi
+        pop     esi
+        pop     ebx
+        pop     bp
+        retf
+
         global  LibEntry
 ..start:
 LibEntry:

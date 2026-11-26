@@ -48,6 +48,18 @@
 #include <ctype.h>
 #include <math.h>
 
+#if defined(NVX_WIN98_TEST_BUILD)
+static BOOL NvxSetEnvironmentVariableA(LPCSTR name, LPCSTR value)
+{
+    typedef BOOL (WINAPI *PFN_SET_ENV)(LPCSTR, LPCSTR);
+    HMODULE kernel = GetModuleHandleA("KERNEL32.DLL");
+    PFN_SET_ENV set_env = kernel ? (PFN_SET_ENV)GetProcAddress(
+        kernel, "SetEnvironmentVariableA") : NULL;
+    return set_env ? set_env(name, value) : FALSE;
+}
+#define SetEnvironmentVariableA NvxSetEnvironmentVariableA
+#endif
+
 /* XXX this probably isn't very portable */
 #include <time.h>
 
@@ -487,15 +499,14 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	{
 		DWORD escapeCode = 4353; /* NVX_OPENGL_GETINFO_ESCAPE */
 		if (ExtEscape(hDC, QUERYESCSUPPORT, sizeof(escapeCode), (LPCSTR)&escapeCode, 0, NULL) > 0) {
-			DWORD subEscape = 0;
 			struct {
 				DWORD version;
 				DWORD driverVersion;
-				WCHAR driverName[MAX_PATH + 1];
+				char driverName[MAX_PATH + 1];
 			} info;
 			memset(&info, 0, sizeof(info));
-			if (ExtEscape(hDC, 4353, sizeof(subEscape), (LPCSTR)&subEscape, sizeof(info), (LPSTR)&info) > 0) {
-				log_out("[WGLGEARS] OPENGL_GETINFO: name=%ls ver=%lu drvVer=%lu\n",
+			if (ExtEscape(hDC, 4353, 0, NULL, sizeof(info), (LPSTR)&info) > 0) {
+				log_out("[WGLGEARS] OPENGL_GETINFO: name=%s ver=%lu drvVer=%lu\n",
 				        info.driverName, (unsigned long)info.version, (unsigned long)info.driverVersion);
 			}
 		}
@@ -885,3 +896,29 @@ main(int argc, char *argv[])
 	ExitProcess(0);
 	return EXIT_SUCCESS;
 }
+
+#if defined(NVX_WIN98_TEST_BUILD)
+/* Avoid the DOS console host on Win98; our runner passes unquoted arguments. */
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
+                   int show)
+{
+   char args[256];
+   char *argv[8];
+   int argc = 1;
+   char *p;
+   (void)instance; (void)previous; (void)show;
+   argv[0] = (char *)"wglgears.exe";
+   lstrcpynA(args, command_line ? command_line : "", sizeof(args));
+   p = args;
+   while (*p && argc < (int)(sizeof(argv) / sizeof(argv[0]))) {
+      char *start;
+      while (*p == ' ' || *p == '\t') ++p;
+      if (!*p) break;
+      start = p;
+      while (*p && *p != ' ' && *p != '\t') ++p;
+      if (*p) *p++ = '\0';
+      argv[argc++] = start;
+   }
+   return main(argc, argv);
+}
+#endif

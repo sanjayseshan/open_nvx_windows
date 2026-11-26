@@ -83,6 +83,21 @@ Monitors and auto-retries Windows 98 SE VM bringup with RTX 3070 VFIO passthroug
 ./test/run_vfio_win98_autoretry.sh
 ```
 
+For a one-shot 3DMark03 launch with the runner acting as a Win32 debugger,
+install the test runner while the image is offline:
+
+```sh
+NVX_WIN98_3DMARK03_ONCE=1 NVX_WIN98_DEBUG_3DMARK03=1 \
+  ./test/install_win98_graphics_tests.sh
+NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh
+```
+
+The debug runner uses Win98's debug-event APIs and writes exception code,
+address, access type/address, thread registers, stack bytes, faulting bytes,
+and loaded module bases to COM1. It forwards first-chance exceptions to the
+application and leaves the normal Win98 error handling in place. This does
+not require a DOS prompt or a debugger installed in the guest.
+
 ### 5. `reset_test_gpu.sh`
 Python script for cycling PCIe power state and verifying isolated VFIO bindings for the RTX 3070 GPU hierarchy.
 

@@ -95,5 +95,4 @@ qemu-system-x86_64 \
     -serial "file:$NVX_SERIAL_LOG" \
     "${NVX_QEMU_DEBUG_ARGS[@]}" \
     -qmp unix:/tmp/qmp-win98.sock,server,nowait \
-    -monitor unix:/tmp/qemu-monitor.sock,server,nowait \
-    -monitor stdio
+    -monitor unix:/tmp/qemu-monitor.sock,server,nowait

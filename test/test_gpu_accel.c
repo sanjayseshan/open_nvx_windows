@@ -14,6 +14,32 @@
 #include <share.h>
 #include "nvx_exception_trace.h"
 #include "../src_driver/nvx_3d_abi.h"
+#if defined(NVX_WIN98_TEST_BUILD)
+/* These controls are diagnostic-only. Keep the Win98 test executable free of
+   static imports for optional environment APIs on newer Windows releases. */
+static DWORD WINAPI NvxGetEnvironmentVariableA(LPCSTR name, LPSTR value,
+                                               DWORD size)
+{
+    typedef DWORD (WINAPI *PFN_GET_ENV)(LPCSTR, LPSTR, DWORD);
+    HMODULE kernel = GetModuleHandleA("KERNEL32.DLL");
+    PFN_GET_ENV get_env = kernel ? (PFN_GET_ENV)GetProcAddress(
+        kernel, "GetEnvironmentVariableA") : NULL;
+    return get_env ? get_env(name, value, size) : 0;
+}
+static BOOL WINAPI NvxSetEnvironmentVariableA(LPCSTR name, LPCSTR value)
+{
+    typedef BOOL (WINAPI *PFN_SET_ENV)(LPCSTR, LPCSTR);
+    HMODULE kernel = GetModuleHandleA("KERNEL32.DLL");
+    PFN_SET_ENV set_env = kernel ? (PFN_SET_ENV)GetProcAddress(
+        kernel, "SetEnvironmentVariableA") : NULL;
+    return set_env ? set_env(name, value) : FALSE;
+}
+#define GetEnvironmentVariableA NvxGetEnvironmentVariableA
+#define SetEnvironmentVariableA NvxSetEnvironmentVariableA
+#ifndef NVX_WIN98_GL_FRAMES
+#define NVX_WIN98_GL_FRAMES 30
+#endif
+#endif
 #ifdef _WIN64
 #define NVX_OPENGL_ICD_NAME "nvxogl64.dll"
 #else
@@ -30,7 +56,8 @@
 typedef struct NVX_OPENGL_INFO {
     DWORD version;
     DWORD driverVersion;
-    WCHAR driverName[MAX_PATH + 1];
+    /* Win98 OPENGL_GETINFO returns this registry key as ANSI bytes. */
+    char driverName[MAX_PATH + 1];
 } NVX_OPENGL_INFO;
 
 static HANDLE hCom1 = INVALID_HANDLE_VALUE;
@@ -836,7 +863,12 @@ static void Test2D(HWND hwnd, HDC hdc)
     HBRUSH blueBrush = CreateSolidBrush(RGB(0, 0, 255));
     HBRUSH greenBrush = CreateSolidBrush(RGB(0, 255, 0));
 
-    const int FILL_ITERS = 100;
+    const int FILL_ITERS =
+#if defined(NVX_WIN98_TEST_BUILD)
+        3;
+#else
+        100;
+#endif
     double t0 = GetTimeSeconds();
 
     for (int i = 0; i < FILL_ITERS; i++) {
@@ -868,7 +900,12 @@ static void Test2D(HWND hwnd, HDC hdc)
     }
 
     /* Test 1B: Screen-to-Screen SRCCOPY Blits */
-    const int BLT_ITERS = 100;
+    const int BLT_ITERS =
+#if defined(NVX_WIN98_TEST_BUILD)
+        3;
+#else
+        100;
+#endif
     double tBlt0 = GetTimeSeconds();
 
     for (int i = 0; i < BLT_ITERS; i++) {
@@ -1062,25 +1099,31 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
                                      (LPCSTR)&escapeCode, 0, NULL);
     LogMsg("-> OPENGL_GETINFO escape support: %ld\n", escapeSupported);
     if (escapeSupported > 0) {
-        DWORD subEscape = NVX_OPENGL_GETINFO_DRVNAME;
         NVX_OPENGL_INFO driverInfo;
         memset(&driverInfo, 0, sizeof(driverInfo));
         LONG infoBytes = ExtEscape(hdc, NVX_OPENGL_GETINFO_ESCAPE,
-                                   sizeof(subEscape), (LPCSTR)&subEscape,
+                                   0, NULL,
                                    sizeof(driverInfo), (LPSTR)&driverInfo);
-        LogMsg("-> OPENGL_GETINFO name query bytes=%ld version=%lu driverVersion=%lu name=%ls\n",
+        LogMsg("-> OPENGL_GETINFO name query bytes=%ld version=%lu driverVersion=%lu name=%s raw=%02x %02x %02x %02x %02x %02x %02x %02x\n",
                infoBytes, (unsigned long)driverInfo.version,
-               (unsigned long)driverInfo.driverVersion, driverInfo.driverName);
+               (unsigned long)driverInfo.driverVersion, driverInfo.driverName,
+               (unsigned char)driverInfo.driverName[0],
+               (unsigned char)driverInfo.driverName[1],
+               (unsigned char)driverInfo.driverName[2],
+               (unsigned char)driverInfo.driverName[3],
+               (unsigned char)driverInfo.driverName[4],
+               (unsigned char)driverInfo.driverName[5],
+               (unsigned char)driverInfo.driverName[6],
+               (unsigned char)driverInfo.driverName[7]);
         LONG legacyInfoBytes = ExtEscape(hdc, NVX_OPENGL_GETINFO_ESCAPE,
-                                         sizeof(subEscape), (LPCSTR)&subEscape,
+                                         0, NULL,
                                          sizeof(DWORD) * 2 + 256 * sizeof(WCHAR),
                                          (LPSTR)&driverInfo);
-        LogMsg("-> Legacy 520-byte OPENGL_GETINFO query bytes=%ld name=%ls\n",
+        LogMsg("-> Legacy 520-byte OPENGL_GETINFO query bytes=%ld name=%s\n",
                legacyInfoBytes, driverInfo.driverName);
     }
     DumpOpenGlTrace(wglTraceStart);
     wglTraceStart = openGlTraceCount;
-
     PIXELFORMATDESCRIPTOR pfd;
     memset(&pfd, 0, sizeof(pfd));
     pfd.nSize = sizeof(pfd);
@@ -2589,7 +2632,12 @@ static void TestOpenGL(HWND hwnd, HDC hdc)
     glFrontFace(GL_CCW);
 
     const char *envFrames = getenv("NVX_OPENGL_FRAMES");
-    const int GL_FRAMES = (envFrames && atoi(envFrames) > 0) ? atoi(envFrames) : 300;
+    const int GL_FRAMES = (envFrames && atoi(envFrames) > 0) ? atoi(envFrames) :
+#if defined(NVX_WIN98_TEST_BUILD)
+        NVX_WIN98_GL_FRAMES;
+#else
+        300;
+#endif
     LogMsg("-> Rendering %d 3D animated cube frames with SwapBuffers...\n", GL_FRAMES);
 
     int framesRendered = 0;
@@ -4587,6 +4635,18 @@ static BOOL CALLBACK FindSecondary(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM
 
 int main(int argc, char **argv)
 {
+#if defined(NVX_WIN98_TEST_BUILD)
+    {
+        static const char entry[] = "[ANTIGRAVITY] WinMain-equivalent main entry\r\n";
+        DWORD written;
+        HANDLE serial = CreateFileA("\\\\.\\COM1", GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        if (serial != INVALID_HANDLE_VALUE) {
+            WriteFile(serial, entry, sizeof(entry) - 1, &written, NULL);
+            CloseHandle(serial);
+        }
+    }
+#endif
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     nvx_install_exception_trace();
     InitLogging();
@@ -4767,3 +4827,36 @@ int main(int argc, char **argv)
     CloseLogging();
     return failures ? 1 : software3d ? 2 : 0;
 }
+
+#if defined(NVX_WIN98_TEST_BUILD)
+/* Win98's DOS console host faults on the console-subsystem test executable.
+   Run as a GUI process and forward the runner's simple argument list. */
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
+                   int show)
+{
+    char args[256];
+    char *argv[8];
+    int argc = 1;
+    char *p;
+    (void)instance; (void)previous; (void)show;
+    argv[0] = "antigravity.exe";
+    lstrcpynA(args, command_line ? command_line : "", sizeof(args));
+    p = args;
+    while (*p && argc < (int)(sizeof(argv) / sizeof(argv[0]))) {
+        char *start;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p) break;
+        if (*p == '"') {
+            ++p;
+            start = p;
+            while (*p && *p != '"') ++p;
+        } else {
+            start = p;
+            while (*p && *p != ' ' && *p != '\t') ++p;
+        }
+        if (*p) *p++ = '\0';
+        argv[argc++] = start;
+    }
+    return main(argc, argv);
+}
+#endif
