@@ -1,58 +1,65 @@
-Current status — 2026-11-26, Win98 SE / 3DMark03
+# Current status — 2026-11-26, Win98 SE / Gallium Nine
 
-Latest build and test
+## Latest code and test
 
-- Increased Win98 `NVX_3D_USER_BUFFER_SLOTS` from 2048 to 4096 in
-  `src_driver/nvx_gsp.h`. Single-monitor VxD build passed (443,403 bytes),
-  and the updated package was installed into `win98_small.img`.
-- Booted with `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
-  Current serial log: `test_logs/win98-20261126-155720.log` (`vm_serial.log`).
-- Gallium Nine HAL triangle precheck passed 60 frames in 6099 ms (~9.8 FPS).
-  3DMark03 loaded through D9Switcher/Gallium Nine and submitted NVC0 draws.
-- The 2048-entry table exhaustion is gone: current run has no
-  `3D-BUFFER-PRESSURE` messages. The user reports the current display showed
-  the top-left of the loading screen flashing, then went black.
-- New concrete failure: current run logs `NVX [GART]: MmAllocatePagesForMdl
-  failed` beginning with a 0x11000-byte allocation, followed by repeated
-  failures for 0x100000, 0x80000, 0x40000, etc. `3D-ALLOC failed` follows,
-  while the channel is not faulted. The Win98 shim
-  `src_win98/shim/nvx_mdl_win98.c` implements `NvxMdlAllocateGartBacking` by
-  calling `VideoPortAllocateCommonBuffer`, then fabricating a sequential PFN
-  array. That requires physically contiguous backing and is not equivalent to
-  XP's `MmAllocatePagesForMdl`; fragmented Win98 physical memory can reject
-  these medium/large BOs. This is now the strongest log-backed explanation for
-  missing textures/render targets and the black scene.
-- The top-left-only flashing may also involve Nine's present rectangle or
-  viewport scaling. Investigate after fixing backing allocation; do not assume
-  that the BO table change fixes presentation.
+- `src_win98/shim/nvx_mdl_win98.c` now mirrors XP's MDL backing model using
+  Win98 VMM services: `_PageAllocate` reserves fixed system pages without
+  requiring physical contiguity, `_CopyPageTable` supplies the actual PTEs,
+  and the driver passes the derived PFNs to the shared GART mapper. Freeing
+  releases the VMM block with `_PageFree`. This replaces the old common-buffer
+  allocation and fabricated sequential PFNs.
+- Win98 VxD/package build passed. The updated driver and one-shot 3DMark03
+  runner were installed in `win98_small.img`.
+- Test command: `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
+  Current log: `test_logs/win98-20261126-161004.log` (`vm_serial.log`). The
+  VM remains running with 3DMark03 open.
+- Evidence: `NVX [GART-MDL]` reports a real 17-page PFN list; there are no
+  `MmAllocatePagesForMdl failed` or `GART-BACKING-PRESSURE` entries in this
+  run. The Nine HAL triangle test completes 60 frames and receives GPU fence
+  completion. 3DMark03 produces NVC0 draw submissions and no logged channel
+  fault. The user still sees the top-left of the game loading scene flash,
+  then a black display. Thus the backing-allocation failure is fixed, but it
+  was not the only cause of the 3DMark presentation failure.
+- Route still needs proof: the runner writes D9Switcher `nineforce` settings,
+  but the 3-second process module snapshot does not list `mesa99.dll` or
+  `wined9.dll`. It lists `WINED3D.DLL`; the D9Switcher log is dumped only when
+  3DMark exits. Capture a debug run's DLL-load events (or capture the switcher
+  log when the process exits) before concluding the benchmark is on Nine.
 
-Next steps
+## Next steps
 
-1. Replace the Win98 fake-MDL contiguous allocation with true scatter-backed
-   GART memory: allocate/lock physical pages through VMM, retain a contiguous
-   virtual view for CPU access, and pass the actual PFN list to
-   `NvxGspMapGartPfnArray`. Verify supported Win9x VMM mapping/locking services
-   before implementing; do not invent sequential PFNs for noncontiguous pages.
-2. Add a narrow diagnostic for allocator stage and VMM error/available memory
-   so each failure is attributable without flooding serial.
-3. Rebuild, install, and retest 3DMark03. Require no GART allocation failures,
-   continued NVC0 submissions, and visual confirmation of the scene.
-4. If rendering is still cropped, trace Nine `Present` source/destination
-   rectangles through `mesa_patches/mesa25/0013-nine-present-rectangles.patch`
-   and the Win98 WGL present path.
+1. Preserve the current test log and keep the VM alive until the user is ready
+   to stop it.
+2. On the next run, enable `NVX_WIN98_DEBUG_3DMARK03=1` with
+   `NVX_WIN98_3DMARK03_ONCE=1` during
+   `test/install_win98_graphics_tests.sh`. The runner's debugger records DLL
+   load events and exceptions over COM1. Confirm whether `mesa99.dll` is
+   loaded and whether 3DMark creates a Nine device.
+3. Trace `Present`/swap and source/destination rectangles from Nine through
+   `mesa_patches/nine/mesa99.c` and the Win98 display present path. The
+   top-left-only flashing suggests a separate present/viewport/fullscreen
+   problem; do not attribute it to GART allocation without new evidence.
+4. Keep the XP path as reference: `src_driver/nvx_mdl.c` allocates locked
+   scatter pages with `MmAllocatePagesForMdl`, maps a system alias with
+   write-combining cache policy, and passes `MmGetMdlPfnArray` to the same
+   GART PTE builder. Win98 now supplies equivalent locked pages and true PFNs;
+   per-process user mapping remains intentionally disabled because Win98
+   stages IOCTL data instead of exposing a kernel VA to ring 3.
 
-Relevant files
+## Relevant files
 
-- `src_driver/nvx_gsp.h` — Win98 BO table capacity (4096).
-- `src_driver/nvxmp.c` — GART BO allocation/free and failure diagnostics.
-- `src_win98/shim/nvx_mdl_win98.c` — current contiguous Win98 backing shim.
-- `src_win98/shim/videoprt_shim.c`, `src_win98/shim/vmm_wrappers.asm` — existing
-  VMM page allocation and mapping service wrappers.
-- `mesa_patches/mesa25/0013-nine-present-rectangles.patch` — Nine present
-  rectangle handling.
-- `test_logs/win98-20261126-154745.log` — 2048-slot table exhaustion.
-- `test_logs/win98-20261126-155720.log` — 4096-slot run and GART allocation
-  failures.
+- `src_win98/shim/nvx_mdl_win98.c` — VMM-backed locked GART pages and PFNs.
+- `src_win98/shim/vmm_wrappers.asm` — `_PageAllocate`, `_PageFree`, and
+  `_CopyPageTable` VMM wrappers.
+- `src_win98/shim/videoprt_shim.c` — Win98 pool/common-buffer services.
+- `src_driver/nvx_mdl.c`, `src_driver/nvxmp.c` — XP MDL reference and common
+  GART allocation/map lifecycle.
+- `test/win98/runner.c`, `test/install_win98_graphics_tests.sh` — automated
+  Nine/3DMark run and optional debugger capture.
+- `mesa_patches/nine/mesa99.c`, `mesa_patches/mesa25/0013-nine-present-rectangles.patch`
+  — Nine D3D entry points and rectangle handling.
+- Latest log: `test_logs/win98-20261126-161004.log`.
 
-Keep the current VM alive unless asked to stop. Preserve existing edits in
-`submodules/mesa9x` and `submodules/wine9x`.
+Preserve unrelated edits in `dist_win98/`, `submodules/mesa9x`,
+`submodules/wine9x`, `test/mesa25_patch_series.txt`, and
+`mesa_patches/mesa25/0013-nine-present-rectangles.patch`.
