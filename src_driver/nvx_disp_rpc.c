@@ -528,7 +528,10 @@ static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
             }
         }
     }
-    if(dev->CurrentModeIndex>=dev->NumModes) return FALSE;
+    if(dev->CurrentModeIndex>=dev->NumModes) {
+        LogStr("NVX [NATIVE-1HEAD]: no current display mode is available.\n");
+        return FALSE;
+    }
     width=dev->Modes[dev->CurrentModeIndex].VisScreenWidth;
     height=dev->Modes[dev->CurrentModeIndex].VisScreenHeight;
     pitch=dev->Modes[dev->CurrentModeIndex].ScreenStride;
@@ -558,7 +561,10 @@ static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
         instanceVa=dev->GspVramGpuVa+dev->NativeDisplayInstance;
         if(!NvxDisplayRamhtEntry(0xd1500001,0,0x2000,dev->GspClientHandle,&slot,entry) ||
            !NvxGspUpload(dev,instanceVa+0x2000,desc,sizeof(desc)) ||
-           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) return FALSE;
+           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) {
+            LogStr("NVX [NATIVE-1HEAD]: notifier DMA object setup failed.\n");
+            return FALSE;
+        }
     }
     {
         /* Match the established window DMA descriptor layout: word 3 is
@@ -567,12 +573,21 @@ static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
         ULONG legacy;
         if(!NvxDisplayRamhtEntry(0xd1500002,1,0x2020,dev->GspClientHandle,&slot,entry) ||
            !NvxGspUpload(dev,instanceVa+0x2020,imageDesc,sizeof(imageDesc)) ||
-           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) return FALSE;
+           !NvxGspUpload(dev,instanceVa+slot*8,entry,sizeof(entry))) {
+            LogStr("NVX [NATIVE-1HEAD]: scanout image DMA object setup failed.\n");
+            return FALSE;
+        }
         legacy=NvxDisplayRamhtV169Slot(0xd1500002,1);
-        if(legacy!=slot && !NvxGspUpload(dev,instanceVa+legacy*8,entry,sizeof(entry))) return FALSE;
+        if(legacy!=slot && !NvxGspUpload(dev,instanceVa+legacy*8,entry,sizeof(entry))) {
+            LogStr("NVX [NATIVE-1HEAD]: legacy scanout DMA alias setup failed.\n");
+            return FALSE;
+        }
     }
 
-    if(!NvxNativeReserveDma(dev,0x680000,core,600,&n)) return FALSE;
+    if(!NvxNativeReserveDma(dev,0x680000,core,600,&n)) {
+        LogStr("NVX [NATIVE-1HEAD]: primary core channel reservation failed.\n");
+        return FALSE;
+    }
     owner=VideoPortReadRegisterUlong((PULONG)(bar0+0x681000))&15;
     if(owner!=0) {
         NvxNativeMethod(core,&n,NVX_C67D_WINDOW_SET_CONTROL(0),0);
@@ -584,10 +599,17 @@ static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
         NvxNativeMethod(core,&n,0x218,0);
         NvxNativeMethod(core,&n,0x21c,0);
         NvxNativeMethod(core,&n,0x200,1);
-        if(!NvxNativeFlushDma(core,0x1000) || !NvxNativeFlushDma((PVOID)notifier,16)) return FALSE;
+        if(!NvxNativeFlushDma(core,0x1000) || !NvxNativeFlushDma((PVOID)notifier,16)) {
+            LogStr("NVX [NATIVE-1HEAD]: owner-transfer DMA cache flush failed.\n");
+            return FALSE;
+        }
         VideoPortWriteRegisterUlong((PULONG)(bar0+0x680000),NvxDisplayPutBytes(n));
         (void)NvxNativeWaitNotifier(notifier);
-        if((notifier[0]>>30)!=2) return FALSE;
+        if((notifier[0]>>30)!=2) {
+            LogStr("NVX [NATIVE-1HEAD]: owner-transfer notifier did not complete.\n");
+            NvxNativeLogChannelState(dev);
+            return FALSE;
+        }
         VideoPortZeroMemory((PVOID)notifier,16);
     }
 
@@ -597,20 +619,32 @@ static BOOLEAN NvxNativeSetPrimaryScanout(PNVX_DEVICE_EXTENSION dev)
         NvxNativeMethod(core,&n,0x1008+w*0x80,0);
         NvxNativeMethod(core,&n,0x1010+w*0x80,0x00117fff);
     }
-    if(!NvxNativeReserveDma(dev,0x690000,window,900,&windowCount)) return FALSE;
+    if(!NvxNativeReserveDma(dev,0x690000,window,900,&windowCount)) {
+        LogStr("NVX [NATIVE-1HEAD]: primary window channel reservation failed.\n");
+        return FALSE;
+    }
     NvxNativeWindow(window,&windowCount,width,height,pitch,0,0xd1500002);
     if(!NvxNativeHead(core,&n,0,&mode,width,height,dev->MonitorIds[0],
-                      dev->MonitorSor[0],dev->MonitorProtocol[0])) return FALSE;
+                      dev->MonitorSor[0],dev->MonitorProtocol[0])) {
+        LogStr("NVX [NATIVE-1HEAD]: head timing/route emission failed.\n");
+        return FALSE;
+    }
     NvxNativeMethod(core,&n,0x208,0xd1500001);
     NvxNativeMethod(core,&n,0x20c,0x1000);
     NvxNativeMethod(core,&n,0x218,0);
     NvxNativeMethod(core,&n,0x21c,1); /* Window 0 only. */
     NvxNativeMethod(core,&n,0x200,1);
     if(!NvxNativeFlushDma(core,0x1000) || !NvxNativeFlushDma(window,0x1000) ||
-       !NvxNativeFlushDma((PVOID)notifier,16)) return FALSE;
+       !NvxNativeFlushDma((PVOID)notifier,16)) {
+        LogStr("NVX [NATIVE-1HEAD]: scanout command cache flush failed.\n");
+        return FALSE;
+    }
     VideoPortWriteRegisterUlong((PULONG)(bar0+0x690000),NvxDisplayPutBytes(windowCount));
     VideoPortWriteRegisterUlong((PULONG)(bar0+0x680000),NvxDisplayPutBytes(n));
-    (void)NvxNativeWaitNotifier(notifier);
+    if(!NvxNativeWaitNotifier(notifier)) {
+        LogStr("NVX [NATIVE-1HEAD]: scanout notifier timed out.\n");
+        NvxNativeLogChannelState(dev);
+    }
     {
         BOOLEAN active=NvxGspVerifyDisplays(dev);
         LogStr("NVX [NATIVE-1HEAD]: mode=");LogHex(width);LogStr("x");LogHex(height);

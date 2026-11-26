@@ -9,7 +9,7 @@ Signature   = "$CHICAGO$"
 Provider    = %Mfg%
 Class       = DISPLAY
 ClassGUID   = {4D36E968-E325-11CE-BFC1-08002BE10318}
-DriverVer   = 11/25/2026, 2.0.0.15
+DriverVer   = 11/26/2026, 4.0.0.45
 
 [DestinationDirs]
 DefaultDestDir = 11    ; LDID_SYS (C:\WINDOWS\SYSTEM)
@@ -21,7 +21,6 @@ Firmware.Copy = 11
 
 [SourceDisksFiles]
 nvx.drv = 1
-nvxogl32.dll = 1
 nvx.vxd = 1
 GSPGA104.BIN = 1
 
@@ -37,17 +36,14 @@ GSPGA104.BIN = 1
 %NV3060_GA104%= NVX_Inst, PCI\VEN_10DE&DEV_24C7
 
 [NVX_Inst]
-CopyFiles = Driver.Copy, Firmware.Copy, MesaICD.Copy
+CopyFiles = Driver.Copy, Firmware.Copy
 DelReg    = Driver.DelReg
-AddReg    = Driver.AddReg, MesaICD.AddReg
+AddReg    = Driver.AddReg
 UpdateInis= Driver.Inis
 
 [Driver.Copy]
 nvx.drv
 nvx.vxd
-
-[MesaICD.Copy]
-nvxogl32.dll
 
 [Firmware.Copy]
 GSPGA104.BIN
@@ -92,6 +88,3 @@ NV3060TI      = "NVIDIA GeForce RTX 3060 Ti (GA104 Win98)"
 NV3060TI_LHR  = "NVIDIA GeForce RTX 3060 Ti LHR (GA104 Win98)"
 NV3060        = "NVIDIA GeForce RTX 3060 (GA104 Win98)"
 NV3060_GA104  = "NVIDIA GeForce RTX 3060 GA104 (GA104 Win98)"
-
-[MesaICD.AddReg]
-HKLM,"Software\Microsoft\Windows\CurrentVersion\OpenGLDrivers",NVX,,nvxogl32.dll

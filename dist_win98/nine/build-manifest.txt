@@ -4,6 +4,6 @@ Wine9x no-CRT: d4c45d2acd0c6d5f656e71501d6c779719a640fb
 Wine9x pthread9x: 9c1ec5a655849f99f1e9c4e3b04609f446c92551
 fc016ccc225445ccd44bf536bd0cb01c4a2a37916465e471a3ad03ab3c8cb1bb  /home/sanjay/temp/xddm/patches/wine9x/0001-pthread9x-fastfail-compat.patch
 0007a2ac08a1352899dae5ec55548fb5d4ec5ccdd639648da75fb91c4b932686  /home/sanjay/temp/xddm/dist_win98/nine/d3d9.dll
-8f8bc9a56722b11864a18160b44c9cce761ed81102e3babe9c6a5c5cd30a4d00  /home/sanjay/temp/xddm/dist_win98/nine/mesa99.dll
-e7b12fc9fc2eac1219dff9dffce30471e250c7c6c1ef0dd33766ed4bc8a1dafb  /home/sanjay/temp/xddm/dist_win98/nine/wined3d.dll
-58af791d2ab5614c2a295cbf720e6e3d8cbe3516439fd9a6bcb1ac3205a2c25a  /home/sanjay/temp/xddm/dist_win98/nine/wined9.dll
+9e8a0026b1163f0ac8182edf4b4472c2838334af2d9f4b311cc17e8e035f50e5  /home/sanjay/temp/xddm/dist_win98/nine/mesa99.dll
+e63afcdd4a4e6f51899a922a31f28b88b9b50292f3005f5074ab83ccf7d3a518  /home/sanjay/temp/xddm/dist_win98/nine/wined3d.dll
+94b76a33b269df1f05c912fbf5656e040dabc20f2ffb9fca620cf9f39df21e91  /home/sanjay/temp/xddm/dist_win98/nine/wined9.dll

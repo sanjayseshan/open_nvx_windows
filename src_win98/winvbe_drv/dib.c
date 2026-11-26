@@ -610,9 +610,13 @@ WORD EXPORT DeviceBitmapBits(LPGBITMAP bm, WORD fGet, WORD start, WORD count, LP
     SURF s;
     if (!dib_parse(&di, bmi)) return 0;
     surf_from_dev(&s, bm);
-    DBG("DBB %x ", FP_SEG(bm->bmBits));
-    DBG("DBB get=%u bm=%ux%ux%u pitch=%u st=%u n=%u dib=%ux%ux%u comp=%u nc=%u core=%u xlat=%p\n", fGet, bm->bmWidth, bm->bmHeight,
-        bm->bmBitsPixel, bm->bmWidthBytes, start, count, di.width, di.height, di.bits, di.comp, di.ncolors, di.core, xlat);
+    /* A full-screen DIB present is split into many narrow band callbacks.
+       Logging each callback over COM1 can dominate GDI responsiveness. */
+    if (g.debug > 1) {
+        DBG("DBB %x ", FP_SEG(bm->bmBits));
+        DBG("DBB get=%u bm=%ux%ux%u pitch=%u st=%u n=%u dib=%ux%ux%u comp=%u nc=%u core=%u xlat=%p\n", fGet, bm->bmWidth, bm->bmHeight,
+            bm->bmBitsPixel, bm->bmWidthBytes, start, count, di.width, di.height, di.bits, di.comp, di.ncolors, di.core, xlat);
+    }
     if (!fGet && di.width == 32 && di.height == 32 && di.bits == 24 &&
         icon_dib_object_log_count < 24) {
         DBG("NVX [ICON-DIB-OBJ #%u]: bitmap=%x:%x bits=%x:%x start=%u count=%u\n",

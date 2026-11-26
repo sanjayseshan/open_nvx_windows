@@ -1,0 +1,127 @@
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+--- a/src/gallium/targets/wgl/wgl.c	2026-11-26 14:18:13.485307471 -0500
++++ b/src/gallium/targets/wgl/wgl.c	2026-11-26 14:18:06.505330721 -0500
+@@ -503,12 +503,121 @@
+             struct pipe_resource *res, HDC dc,
+             const RECT *pSrcRect, const RECT *pDstRect)
+ {
+-   (void)pSrcRect;
+-   (void)pDstRect;
+    if (!screen || !res || !dc)
+       return FALSE;
++#if defined(WIN9X)
++   if (ctx && ctx->texture_map && ctx->texture_unmap) {
++      struct pipe_box box;
++      struct pipe_transfer *transfer = NULL;
++      struct pipe_resource *resource = res;
++      RECT src, dst, clipped, bounds;
++      BITMAPINFO bmi;
++      void *map;
++      const void *pixels;
++      BYTE *packed = NULL;
++      unsigned width = resource->width0, height = resource->height0;
++      unsigned row_bytes;
++      int64_t src_width, src_height, dst_width, dst_height;
++      int result;
++
++      if (!width || !height || width > 8192 || height > 8192 ||
++          width > 0xffffffffU / 4U)
++         return FALSE;
++      SetRect(&bounds, 0, 0, width, height);
++      src = pSrcRect ? *pSrcRect : bounds;
++      if (pDstRect) {
++         dst = *pDstRect;
++      } else {
++         HWND hwnd = WindowFromDC(dc);
++         if (!hwnd || !GetClientRect(hwnd, &dst)) {
++            if (GetClipBox(dc, &dst) == ERROR)
++               return FALSE;
++         }
++      }
++      src_width = (int64_t)src.right - src.left;
++      src_height = (int64_t)src.bottom - src.top;
++      dst_width = (int64_t)dst.right - dst.left;
++      dst_height = (int64_t)dst.bottom - dst.top;
++      if (src_width <= 0 || src_height <= 0 ||
++          dst_width <= 0 || dst_height <= 0)
++         return FALSE;
++      clipped = src;
++      if (clipped.left < bounds.left) clipped.left = bounds.left;
++      if (clipped.top < bounds.top) clipped.top = bounds.top;
++      if (clipped.right > bounds.right) clipped.right = bounds.right;
++      if (clipped.bottom > bounds.bottom) clipped.bottom = bounds.bottom;
++      if (clipped.right <= clipped.left || clipped.bottom <= clipped.top)
++         return TRUE;
++      dst.left += (LONG)(((int64_t)(clipped.left - src.left) * dst_width) /
++                         src_width);
++      dst.top += (LONG)(((int64_t)(clipped.top - src.top) * dst_height) /
++                        src_height);
++      dst.right = dst.left + (LONG)(((int64_t)(clipped.right - src.left) *
++                                     dst_width) / src_width) -
++                                (LONG)(((int64_t)(clipped.left - src.left) *
++                                        dst_width) / src_width);
++      dst.bottom = dst.top + (LONG)(((int64_t)(clipped.bottom - src.top) *
++                                     dst_height) / src_height) -
++                                 (LONG)(((int64_t)(clipped.top - src.top) *
++                                         dst_height) / src_height);
++      if (dst.right <= dst.left || dst.bottom <= dst.top)
++         return TRUE;
++
++      memset(&box, 0, sizeof(box));
++      box.width = width;
++      box.height = height;
++      box.depth = 1;
++      map = ctx->texture_map(ctx, resource, 0, PIPE_MAP_READ, &box,
++                             &transfer);
++      if (!map || !transfer) {
++         if (transfer)
++            ctx->texture_unmap(ctx, transfer);
++         return FALSE;
++      }
++      row_bytes = width * 4U;
++      if (transfer->stride < row_bytes) {
++         ctx->texture_unmap(ctx, transfer);
++         return FALSE;
++      }
++      pixels = map;
++      if (transfer->stride != row_bytes) {
++         SIZE_T image_bytes = (SIZE_T)row_bytes * height;
++         unsigned y;
++         packed = HeapAlloc(GetProcessHeap(), 0, image_bytes);
++         if (!packed) {
++            ctx->texture_unmap(ctx, transfer);
++            return FALSE;
++         }
++         for (y = 0; y < height; y++)
++            memcpy(packed + (SIZE_T)y * row_bytes,
++                   (const BYTE *)map + (SIZE_T)y * transfer->stride,
++                   row_bytes);
++         pixels = packed;
++      }
++      memset(&bmi, 0, sizeof(bmi));
++      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++      bmi.bmiHeader.biWidth = width;
++      bmi.bmiHeader.biHeight = -(LONG)height;
++      bmi.bmiHeader.biPlanes = 1;
++      bmi.bmiHeader.biBitCount = 32;
++      bmi.bmiHeader.biCompression = BI_RGB;
++      bmi.bmiHeader.biSizeImage = row_bytes * height;
++      result = StretchDIBits(dc, dst.left, dst.top,
++                             dst.right - dst.left, dst.bottom - dst.top,
++                             clipped.left, clipped.top,
++                             clipped.right - clipped.left,
++                             clipped.bottom - clipped.top, pixels, &bmi,
++                             DIB_RGB_COLORS, SRCCOPY);
++      if (packed)
++         HeapFree(GetProcessHeap(), 0, packed);
++      ctx->texture_unmap(ctx, transfer);
++      return result != GDI_ERROR && result != 0;
++   }
++   return FALSE;
++#else
+    stw_winsys.present(screen, ctx, res, dc);
+    return TRUE;
++#endif
+ }
+
+ BOOL WINAPI

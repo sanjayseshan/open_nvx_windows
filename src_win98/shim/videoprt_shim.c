@@ -442,8 +442,16 @@ PVOID NTAPI VideoPortAllocatePool(PVOID HwDeviceExtension,
     if (!NumberOfBytes || NumberOfBytes > 0xffffffffU - sizeof(*header))
         return NULL;
     pages = (uint32_t)((NumberOfBytes + sizeof(*header) + 4095U) >> 12);
+    /* Pool allocations need contiguous virtual addresses, not contiguous
+       physical pages. XP's nonpaged pool has the same distinction. Requiring
+       PAGECONTIG here fragmented scarce Win98 low memory under Nine's many
+       small metadata allocations, even though GART backing maps PFNs one by
+       one. Keep pages fixed/nonpageable but allow physical scatter. */
     header = (NVX_VXD_POOL_HEADER *)_PageAllocate(pages, 1, 0, 0, 0,
-        0xffffffffU, &physical, 0x0000000fU);
+        0xffffffffU, &physical, 0x0000000bU);
+    if (!header)
+        header = (NVX_VXD_POOL_HEADER *)_PageAllocate(pages, 1, 0, 0, 0,
+            0xffffffffU, &physical, 0x00000009U);
     if (!header)
         return NULL;
     header->signature = NVX_VXD_POOL_SIGNATURE;
@@ -955,12 +963,27 @@ static int NvxVxDSetPrimaryNativeMode(uint32_t width, uint32_t height,
     ULONG index, oldIndex, oldWidth, oldHeight, oldBpp, oldFreq;
     PVOID oldMapping;
 
-    if (!g_pPrimaryDevExt || bpp != 32 || width < 640 || height < 480 ||
-        width > 4096 || height > 4096 || !dev->GspInitialized ||
-        dev->NativeDisplayFaulted || !dev->MonitorCount ||
-        dev->MonitorTiming[0].hActive != width ||
-        dev->MonitorTiming[0].vActive != height)
+    if (!g_pPrimaryDevExt) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: primary extension unavailable\n");
         return -1;
+    }
+    if (bpp != 32 || width < 640 || height < 480 || width > 4096 || height > 4096) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: invalid request\n");
+        return -1;
+    }
+    if (!dev->GspInitialized || dev->NativeDisplayFaulted || !dev->MonitorCount) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: GSP/display state unavailable\n");
+        return -1;
+    }
+    if (dev->MonitorTiming[0].hActive != width ||
+        dev->MonitorTiming[0].vActive != height) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: timing mismatch requested=");
+        NvxShimLogHex(width); NvxShimLog("x"); NvxShimLogHex(height);
+        NvxShimLog(" monitor="); NvxShimLogHex(dev->MonitorTiming[0].hActive);
+        NvxShimLog("x"); NvxShimLogHex(dev->MonitorTiming[0].vActive);
+        NvxShimLog("\n");
+        return -1;
+    }
 
     for (index = 0; index < dev->NumModes; ++index) {
         if (dev->Modes[index].VisScreenWidth == width &&
@@ -968,8 +991,10 @@ static int NvxVxDSetPrimaryNativeMode(uint32_t width, uint32_t height,
             dev->Modes[index].BitsPerPlane == bpp)
             break;
     }
-    if (index == dev->NumModes)
+    if (index == dev->NumModes) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: no exact framebuffer mode\n");
         return -1;
+    }
 
     oldIndex = dev->CurrentModeIndex;
     oldWidth = dev->ActiveWidth;
@@ -983,8 +1008,10 @@ static int NvxVxDSetPrimaryNativeMode(uint32_t width, uint32_t height,
         dev->FramebufferVirtual = _MapPhysToLinear(
             dev->PhysicalBar1.LowPart, 0x01000000, 0);
     }
-    if (!dev->FramebufferVirtual)
+    if (!dev->FramebufferVirtual) {
+        NvxShimLog("NVX [MODE]: native modeset rejected: framebuffer mapping failed\n");
         return -1;
+    }
 
     dev->CurrentModeIndex = index;
     dev->ActiveWidth = width;

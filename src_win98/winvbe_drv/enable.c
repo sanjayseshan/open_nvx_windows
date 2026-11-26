@@ -153,6 +153,10 @@ void env_init(void);
 int  vbe_prepare(void);
 void cursor_invalidate(void);
 static BYTE hooked;
+/* A failed Win98 ReEnable must leave the old scanout active. Initial Enable
+   still permits the VGA fallback, but mode changes are transactional. */
+static BYTE enable_hw_no_fallback;
+static BYTE enable_hw_mode_failed;
 
 #ifndef OLDWIN
 /* Windows 95/98/ME: the display settings of the Display control panel are
@@ -372,7 +376,10 @@ static void driver_init(void)
     outp(0xE9, 'I');
     g.debug = 2;
 #else
-    g.debug = (BYTE)get_ini_int("Debug", 2);
+    /* Keep normal desktop use quiet: per-band GDI callbacks can run many
+       times per frame, and serial debug output makes interactive drawing
+       noticeably slower. Set [WINVBE] Debug=1 or 2 when tracing is needed. */
+    g.debug = (BYTE)get_ini_int("Debug", 0);
     g.noleave = (BYTE)get_ini_int("NoLeave", 0);
     g.vddmode = (BYTE)get_ini_int("VddMode", 0xFF);
 #endif
@@ -414,9 +421,10 @@ static void driver_init(void)
     /* Keep GPU fills disabled by default: the Win98 CE fill path can corrupt
        scanout on this hardware. Enable explicitly for targeted diagnostics. */
     g.ini_gpufill = (BYTE)get_ini_int("GpuFill", 0);
-    /* Keep CE scanout copies disabled until movement and overlap behavior are
-       verified end to end on Win98. Enable explicitly for targeted tests. */
-    g.ini_gpucopy = (BYTE)get_ini_int("GpuCopy", 0);
+    /* The CE screen-copy escape uses reserved scratch for overlap and has
+       passed the Win98 rectangle-copy smoke test. Leave it enabled unless
+       explicitly disabled for diagnosis. */
+    g.ini_gpucopy = (BYTE)get_ini_int("GpuCopy", 1);
     /* DIBENG writes directly into the framebuffer and bypasses BitBlt. Keep
        the driver's BitBlt path active so validated GDI fills can reach NVX. */
     g.ini_dibeng = (BYTE)get_ini_int("DibEngine", 0);
@@ -682,8 +690,14 @@ int enable_hw(BYTE restore)
 {
     WORD opitch = g.spitch, oy = g.lh;
     BYTE had = g.shadow;
+    enable_hw_mode_failed = 0;
     g.shadow = 0;
     if (!vbe_set_mode()) {
+        if (enable_hw_no_fallback) {
+            enable_hw_mode_failed = 1;
+            DBG("NVX [DISPLAY]: requested mode failed; retaining previous scanout\n");
+            return 0;
+        }
         DBG("Enable: mode set failed, falling back to VGA 13h\n");
         g.req_mode = 0x13;
         vbe_select_mode();
@@ -812,7 +826,12 @@ WORD EXPORT Enable(LPVOID lpDevice, WORD style, LPSTR lpDevType, LPSTR lpOutFile
 WORD EXPORT ReEnable(LPVOID lpDevice, LPGDIINFO lpInfo)
 {
     WORD ow = g.req_w, oh = g.req_h, ob = g.req_bpp, om = g.req_mode;
+    WORD oxres = g.xres, oyres = g.yres, opitch = g.pitch, ocurbank = g.curbank;
     MODEINFO omi = g.mi;
+    DWORD ofbsize = g.fbsize, ofbofs = g.fbofs;
+    BYTE oaccess = g.access, oenabled = g.enabled, odacbits = g.dacbits;
+    BYTE opalettized = g.palettized, oBpp = g.Bpp, opf = g.pf, obpp = g.bpp;
+    BYTE osvga = g.svga, oshadow = g.shadow, olfbstate = g.lfb_state;
     TRACE("ReEnable\n");
     win9x_settings();
     vbe_select_mode();
@@ -831,8 +850,26 @@ WORD EXPORT ReEnable(LPVOID lpDevice, LPGDIINFO lpInfo)
     screen_busy++;
     cursor_hide_all();
     g.enabled = 0;
-    shadow_free();
+    enable_hw_no_fallback = 1;
     enable_hw(0);
+    enable_hw_no_fallback = 0;
+    if (enable_hw_mode_failed) {
+        /* vbe_set_mode updates cached geometry before submitting the hardware
+           transaction. Restore that cache and keep GDI attached to the old
+           mode when the miniport rejects the requested scanout. */
+        g.req_w = ow; g.req_h = oh; g.req_bpp = ob; g.req_mode = om;
+        g.mi = omi;
+        g.xres = oxres; g.yres = oyres; g.pitch = opitch; g.curbank = ocurbank;
+        g.fbsize = ofbsize; g.fbofs = ofbofs;
+        g.access = oaccess; g.enabled = oenabled; g.dacbits = odacbits;
+        g.palettized = opalettized; g.Bpp = oBpp; g.pf = opf; g.bpp = obpp;
+        g.svga = osvga; g.shadow = oshadow; g.lfb_state = olfbstate;
+        DBG("NVX [DISPLAY]: ReEnable rejected; previous %ux%ux%u remains active\n",
+            oxres, oyres, obpp);
+        screen_busy--;
+        cursor_show();
+        return 0;
+    }
     {
         LPPDEVICE pd = (LPPDEVICE)lpDevice;
         pd->bm.bmWidth = g.lw;

@@ -170,10 +170,10 @@ ensure("386Enh", "mouse", "*vmouse")
 ensure("WINVBE", "DibEngine", os.environ.get("NVX_WIN98_DIB_ENGINE", "0"))
 ensure("WINVBE", "ShadowBuffer", os.environ.get("NVX_WIN98_SHADOW_BUFFER", "0"))
 ensure("WINVBE", "GpuFill", os.environ.get("NVX_WIN98_GPU_FILL", "0"))
-ensure("WINVBE", "GpuCopy", os.environ.get("NVX_WIN98_GPU_COPY", "0"))
+ensure("WINVBE", "GpuCopy", os.environ.get("NVX_WIN98_GPU_COPY", "1"))
 if os.environ.get("NVX_WIN98_USE_MESA_ICD", "0") == "1":
     ensure("WINVBE", "OpenGL", "2")
-ensure("WINVBE", "Debug", "1")
+ensure("WINVBE", "Debug", os.environ.get("NVX_WIN98_DEBUG", "0"))
 path.write_bytes(("\r\n".join(out) + "\r\n").encode())
 PY
 

@@ -1,4 +1,6 @@
-# NVX experimental display driver for Windows 98 SE
+# NVX experimental display driver for Windows 98 SE — 4.0.0.45
+
+This is an experimental pre-release. The 3D pipeline is work in progress and slow; 3DMark03 is not reliable.
 
 ## Current target and status
 
@@ -13,30 +15,33 @@ icons and the 2D test; it does not establish new Direct3D results.
 
 The reproducible build target is **one primary monitor**. Run `./src_win98/build.sh` from the repository root; it builds `nvx.drv` and `nvx.vxd`, generates a primary-only `nvx.inf`, and stages `GSPGA104.BIN` in `dist_win98/`. Set `WIN98_SINGLE_MONITOR=0` only to build the older secondary display path as well.
 
-The package has booted on the RTX 3070 under Win98 SE through GSP initialization, display-driver startup, and `Control 39`. The DIB access callbacks use Open Watcom `__loadds` to load the driver's data segment. The current VFIO run also proves that Win98 GDI solid fills can reach the GPU through the display driver's BitBlt callback, the VxD PM service, and the shared miniport. The guest remains running for physical display inspection.
+The package has booted on the RTX 3070 under Win98 SE through GSP initialization, display-driver startup, and `Control 39`. The DIB access callbacks use Open Watcom `__loadds` to load the driver's data segment. Win98 GDI solid fills reach the GPU through the display driver's BitBlt callback, VxD PM service, and shared miniport. Mesa/Nouveau OpenGL cube/gears and a bounded Gallium Nine triangle have rendered in earlier runs. The current 3DMark03 route initializes Nine and submits NVC0 draws, but the visible scene is corrupted/black; it is not a passing application test.
 
 Primary QHD now uses a native modeset instead of changing only the VBE pitch. On first load, WINVBE asks the VxD for the GSP-decoded primary EDID timing, advertises 2560×1440 only when that timing is present, and submits the selected mode through the shared miniport/EVO scanout path. The 2026-11-25 RTX 3070 boot log confirms `WINVBE loaded: 2560x1440x32`, native scanout activation, both active heads, and a matching 10,240-byte GDI pitch. GDI/OpenGL/legacy DDraw/Nine test stages pass at this mode. The physical monitor image still needs visual confirmation; the earlier pitch-only synthetic mode caused stripes and is no longer used.
 
 The VxD DIOC handler forwards the shared `IOCTL_NVX_*` ABI through `NvxShimDispatchMiniportIoctl()` to the same `HwStartIO` handler used by XP. The Win98 PM service calls that VxD handler, while the shared miniport validates requests and uses `NvxGspSubmitFill/Copy/Upload`; the Win98 layer does not build GPU packets. A private development VxD ID (`0x7d00`) currently connects the 16-bit driver to the PM service. Replace it with an assigned, collision-free ID before distributing a package.
 
-`DibEngine=0` is required for this first accelerated path: with DIBENG enabled, Windows draws directly into its DIB shadow and bypasses this driver's `BitBlt`. The driver keeps its shadow coherent, then submits eligible 32bpp screen solid fills to the GPU. Other drawing operations still use CPU fallback. A Win98 DIOC transport adapter now connects the Mesa WGL/Nouveau bridge source to the VxD's shared miniport ABI, and the full x86 Nouveau/WGL library compiles with that backend selected. It is only a smoke build: the library still uses Mesa's XP API floor, has not been import-audited against Win98, and has not been installed or runtime-tested. Application 3D acceleration is not yet verified or supported.
+`DibEngine=0` is required for the accelerated GDI path: with DIBENG enabled, Windows draws directly into its DIB shadow and bypasses this driver's `BitBlt`. The driver keeps its shadow coherent, then submits eligible 32bpp screen solid fills to the GPU. Other drawing operations use CPU fallback. The x86 Mesa/Nouveau ICD and Gallium Nine D3D9 path connect through Win98 DIOC winsys shims to the VxD's shared miniport ABI. These paths have passed bounded OpenGL and Nine smoke tests, but the current 3DMark03 scene is corrupted/black and the GART backing allocator reports failures under load; general application support is not established.
 
 The QEMU input setup reads the host Logitech evdev mouse and forwards its events through the emulated PS/2 mouse. `test/update_win98_driver.sh` removes every `mouse*=` key and mouse/HID `device=` or `minivdd=` directive from `SYSTEM.INI`, then writes exactly `[boot] mouse.drv=mouse.drv` and `[386Enh] mouse=*vmouse`. PS/2 PnP registry records remain in `nvx_reg.reg`; they are not additional SYSTEM.INI mouse entries. QMP reports the active QEMU PS/2 mouse, but actual cursor movement still needs visual confirmation.
 
 ## Current architecture
 
 ```text
-Win98 GDI solid fill
-  -> 16-bit nvx.drv BitBlt -> VxD PM service
+Win98 GDI solid fill -> nvx.drv BitBlt -> VxD PM service
   -> NVX.VXD DIOC -> shared HwStartIO -> OpenRM/GSP -> GA104 CE
   -> scanout VRAM + synchronized driver shadow
 
-Other BitBlt operations -> CPU fallback
-Win98 OpenGL/Nouveau -> GPU render and mapped/GDI present verified
-Win98 Direct3D Nine -> x86 Mesa Nine + Wine9x D3D9 switcher bundle built; runtime not yet verified
+Win98 OpenGL -> Win98 ICD loader -> Mesa Nouveau -> DIOC winsys -> NVX.VXD
+  -> OpenRM/GSP -> NVC0; cube/gears rendered in prior runs
+
+Win98 D3D9 -> Wine9x D9Switcher -> Mesa Gallium Nine -> DIOC winsys
+  -> NVX.VXD -> OpenRM/GSP -> NVC0; bounded triangle passed, 3DMark03 is corrupted
+
+Other GDI operations -> CPU fallback
 ```
 
-The VxD build reuses the XP miniport source and pinned OpenRM policy/container code. The GDI fill DIOC/PM route is runtime-tested; the separate VMM user-mapping and general client-memory interfaces remain unvalidated and must stay fail-closed.
+The VxD build reuses the XP miniport source and pinned OpenRM policy/container code. The GDI fill and bounded OpenGL/Nine paths have reached hardware. The separate VMM user-mapping and general client-memory interfaces remain unvalidated and must stay fail-closed. The current 3DMark03 log shows successful `Direct3DCreate9` and NVC0 draw submissions, followed later by page-backed GART allocation failures with about 164 MiB and 1,898 buffers live. That is evidence of resource pressure, not proof that it explains the first flashing/black frame. Win98 pool metadata previously required contiguous physical pages; this shim now requests fixed, nonpageable but physically scatterable pages, matching the virtual-contiguous/nonpaged semantics needed by callers and reducing low-memory fragmentation. New `backing_stage` diagnostics distinguish metadata, VMM page allocation, and PTE-validation failures on the next run.
 
 ## Win98 2D and 3D acceleration roadmap
 
@@ -59,11 +64,11 @@ Win98 Direct3D Nine -> D3D9 triangle/Present test passes 60 frames
 3. Extend only measured, well-bounded 2D cases, starting with SRCCOPY when source and destination layout can be represented safely. Keep CPU fallback for unsupported ROPs, formats, overlap, and DIBENG paths.
 4. Reduce synchronous overhead by batching rectangles through a VxD-owned validated queue; preserve fence/synchronization before CPU reads, mode changes, or presentation. Measure before expanding acceleration.
 5. Reconcile `ddhal.c` capability advertisement with callbacks; do not claim DirectDraw hardware 3D merely because surfaces are marked `DDSCAPS_3DDEVICE`.
-6. For application 3D, add a native Win98 Mesa/Nouveau winsys adapter. Keep kernel mappings fail-closed until per-process mapping or a validated shared-ring protocol exists.
+6. Complete general application 3D support: validate BO lifetime/mapping, D3D resource allocation under churn, and frame presentation; keep kernel user mappings fail-closed until per-process mapping or a validated shared-ring protocol exists.
 
 ### 3D: reuse Mesa/Nouveau, adapt the Win98 client boundary
 
-For the Direct3D 9 application boundary, Mesa 25.1.6 supplies Gallium Nine and the pinned `submodules/wine9x` project supplies a per-application D3D9 switcher that routes calls to `mesa99.dll`. The x86 Mesa Nine DLL and Wine9x Win98 switcher are now built and staged in `dist_win98/nine/`; the bundle is not yet runtime-validated on Win98. Keep project-specific changes in root-owned patches, not in the Wine9x submodule.
+For the Direct3D 9 application boundary, Mesa 25.1.6 supplies Gallium Nine and the pinned `submodules/wine9x` project supplies a per-application D3D9 switcher that routes calls to `mesa99.dll`. The x86 bundle is built and staged in `dist_win98/nine/`. A bounded triangle test has submitted through NVC0 and completed; 3DMark03 currently produces a corrupted/black scene. Keep project-specific changes in root-owned patches, not in the Wine9x submodule.
 
 1. Reuse `submodules/mesa9x/win9x/` for Win9x loader, WGL, and presentation conventions. The root-owned DIOC adapter connects Nouveau's existing winsys ABI to NVX.VXD; it does not replace Mesa9x's OS-level WGL boundary.
 2. Build a genuine Win98-compatible OpenGL ICD (and later a D3D9 frontend if desired) whose calls reach Gallium Nouveau/NVC0. Keep Mesa's API/state tracking and Nouveau command generation; finish the OS-facing boundary for BO allocation, staged upload/readback, client lifetime, batch submission, fences, and present. The adapter intentionally leaves user mapping disabled.
@@ -113,19 +118,32 @@ From the repository root:
 
 The default `WIN98_SINGLE_MONITOR=1` build outputs `nvx.drv`, `nvx.vxd`, `nvx.inf`, and `GSPGA104.BIN` in `dist_win98/`. To also build the older secondary `.DRV` path, set `WIN98_SINGLE_MONITOR=0`; that does not imply the dual-monitor path has been runtime validated.
 
+The build also stages `install.bat`. It is DOS-compatible and only copies the
+package into `C:\DRIVERS\NVX`; it deliberately does not edit `SYSTEM.INI` or
+the registry. This keeps recovery simple and leaves PnP binding to the Win98
+INF installer.
+
 ---
 
 ## Installation Guide
 
 ### Primary monitor installation
-1. Copy `nvx.inf`, `nvx.drv`, `nvx.vxd`, and `GSPGA104.BIN` from `dist_win98/` to a directory on Windows 98 (for example, `C:\DRIVERS\NVX`).
-2. Right-click on **My Computer** -> **Properties** -> **Device Manager**.
-3. Expand **Display adapters**, double-click **Standard PCI Graphics Adapter (VGA)**, and select the **Driver** tab.
-4. Click **Update Driver...** -> **Specify the location of the driver** -> **Browse** to `C:\DRIVERS\NVX`.
-5. Select **NVIDIA GeForce RTX 3070** (or corresponding model) and click **Next** to install.
-6. When prompted, restart Windows 98.
+#### Stage package from real-mode DOS
 
-The INF copies the GSP firmware into `C:\WINDOWS\SYSTEM`. The 2026-11-25 run (`test_logs/win98-20261125-170114.log`) boots in 2560×1440×32 with a native GSP/EVO scanout commit and matching 10,240-byte pitch. GDI, OpenGL cube/gears, legacy DDraw, and a 60-frame Gallium Nine D3D9 triangle test all pass; gears averaged 21 FPS and Nine 16 FPS. Physical display appearance still needs confirmation. The OpenGL renderer reports `NV170`; the Nine test submits through NVC0 and completes its fence. General applications and performance remain unproven. The VxD user-buffer mapping path still fails closed, so the tested Nine workload is a bounded smoke test rather than general application support.
+1. Extract the `dist_win98` package to a DOS-accessible directory, such as `C:\NVXPKG`.
+2. Boot with **Command prompt only**, change to that directory, and run `INSTALL.BAT`.
+3. The script copies the package into `C:\DRIVERS\NVX`. It does not replace active system files or alter registry state.
+4. Start the GUI with `WIN`.
+
+#### Bind the display driver in Windows
+
+1. Open **My Computer** -> **Properties** -> **Device Manager**.
+2. Expand **Display adapters**, open the NVIDIA/standard VGA adapter, and select **Update Driver**.
+3. Choose **Specify the location** / **Have Disk**, then select `C:\DRIVERS\NVX\NVX.INF`.
+4. Select the matching NVIDIA GA104 device and complete setup.
+5. Reboot when prompted.
+
+The INF copies the GSP firmware into `C:\WINDOWS\SYSTEM`. Win98 has booted at 2560×1440×32 with native GSP/EVO scanout and matching 10,240-byte pitch. OpenGL cube/gears and a bounded Nine triangle smoke test have passed in earlier runs. The current 3DMark03 test is not passing: Nine initializes and submits draws, but the scene is corrupted/black and GART page-backed allocation failures occur under load. Treat OpenGL/Nine as experimental; general applications and performance are unproven. The VxD user-buffer mapping path remains fail-closed.
 
 ---
 

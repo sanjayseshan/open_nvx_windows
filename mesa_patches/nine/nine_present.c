@@ -383,10 +383,12 @@ static void release_d3d_drawable(struct d3d_drawable *d3d)
 static HRESULT WINAPI DRIPresent_PresentBuffer(ID3DPresentM99 *This, struct D3DWindowBuffer *buffer, HWND hWndOverride, const RECT *pSourceRect, const RECT *pDestRect, const RGNDATA *pDirtyRegion, DWORD Flags)
 {
 	mesa99_dbg("enter");
+	static volatile LONG present_diag_count;
 	struct d3d_drawable *d3d;
 	RECT dest_translate;
 	RECT windowRect;
 	RECT offset;
+	RECT clientRect = {0, 0, 0, 0};
 	HWND hwnd;
     HRESULT result = D3DERR_DRIVERINTERNALERROR;
     if (!buffer || !buffer->res || !MesaPresentProc) return result;
@@ -449,17 +451,56 @@ static HRESULT WINAPI DRIPresent_PresentBuffer(ID3DPresentM99 *This, struct D3DW
 	}
 
 	HDC dc = GetDC(d3d->wnd);
+	BOOL present_ok = FALSE;
 	mesa99_printf(__FILE__, __FUNCTION__, __LINE__, "DRIPresent_PresentBuffer: hwnd=%p dc=%p buffer=%p res=%p MesaPresentProc=%p",
                   d3d->wnd, dc, buffer, buffer ? buffer->res : NULL, MesaPresentProc);
 	if(dc != NULL)
 	{
 		if (MesaPresentProc) {
-			BOOL pres_res = MesaPresentProc(buffer->screen, buffer->ctx,
+			present_ok = MesaPresentProc(buffer->screen, buffer->ctx,
 			                                buffer->res, dc,
 			                                pSourceRect, pDestRect);
-			result = pres_res ? D3D_OK : D3DERR_DRIVERINTERNALERROR;
+			result = present_ok ? D3D_OK : D3DERR_DRIVERINTERNALERROR;
 		}
 		ReleaseDC(d3d->wnd, dc);
+	}
+	/* Keep a bounded serial trace to distinguish bad Nine rectangles from a
+	 * failed Mesa/GDI present. Normal frame traffic is deliberately not logged. */
+	{
+		LONG seq = InterlockedIncrement(&present_diag_count);
+		if (seq <= 8 || (!present_ok && seq <= 32)) {
+			RECT src = {0, 0, 0, 0};
+			RECT dst = {0, 0, 0, 0};
+			char msg[512];
+			int len;
+			if (pSourceRect) src = *pSourceRect;
+			if (pDestRect) dst = *pDestRect;
+			GetWindowRect(d3d->wnd, &windowRect);
+			GetClientRect(d3d->wnd, &clientRect);
+			len = snprintf(msg, sizeof(msg),
+				"[M99-PRESENT] seq=%ld ok=%u hr=%08lx hwnd=%p target=%lux%u backbuf=%lux%lu window=%ld,%ld,%ld,%ld client=%ld,%ld,%ld,%ld src=%u:%ld,%ld,%ld,%ld dst=%u:%ld,%ld,%ld,%ld offset=%ld,%ld",
+				(long)seq, (unsigned)present_ok, (unsigned long)result, d3d->wnd,
+				(unsigned long)buffer->res->width0,
+				(unsigned)buffer->res->height0,
+				(unsigned long)This->params.BackBufferWidth,
+				(unsigned long)This->params.BackBufferHeight,
+				(long)windowRect.left, (long)windowRect.top,
+				(long)windowRect.right, (long)windowRect.bottom,
+				(long)clientRect.left, (long)clientRect.top,
+				(long)clientRect.right, (long)clientRect.bottom,
+				(unsigned)(pSourceRect != NULL), (long)src.left, (long)src.top,
+				(long)src.right, (long)src.bottom,
+				(unsigned)(pDestRect != NULL), (long)dst.left, (long)dst.top,
+				(long)dst.right, (long)dst.bottom,
+				(long)d3d->offset.x, (long)d3d->offset.y);
+			if (len > 0) {
+				if ((size_t)len > sizeof(msg) - 3) len = sizeof(msg) - 3;
+				msg[len++] = '\r';
+				msg[len++] = '\n';
+				msg[len] = '\0';
+				mesa99_report(msg);
+			}
+		}
 	}
 	
 	//release_d3d_drawable(d3d);

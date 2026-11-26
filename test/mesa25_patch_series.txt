@@ -1,6 +1,7 @@
 mesa_patches/mesa25/0000-xp-win32-shims.patch
 mesa_patches/0002-xp-kernel32-api-compat.patch
 mesa_patches/mesa25/0001-nvx-wgl-native-nouveau.patch
+mesa_patches/mesa25/0013-nine-present-rectangles.patch
 mesa_patches/mesa25/0002-nine-wgl-exports.patch
 mesa_patches/mesa25/0003-no-nvk-winsys.patch
 mesa_patches/mesa25/0004-drop-renderonly-include.patch

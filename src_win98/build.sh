@@ -15,6 +15,11 @@ fi
 WIN98_SINGLE_MONITOR="$WIN98_SINGLE_MONITOR" "$SCRIPT_DIR/winvbe_drv/build.sh"
 WIN98_SINGLE_MONITOR="$WIN98_SINGLE_MONITOR" "$SCRIPT_DIR/build_vxd.sh"
 cp "$SCRIPT_DIR/nvx_win98.inf" "$ROOT_DIR/dist_win98/nvx.inf"
+cp "$SCRIPT_DIR/install.bat" "$ROOT_DIR/dist_win98/install.bat"
+cp "$SCRIPT_DIR/RELEASE_README.txt" "$ROOT_DIR/dist_win98/README.txt"
+if [ -f "$ROOT_DIR/dist_win98/attach_sec.exe" ]; then
+    echo "NOTE: existing attach_sec.exe is legacy and untested; the package remains single-monitor."
+fi
 cp "$ROOT_DIR/dist_full/gsp_ga104.bin" "$ROOT_DIR/dist_win98/GSPGA104.BIN"
 
 if [ -n "$NVX_WIN98_MESA_ICD" ]; then

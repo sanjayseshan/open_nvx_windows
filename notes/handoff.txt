@@ -1,65 +1,42 @@
-# Current status — 2026-11-26, Win98 SE / Gallium Nine
+# Current status — 2026-11-26, Win98 SE / RTX 3070
 
-## Latest code and test
+## Current test
 
-- `src_win98/shim/nvx_mdl_win98.c` now mirrors XP's MDL backing model using
-  Win98 VMM services: `_PageAllocate` reserves fixed system pages without
-  requiring physical contiguity, `_CopyPageTable` supplies the actual PTEs,
-  and the driver passes the derived PFNs to the shared GART mapper. Freeing
-  releases the VMM block with `_PageFree`. This replaces the old common-buffer
-  allocation and fabricated sequential PFNs.
-- Win98 VxD/package build passed. The updated driver and one-shot 3DMark03
-  runner were installed in `win98_small.img`.
-- Test command: `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
-  Current log: `test_logs/win98-20261126-161004.log` (`vm_serial.log`). The
-  VM remains running with 3DMark03 open.
-- Evidence: `NVX [GART-MDL]` reports a real 17-page PFN list; there are no
-  `MmAllocatePagesForMdl failed` or `GART-BACKING-PRESSURE` entries in this
-  run. The Nine HAL triangle test completes 60 frames and receives GPU fence
-  completion. 3DMark03 produces NVC0 draw submissions and no logged channel
-  fault. The user still sees the top-left of the game loading scene flash,
-  then a black display. Thus the backing-allocation failure is fixed, but it
-  was not the only cause of the 3DMark presentation failure.
-- Route still needs proof: the runner writes D9Switcher `nineforce` settings,
-  but the 3-second process module snapshot does not list `mesa99.dll` or
-  `wined9.dll`. It lists `WINED3D.DLL`; the D9Switcher log is dumped only when
-  3DMark exits. Capture a debug run's DLL-load events (or capture the switcher
-  log when the process exits) before concluding the benchmark is on Nine.
+- Active auto-retry VFIO session: `test_logs/win98-20261126-171840.log` (`vm_serial.log`). Leave it running for the user to inspect; do not edit `win98_small.img` while QEMU owns it.
+- Offline backup before the test: `/tmp/win98-pre-mode-return-fix.img`.
+- The guest booted at 2560x1440 and native scanout verified active. Gallium Nine's 60-frame triangle precheck passed with completed GPU fences (`0x107` submitted/completed batches, zero submission failures).
+- The one-shot runner launched 3DMark03 through D9Switcher/Nine. The process loaded Mesa/Nine and submitted NVC0 draws; the first eight Presents returned success with matching 1024x768 target/backbuffer/client sizes. No CreateProcess failure or unhandled exception has appeared. The debugger has recorded first-chance VC++ exceptions (`0xE06D7363`, with an `Access violation` string in exception-object memory); these are not evidence of an unhandled crash. No benchmark score or correct-scene visual confirmation yet.
+- The app remains open at 1024x768, so its return to the 2560x1440 desktop has not been exercised in this test. Do not call the modeset fix proven until that transition succeeds or its new failure-stage diagnostic is captured.
+- Latest serial samples show the process still submitting heavily (`batches=0x4000`, `completed=0x3F35`, `submit_failures=0`) while primary mode restore repeatedly reports `owner-transfer notifier did not complete` and channel 0 exception `0x4080`. No 3DMark score or successful desktop restore has been captured.
 
-## Next steps
+## Release
 
-1. Preserve the current test log and keep the VM alive until the user is ready
-   to stop it.
-2. On the next run, enable `NVX_WIN98_DEBUG_3DMARK03=1` with
-   `NVX_WIN98_3DMARK03_ONCE=1` during
-   `test/install_win98_graphics_tests.sh`. The runner's debugger records DLL
-   load events and exceptions over COM1. Confirm whether `mesa99.dll` is
-   loaded and whether 3DMark creates a Nine device.
-3. Trace `Present`/swap and source/destination rectangles from Nine through
-   `mesa_patches/nine/mesa99.c` and the Win98 display present path. The
-   top-left-only flashing suggests a separate present/viewport/fullscreen
-   problem; do not attribute it to GART allocation without new evidence.
-4. Keep the XP path as reference: `src_driver/nvx_mdl.c` allocates locked
-   scatter pages with `MmAllocatePagesForMdl`, maps a system alias with
-   write-combining cache policy, and passes `MmGetMdlPfnArray` to the same
-   GART PTE builder. Win98 now supplies equivalent locked pages and true PFNs;
-   per-process user mapping remains intentionally disabled because Win98
-   stages IOCTL data instead of exposing a kernel VA to ring 3.
+- Experimental Win98 SE package version: `4.0.0.45`; ZIP includes the driver, DOS staging script, install notes, Nine runtime, and explicitly untested `attach_sec.exe`.
+- Published release must remain marked pre-release: Nine's bounded triangle passed, but the 3DMark03 scene/restore path is still unreliable and slow.
+
+## Changes in this iteration
+
+- `src_win98/winvbe_drv/vbe.c`: allocate and configure a replacement LFB selector set before releasing the old one. A failed larger-mode mapping no longer discards the previous usable framebuffer selectors.
+- `src_win98/winvbe_drv/enable.c`: ReEnable now refuses VGA mode 13h fallback. If requested native mode fails, it restores the prior mode bookkeeping, keeps the previous scanout, and returns failure to GDI. Initial Enable retains its VGA fallback.
+- `src_win98/shim/videoprt_shim.c`: native mode request guards now report why the request was rejected.
+- `src_driver/nvx_disp_rpc.c`: primary scanout logs the failing DMA setup, channel reservation, flush, head emission, or notifier stage.
+- `test/update_win98_driver.sh` installs `GpuCopy=1` and `Debug=0` by default. The current 3DMark-first run bypasses the regular GDI/WGL suite, so smooth window-copy behavior still needs a regular-suite check.
+
+## Build and test evidence
+
+- `./src_win98/build.sh` completed successfully. Only pre-existing unused function/variable warnings appeared.
+- Installed the rebuilt package and configured one-shot 3DMark03 debugger launch, then ran `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
+- Current log: `test_logs/win98-20261126-171840.log`.
+
+## Next
+
+1. Inspect the guest visually and let 3DMark start or exit. On exit, check that the desktop returns to 2560x1440 without a 640x480 fallback. If the modeset fails, use the new `[NVX [MODE]]` / `[NATIVE-1HEAD]` stage line to fix the actual failed operation.
+2. Verify slow GDI window movement separately with the regular graphics suite and confirm screen copies use the GPU. The current quiet `Debug=0` setting suppresses the copy trace, so use a temporary debug-enabled test only if necessary.
+3. Confirm a complete 3DMark scene/score and capture its `d9switch.log`; current evidence proves initialization and packet submission only.
 
 ## Relevant files
 
-- `src_win98/shim/nvx_mdl_win98.c` — VMM-backed locked GART pages and PFNs.
-- `src_win98/shim/vmm_wrappers.asm` — `_PageAllocate`, `_PageFree`, and
-  `_CopyPageTable` VMM wrappers.
-- `src_win98/shim/videoprt_shim.c` — Win98 pool/common-buffer services.
-- `src_driver/nvx_mdl.c`, `src_driver/nvxmp.c` — XP MDL reference and common
-  GART allocation/map lifecycle.
-- `test/win98/runner.c`, `test/install_win98_graphics_tests.sh` — automated
-  Nine/3DMark run and optional debugger capture.
-- `mesa_patches/nine/mesa99.c`, `mesa_patches/mesa25/0013-nine-present-rectangles.patch`
-  — Nine D3D entry points and rectangle handling.
-- Latest log: `test_logs/win98-20261126-161004.log`.
-
-Preserve unrelated edits in `dist_win98/`, `submodules/mesa9x`,
-`submodules/wine9x`, `test/mesa25_patch_series.txt`, and
-`mesa_patches/mesa25/0013-nine-present-rectangles.patch`.
+- `src_win98/winvbe_drv/{enable.c,vbe.c}` — mode transition, VBE framebuffer mappings, and GpuCopy/debug defaults.
+- `src_win98/shim/videoprt_shim.c`, `src_driver/nvx_disp_rpc.c` — Win98 mode request and native scanout transaction diagnostics.
+- `test/update_win98_driver.sh`, `test/install_win98_graphics_tests.sh`, `test/run_vfio_win98_autoretry.sh` — image update and test flow.
+- Current log: `test_logs/win98-20261126-171840.log`.

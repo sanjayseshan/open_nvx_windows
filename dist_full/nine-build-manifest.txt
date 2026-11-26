@@ -8,6 +8,6 @@ mesa9x revision: 8b5428ca315c1d18341b69adce4f4b821e33338d
 7e1f4a0039a56204d0a870fa9c7b4f00189bbaa3a681ef502ce865e91dff56b2  /home/sanjay/temp/xddm/patches/mesa9x/nvx-nine-build.mk
 0da1c0b439754cad94cbe21eb01c68af1ea2a746a7cc05a5cb5180715688b639  /home/sanjay/temp/xddm/mesa_patches/nine/mesa99.c
 6b3cb43a7c1f59609dc63bdda636f6a9846b8f87a40eb1bae54a428ed5361a13  /home/sanjay/temp/xddm/mesa_patches/nine/nine_memory_helper.c
-7cf80dfa6c7865cc26cffebecdcf96be77855ab0c3f2bf91f7ebb7a66842f56c  /home/sanjay/temp/xddm/mesa_patches/nine/nine_present.c
+f4084cfd4ba6830d64a37d95aea2044d1e14d6f9a07d46f1a24407ede85482bc  /home/sanjay/temp/xddm/mesa_patches/nine/nine_present.c
 78527b0e7d1d6073aa715d0281b0b1c84b21746c73db98a605c819ad4f92212b  /home/sanjay/temp/xddm/mesa_patches/nine/nine_window.c
-8f8bc9a56722b11864a18160b44c9cce761ed81102e3babe9c6a5c5cd30a4d00  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll
+9e8a0026b1163f0ac8182edf4b4472c2838334af2d9f4b311cc17e8e035f50e5  /home/sanjay/temp/xddm/dist_full/x86/d3d9.dll

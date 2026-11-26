@@ -1969,6 +1969,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     PHYSICAL_ADDRESS physical;
     PVOID virtualAddress,mdl=NULL,pfnArray=NULL;
     uint32_t firstPage,pageCount;
+    ULONG backingFailureStage=0;
     uint32_t vaAlignment;
     ULONG64 gpuVa,id;
     BOOLEAN mapped,useMdl;
@@ -2045,7 +2046,7 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
 
     if(useMdl) {
         if(!NvxMdlAllocateGartBacking(request->Bytes,&mdl,&virtualAddress,
-                                      &pfnArray))
+                                      &pfnArray,&backingFailureStage))
             virtualAddress=NULL;
     } else {
         virtualAddress=VideoPortAllocateCommonBuffer(engine,engine->DmaAdapter,
@@ -2055,11 +2056,12 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
        ((ULONG64)physical.QuadPart&0xfffULL)||
        (ULONG64)physical.QuadPart>0x100000000ULL-request->Bytes))) {
         if(failureStage) *failureStage=3;
-        LogStr(useMdl?"NVX [GART]: MmAllocatePagesForMdl failed bytes=":
+        LogStr(useMdl?"NVX [GART]: page-backed allocation failed bytes=":
                        "NVX [GART]: VideoPortAllocateCommonBuffer failed bytes=");
         LogHex(request->Bytes);LogStr(" virt=");LogHex((ULONG64)virtualAddress);
         if(useMdl) {
             LogStr(" pfn_list=");LogHex((ULONG64)pfnArray);
+            LogStr(" backing_stage=");LogHex(backingFailureStage);
         }
         LogStr(" phys=");LogHex((ULONG64)physical.QuadPart);LogStr("\n");
         if(mdl)

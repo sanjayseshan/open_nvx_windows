@@ -36,7 +36,8 @@ typedef struct NVX_WIN98_GART_BACKING {
 #define NVX_WIN98_PAGE_FLAGS     0x0000000bU /* ZERO_INIT | USE_ALIGN | FIXED */
 
 int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
-                              void **systemVirtualOut, void **pfnArrayOut)
+                              void **systemVirtualOut, void **pfnArrayOut,
+                              unsigned long *failureStage)
 {
     NVX_WIN98_GART_BACKING *backing;
     ULONG_PTR *pfns;
@@ -48,6 +49,7 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
     if (mdlOut) *mdlOut = NULL;
     if (systemVirtualOut) *systemVirtualOut = NULL;
     if (pfnArrayOut) *pfnArrayOut = NULL;
+    if (failureStage) *failureStage = 1; /* invalid request */
     if (!bytes || (bytes & (NVX_WIN98_PAGE_SIZE - 1U)) || !mdlOut ||
         !systemVirtualOut || !pfnArrayOut || bytes > 0xffffffffUL)
         return 0;
@@ -62,17 +64,21 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
     backing = (NVX_WIN98_GART_BACKING *)VideoPortAllocatePool(
         g_pPrimaryDevExt, VpNonPagedPool, sizeof(*backing),
         NVX_WIN98_GART_SIGNATURE);
-    if (!backing)
+    if (!backing) {
+        if (failureStage) *failureStage = 2; /* backing descriptor pool */
         return 0;
+    }
     pfns = (ULONG_PTR *)VideoPortAllocatePool(g_pPrimaryDevExt,
         VpNonPagedPool, (SIZE_T)pfnBytes, NVX_WIN98_GART_SIGNATURE);
     if (!pfns) {
+        if (failureStage) *failureStage = 3; /* PFN array pool */
         VideoPortFreePool(g_pPrimaryDevExt, backing);
         return 0;
     }
     ptes = (uint32_t *)VideoPortAllocatePool(g_pPrimaryDevExt,
         VpNonPagedPool, (SIZE_T)pfnBytes, NVX_WIN98_GART_SIGNATURE);
     if (!ptes) {
+        if (failureStage) *failureStage = 4; /* temporary PTE array pool */
         VideoPortFreePool(g_pPrimaryDevExt, pfns);
         VideoPortFreePool(g_pPrimaryDevExt, backing);
         return 0;
@@ -83,6 +89,7 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
     virtualAddress = _PageAllocate(pageCount, NVX_WIN98_VMM_PG_SYS, 0,
         0, 0, 0x000fffffU, &physHint, NVX_WIN98_PAGE_FLAGS);
     if (!virtualAddress) {
+        if (failureStage) *failureStage = 5; /* VMM page allocation */
         /* Older VMMs may reject PAGEUSEALIGN with an unconstrained range.
          * PAGEFIXED|PAGEZEROINIT is still sufficient for a locked block. */
         virtualAddress = _PageAllocate(pageCount, NVX_WIN98_VMM_PG_SYS, 0,
@@ -104,6 +111,7 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
                          pageCount, ptes, 0);
     for (i = 0; i < pageCount; ++i) {
         if (!(ptes[i] & NVX_WIN98_PTE_PRESENT)) {
+            if (failureStage) *failureStage = 6; /* missing PTE */
             _PageFree(virtualAddress, 0);
             VideoPortFreePool(g_pPrimaryDevExt, ptes);
             VideoPortFreePool(g_pPrimaryDevExt, pfns);
@@ -122,6 +130,7 @@ int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdlOut,
     *mdlOut = backing;
     *systemVirtualOut = virtualAddress;
     *pfnArrayOut = pfns;
+    if (failureStage) *failureStage = 0;
     return 1;
 }
 

@@ -1,14 +1,14 @@
-# NVIDIA Modern GPU Display Drivers for Windows 2000/XP (x86 & x64) & Windows 98SE/ME
+# OPEN_NVX_WINDOWS: NVIDIA RTX 3060/70 GPU Display Drivers for Windows 2000/XP (x86 & x64) & Windows 98SE/ME
 
 This project develops display drivers for modern NVIDIA GPUs on legacy Windows. The XP miniport uses code and policy adapted from NVIDIA’s Open GPU Kernel Modules (`open-gpu-kernel-modules`) and boots NVIDIA GSP-RM firmware.
 Hardware support is for GA104 (Nvidia GeForce RTX 3070, 3060 series).
 Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works through Mesa/Nouveau. The x86 Gallium Nine D3D9 (DirectX 9) path has been validated and has rendered 3DMark05 under XP x64 WoW64 and native XP x86; the latest score is 5,409 (comparable to GeForce 6800 GT). Better acceleration and broader compatibility remain further work.
 
 ### Operating System Support
-* **Windows XP Professional x64 Edition (NT 5.2):** Main development and hardware-validation target; tested with an RTX 3070, including VFIO passthrough.
+* **Windows XP Professional x64 Edition (NT 5.2):** Main development and hardware-validation target; tested with an RTX 3070, including VFIO passthrough and bare-metal.
 * **Windows XP Professional x86 (NT 5.1):** Separate 32-bit build; tested in a VFIO guest. Feature coverage differs from x64.
-* **Windows 98 Second Edition (SE, 4.10):** Experimental VxD/DIB path tested in a VFIO guest.
-* **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated. Compatibility assumed.
+* **Windows 98 Second Edition (SE, 4.10):** Experimental single-monitor VxD/DIB and x86 Mesa/Nouveau paths tested in a VFIO guest. Pre-release driver version 4.0.0.45; the 3D pipeline is work in progress, slow, and not reliable for general applications.
+* **Windows ME / Windows 2000 / Vista / Windows 7:** Not validated but supported via compatibility modes.
 
 ### Hardware Validation & GPU Scope
 * **Host Platform:** AMD AM5 (Ryzen 9000 series, IOMMU / VFIO passthrough)
@@ -26,7 +26,7 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 | **Kernel Component** | `nvxmp.sys` (32-bit video miniport driver, built as `nvxmp32.sys`) | `nvxmp.sys` (64-bit video miniport driver) | `nvx.vxd` (32-bit LE Virtual Device Driver) |
 | **Display Component** | `nvxdisp.dll` (32-bit GDI display driver, built as `nvxdisp32.dll`) | `nvxdisp.dll` (64-bit GDI display driver) | `nvx.drv` (Head 0); optional `nvx2.drv` Head 1 build |
 | **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | GPU-backed 32bpp GDI solid fills via VxD/OpenRM; CPU fallback for other operations |
-| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | NV170 OpenGL cube/gears and bounded Gallium Nine 60-frame D3D9 smoke test pass on RTX 3070; general app coverage is unproven |
+| **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Experimental x86 Mesa/Nouveau OpenGL; bounded Nine D3D9 triangle and GPU submissions observed. 3DMark03 currently renders incorrectly/black; general app coverage is unproven |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
 | **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Win98 single-monitor package; native EVO reports both heads active, GDI dual-view not validated |
 | **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 @ 32bpp primary; GSP/EVO modeset and matching 10,240-byte pitch boot-tested, physical image confirmation pending |
@@ -122,20 +122,28 @@ flowchart TB
 
 The x86 diagram is the same graphics route without WoW64: every application and user-mode DLL is 32-bit, and the kernel miniport is also 32-bit. The build outputs `nvxmp32.sys` and `nvxdisp32.dll` are staged under the standard package names `nvxmp.sys` and `nvxdisp.dll`; all user-mode graphics DLLs install under `Windows\\System32`. Gallium Nine supplies D3D9; WineD3D supplies D3D8 and DirectDraw. The latest user-reported 3DMark05 run on this path scored 5,409.
 
-### Windows 98 SE (experimental)
+### Windows 98 SE (experimental, single monitor)
 
 ```mermaid
 flowchart TB
-  APP[Win98 GDI solid fills] --> DIB[nvx.drv BitBlt<br/>DibEngine=0]
-  DIB --> VXD[nvx.vxd<br/>VxD PM service + DIOC]
-  VXD --> SHIM[VideoPort compatibility shim]
-  SHIM --> CORE[Shared miniport<br/>HwStartIO + OpenRM/GSP]
+  subgraph Win98[Windows 98 SE interfaces]
+    GDI[GDI solid fills] --> DIB[nvx.drv<br/>16-bit DIB display driver]
+    APPGL[OpenGL app] --> WGL[Win98 WGL / ICD loader]
+    WGL --> ICD[Mesa Nouveau ICD<br/>x86, experimental]
+    APP9[D3D9 app] --> SW[D9Switcher<br/>Wine9x]
+    SW --> NINE[Gallium Nine<br/>Mesa 25.1.6]
+    DIB -->|VxD PM service| VXD[nvx.vxd<br/>VxD + DIOC transport]
+    ICD -->|DIOC winsys requests| VXD
+    NINE -->|DIOC winsys requests| VXD
+    VXD --> SHIM[VideoPort / NT compatibility shims]
+    SHIM --> CORE[Shared miniport<br/>HwStartIO + OpenRM/GSP]
+  end
   CORE --> RM[GSP-RM firmware]
-  RM --> GPU[RTX GPU]
-  UTIL[attach_sec.exe] -. secondary-head setup .-> APP
+  RM --> GPU[RTX GPU<br/>Copy Engine + NVC0]
+  GPU --> DISP[Primary display scanout / present]
 ```
 
-The tested Win98 path sends eligible 32bpp GDI solid fills through `nvx.drv` and a VxD shim into the same validated OpenRM/GSP miniport submission used by XP. `DibEngine=0` is required because DIBENG otherwise bypasses the driver's BitBlt callback. Other 2D operations currently fall back to CPU rendering, and application-level 3D is not connected. See [src_win98/README.md](src_win98/README.md) for test evidence and remaining work.
+Eligible 32bpp GDI solid fills go through `nvx.drv`, the VxD transport, and shared OpenRM/GSP submission; other 2D operations use CPU fallback. `DibEngine=0` is required for the driver's BitBlt callback. Experimental Mesa OpenGL and Gallium Nine D3D9 paths also reach the miniport through DIOC shims. OpenGL cube/gears and a bounded Nine triangle have rendered in earlier runs. In the current 3DMark03 run, Nine initializes and submits NVC0 draws, but the visible output is flashing/black and GART backing allocations fail under load. This is not reliable general 3D support. QHD modesetting has been exercised; the package target remains one monitor. See [src_win98/README.md](src_win98/README.md) for details.
 
 ---
 
@@ -270,13 +278,10 @@ The resulting `dist32/` package includes `install.bat`. Run it as Administrator 
 
 ```sh
 source src_win98/owenv.sh
-(cd src_win98/winvbe_drv && ./build.sh)
-(cd src_win98 && ./build_vxd.sh)
-i686-w64-mingw32-gcc -O2 -s -o dist_win98/attach_sec.exe \
-  src_win98/attach_sec.c -luser32
+./src_win98/build.sh
 ```
 
-The output files are placed in `dist_win98/`.
+The output files, including a DOS-mode package-staging `install.bat`, are placed in `dist_win98/`. The optional Mesa ICD and Nine/Wine9x runtime bundles use separate scripts under `test/`.
 
 ## Installation & Usage
 
@@ -312,7 +317,7 @@ Repository-maintainer instructions for updating the offline QEMU images are in [
 
 ### Windows 98 SE
 
-Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist_win98/`. Follow [src_win98/README.md](src_win98/README.md) for setup. The secondary-head utility is `attach_sec.exe`. This experimental DIB/VxD path is independent of the XP Mesa ICD.
+Use the single-monitor package in `dist_win98/`. To stage it from real-mode DOS, boot to **Command prompt only**, change to the extracted package directory, and run `install.bat`. It copies the package to `C:\DRIVERS\NVX` without changing the active Windows installation. Restart Windows, open Device Manager, update the display adapter, and use **Have Disk** to select `C:\DRIVERS\NVX\nvx.inf`; reboot when prompted. DOS staging does not perform the PnP/registry binding. `attach_sec.exe` is for secondary-head experiments outside the validated single-monitor setup. See [src_win98/README.md](src_win98/README.md).
 
 ---
 
@@ -322,7 +327,7 @@ Use `nvx.drv`, `nvx2.drv`, `nvx.vxd`, `nvx.inf`, and `attach_sec.exe` from `dist
 ├── README.md           # Project overview and build instructions
 ├── dist_full/           # XP x64 integration bundle: driver, firmware, ICDs, tests, and WineD3D DLLs
 ├── dist32/              # Native Windows XP x86 package and install.bat
-├── dist_win98/          # Windows 98 SE release package (nvx.drv, nvx2.drv, nvx.vxd, nvx.inf, attach_sec.exe)
+├── dist_win98/          # Windows 98 SE package (driver, firmware, INF, DOS staging installer)
 ├── src_driver/          # Unified GA104 miniport engine, GSP/RPC/MMU/Display code, and OpenRM HAL shim
 ├── src_disp/            # Windows XP GDI display driver (both 64-bit and 32-bit builds)
 ├── src_win98/           # Windows 98 SE components:

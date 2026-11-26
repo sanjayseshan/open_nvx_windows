@@ -1564,20 +1564,18 @@ static int v86_monitor(void)
 static int setup_lfb(void)
 {
     DWORD lin, size = g.fbsize;
-    WORD tiles, i;
+    WORD tiles, i, newsel, oldsel, oldtiles;
     if (!g.pmode || !g.mi.physbase) return 0;
     /* room for the screen moved behind the VGA planes (vga_reserve) */
     size += VGA_RESERVE + 0x10000UL;
     if (g.totalmem64k && size > (DWORD)g.totalmem64k * 65536UL) size = (DWORD)g.totalmem64k * 65536UL;
     if (size < g.fbsize) size = g.fbsize;
     size = (size + 0xFFFFUL) & 0xFFFF0000UL;
-    if (g.lfbsel && g.lfblin) {
-        /* already mapped (re-enable); a bigger mode (Windows 9x ReEnable):
-           a new mapping */
-        if (((DWORD)g.lfbtiles << 16) >= size) return 1;
-        sel_free(g.lfbsel, g.lfbtiles);
-        g.lfbsel = 0; g.lfblin = 0; g.lfbtiles = 0;
-    }
+    /* Keep the last working mapping until a larger replacement is complete.
+       ReEnable can fail after preparing a new mode; releasing the old
+       selectors first left GDI with no usable framebuffer on that path. */
+    if (g.lfbsel && g.lfblin && ((DWORD)g.lfbtiles << 16) >= size) return 1;
+    oldsel = g.lfbsel; oldtiles = g.lfbtiles;
     if (g.lfb_state == 2) return 0;
     if (v86_monitor() && !get_ini_int("LfbVcpi", 0)) {
         DBG("LFB: standard mode under a V86 memory manager - using the VGA window\n");
@@ -1616,20 +1614,21 @@ static int setup_lfb(void)
     DBG("LFB: phys=%lx size=%lx lin=%lx\n", g.mi.physbase, size, lin);
     if (!lin) return 0;
     tiles = (WORD)(size >> 16);
-    g.lfbsel = sel_alloc(tiles);
-    if (!g.lfbsel) return 0;
+    newsel = sel_alloc(tiles);
+    if (!newsel) return 0;
     for (i = 0; i < tiles; i++) {
-        WORD s = g.lfbsel + i * dpmi_selinc;
+        WORD s = newsel + i * dpmi_selinc;
         if (!sel_setlimit(s, 0xFFFFUL) || !sel_setbase(s, lin + ((DWORD)i << 16))) {
             DBG("LFB: selector setup failed at tile %u\n", i);
-            sel_free(g.lfbsel, tiles);
-            g.lfbsel = 0;
+            sel_free(newsel, tiles);
             return 0;
         }
     }
+    g.lfbsel = newsel;
     g.lfbtiles = tiles;
     g.lfblin = lin;
     g.lfbinc = dpmi_selinc;
+    if (oldsel) sel_free(oldsel, oldtiles);
     /* write combining: the CPU merges frame buffer writes into bursts
        (PCI/AGP/PCIe writes become several times faster) */
     if (g.ini_wc && g.cpu386 && (g.enhanced || g.win9x)) {

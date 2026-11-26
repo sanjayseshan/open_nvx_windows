@@ -4,8 +4,11 @@
 /* Opaque MDL backing helpers. The implementation includes the WDM DDK
  * separately because miniport.h intentionally exposes a curated VideoPort
  * surface and conflicts with the full WDM header. */
+/* failureStage is zero on success; nonzero values identify the allocator's
+ * failed step and are emitted by the miniport's allocation diagnostic. */
 int NvxMdlAllocateGartBacking(unsigned long bytes, void **mdl,
-                              void **systemVirtual, void **pfnArray);
+                              void **systemVirtual, void **pfnArray,
+                              unsigned long *failureStage);
 void NvxMdlFreeGartBacking(void *mdl, void *systemVirtual);
 void *NvxMdlMapUser(void *mdl);
 void NvxMdlUnmapUser(void *mdl, void *userVirtual);
