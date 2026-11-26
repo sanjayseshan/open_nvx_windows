@@ -3,41 +3,56 @@ Current status — 2026-11-26, Win98 SE / 3DMark03
 Latest build and test
 
 - Increased Win98 `NVX_3D_USER_BUFFER_SLOTS` from 2048 to 4096 in
-  `src_driver/nvx_gsp.h`. Rebuilt the single-monitor VxD and package with the
-  Mesa 25.1.6 x86 Win98 ICD; build passed and `dist_win98/nvx.vxd` is 443,403
-  bytes.
-- Installed the package and a one-shot 3DMark03 launch into `win98_small.img`.
+  `src_driver/nvx_gsp.h`. Single-monitor VxD build passed (443,403 bytes),
+  and the updated package was installed into `win98_small.img`.
 - Booted with `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
   Current serial log: `test_logs/win98-20261126-155720.log` (`vm_serial.log`).
 - Gallium Nine HAL triangle precheck passed 60 frames in 6099 ms (~9.8 FPS).
-  3DMark03 launched, created a GPU channel, and submitted NVC0 draws.
-- Since this build booted: zero `3D-BUFFER-PRESSURE` messages, zero
-  `3D-ALLOC failed` messages, and no new GR fault / submission failure. The
-  previous run at 2048 slots filled the table (`live=2048`, `client=2037`,
-  `gart=1863`) and then failed repeated GART BO allocations. This confirms the
-  old table limit was a concrete failure; the new run has removed that failure
-  so far.
-- The 3DMark visual result is not yet confirmed for this new run. The user
-  reported all black on the preceding 2048-slot run. Keep the current VM alive
-  while checking whether this run shows the desktop, 3DMark scene, or black.
+  3DMark03 loaded through D9Switcher/Gallium Nine and submitted NVC0 draws.
+- The 2048-entry table exhaustion is gone: current run has no
+  `3D-BUFFER-PRESSURE` messages. The user reports the current display showed
+  the top-left of the loading screen flashing, then went black.
+- New concrete failure: current run logs `NVX [GART]: MmAllocatePagesForMdl
+  failed` beginning with a 0x11000-byte allocation, followed by repeated
+  failures for 0x100000, 0x80000, 0x40000, etc. `3D-ALLOC failed` follows,
+  while the channel is not faulted. The Win98 shim
+  `src_win98/shim/nvx_mdl_win98.c` implements `NvxMdlAllocateGartBacking` by
+  calling `VideoPortAllocateCommonBuffer`, then fabricating a sequential PFN
+  array. That requires physically contiguous backing and is not equivalent to
+  XP's `MmAllocatePagesForMdl`; fragmented Win98 physical memory can reject
+  these medium/large BOs. This is now the strongest log-backed explanation for
+  missing textures/render targets and the black scene.
+- The top-left-only flashing may also involve Nine's present rectangle or
+  viewport scaling. Investigate after fixing backing allocation; do not assume
+  that the BO table change fixes presentation.
+
+Next steps
+
+1. Replace the Win98 fake-MDL contiguous allocation with true scatter-backed
+   GART memory: allocate/lock physical pages through VMM, retain a contiguous
+   virtual view for CPU access, and pass the actual PFN list to
+   `NvxGspMapGartPfnArray`. Verify supported Win9x VMM mapping/locking services
+   before implementing; do not invent sequential PFNs for noncontiguous pages.
+2. Add a narrow diagnostic for allocator stage and VMM error/available memory
+   so each failure is attributable without flooding serial.
+3. Rebuild, install, and retest 3DMark03. Require no GART allocation failures,
+   continued NVC0 submissions, and visual confirmation of the scene.
+4. If rendering is still cropped, trace Nine `Present` source/destination
+   rectangles through `mesa_patches/mesa25/0013-nine-present-rectangles.patch`
+   and the Win98 WGL present path.
 
 Relevant files
 
-- `src_driver/nvx_gsp.h` — Win98 BO table capacity.
-- `src_driver/nvxmp.c` — BO lifetime, GART allocation/free and pressure logs.
-- `test_logs/win98-20261126-154745.log` — prior 2048-slot exhaustion and failed
-  allocations.
-- `test_logs/win98-20261126-155720.log` — current 4096-slot run.
-- `test/run_vfio_win98_autoretry.sh`, `test/install_win98_graphics_tests.sh`,
-  `test/update_win98_driver.sh` — launch and deployment.
+- `src_driver/nvx_gsp.h` — Win98 BO table capacity (4096).
+- `src_driver/nvxmp.c` — GART BO allocation/free and failure diagnostics.
+- `src_win98/shim/nvx_mdl_win98.c` — current contiguous Win98 backing shim.
+- `src_win98/shim/videoprt_shim.c`, `src_win98/shim/vmm_wrappers.asm` — existing
+  VMM page allocation and mapping service wrappers.
+- `mesa_patches/mesa25/0013-nine-present-rectangles.patch` — Nine present
+  rectangle handling.
+- `test_logs/win98-20261126-154745.log` — 2048-slot table exhaustion.
+- `test_logs/win98-20261126-155720.log` — 4096-slot run and GART allocation
+  failures.
 
-Other pending work
-
-- Confirm the physical display for the current run and whether 3DMark advances
-  from its startup/loading phase into a rendered scene. Nine's simple triangle
-  precheck works, but is slow (~10 FPS); performance is not addressed here.
-- Do not treat the prior `0xE06D7363` MSVC first-chance exceptions as fatal by
-  themselves. A debugger-enabled run is not needed for the current BO-capacity
-  check.
-- The working tree has pre-existing edits in `submodules/mesa9x` and
-  `submodules/wine9x`; preserve them.
+Keep the current VM alive unless asked to stop. Preserve existing edits in
+`submodules/mesa9x` and `submodules/wine9x`.
