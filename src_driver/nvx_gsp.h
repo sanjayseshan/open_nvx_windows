@@ -327,8 +327,9 @@ typedef struct _VIDEO_MODE_DEF {
 /* Win9x loads the MiniVDD as one preloaded LE object. 8192 full BO
  * descriptors make each static device extension nearly 4 MiB, which makes
  * the VxD itself too large to load reliably. Keep the 9x registry bounded;
- * NT builds retain their larger capacity. */
-#define NVX_3D_USER_BUFFER_SLOTS 1024U
+ * NT builds retain their larger capacity. 4096 slots leave room beyond the
+ * 2037 simultaneously live client BOs observed during 3DMark03. */
+#define NVX_3D_USER_BUFFER_SLOTS 4096U
 #else
 #define NVX_3D_USER_BUFFER_SLOTS 8192U
 #endif

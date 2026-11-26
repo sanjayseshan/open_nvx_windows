@@ -1,44 +1,43 @@
-Current status — 2026-11-26, Win98 SE
+Current status — 2026-11-26, Win98 SE / 3DMark03
 
-The current VM is running with auto-retry and should be left open. Serial log:
-`test_logs/win98-20261126-135204.log` (`vm_serial.log` points to it). The guest
-is at 2560x1440x32. Its one-shot 2D-only test passed. This run has both
-`GpuFill=0` and `GpuCopy=0`; the log contains no GPU fill/copy submissions.
+Latest build and test
 
-Cause of the previous visual regression: the earlier install omitted explicit
-2D acceleration overrides, and `test/update_win98_driver.sh` defaulted both
-`GpuFill` and `GpuCopy` to 1. The previous run's log confirms full-screen GPU
-fills at startup and GPU copies during window updates. The user then saw a black
-wallpaper, window trails, and corruption in windows; 3DMark03's loading scene
-was mostly black except for the top-left area. Both paths are now disabled by
-default in the installer and Win98 driver source. The current 2D-only guest test
-passes, but visual recovery should be confirmed on the monitor. Latest user
-report: 3DMark03 shows only the top-left of its loading screen; the rest is
-black and flickers. The current serial log is from the 2D-only test, so it does
-not capture this 3DMark run. Retest 3DMark03 with both 2D GPU paths disabled
-to separate the 3D rendering issue from desktop corruption; the black/flicker
-problem remains unresolved.
+- Increased Win98 `NVX_3D_USER_BUFFER_SLOTS` from 2048 to 4096 in
+  `src_driver/nvx_gsp.h`. Rebuilt the single-monitor VxD and package with the
+  Mesa 25.1.6 x86 Win98 ICD; build passed and `dist_win98/nvx.vxd` is 443,403
+  bytes.
+- Installed the package and a one-shot 3DMark03 launch into `win98_small.img`.
+- Booted with `NVX_AUTO_RETRY=1 ./test/run_vfio_win98_autoretry.sh`.
+  Current serial log: `test_logs/win98-20261126-155720.log` (`vm_serial.log`).
+- Gallium Nine HAL triangle precheck passed 60 frames in 6099 ms (~9.8 FPS).
+  3DMark03 launched, created a GPU channel, and submitted NVC0 draws.
+- Since this build booted: zero `3D-BUFFER-PRESSURE` messages, zero
+  `3D-ALLOC failed` messages, and no new GR fault / submission failure. The
+  previous run at 2048 slots filled the table (`live=2048`, `client=2037`,
+  `gart=1863`) and then failed repeated GART BO allocations. This confirms the
+  old table limit was a concrete failure; the new run has removed that failure
+  so far.
+- The 3DMark visual result is not yet confirmed for this new run. The user
+  reported all black on the preceding 2048-slot run. Keep the current VM alive
+  while checking whether this run shows the desktop, 3DMark scene, or black.
 
-The Win98 Mesa WGL TLS cleanup fix remains unverified at runtime. Original
-`test4.txt` fault: EIP `BFF7B9A6` in KERNEL32, returning into Mesa WGL
-`stw_tls_cleanup` at `NVXOGL32.DLL` `6E4C46A2`, entering static `g_mutex` at
-`6E731704`. Root patch
-`mesa_patches/win98/0005-wgl-tls-critical-section-init.patch` initializes the
-critical section explicitly. The x86 Mesa ICD build succeeded. The previous
-debugged 3DMark run reported first-chance MSVC C++ exceptions (`E06D7363`), not
-an access violation; its logger's generic “access kind/address” fields are
-misleading for that exception type.
+Relevant files
 
-The Win98 driver package was rebuilt with GPU fill/copy disabled by default and
-the experimental Mesa ICD staged. The running image has explicit settings, so
-rebuilding the package did not alter the active VM.
+- `src_driver/nvx_gsp.h` — Win98 BO table capacity.
+- `src_driver/nvxmp.c` — BO lifetime, GART allocation/free and pressure logs.
+- `test_logs/win98-20261126-154745.log` — prior 2048-slot exhaustion and failed
+  allocations.
+- `test_logs/win98-20261126-155720.log` — current 4096-slot run.
+- `test/run_vfio_win98_autoretry.sh`, `test/install_win98_graphics_tests.sh`,
+  `test/update_win98_driver.sh` — launch and deployment.
 
-Relevant files: `test_logs/win98-20261126-132329.log`,
-`test_logs/win98-20261126-134931.log`,
-`test_logs/win98-20261126-135204.log`, `test/update_win98_driver.sh`,
-`src_win98/winvbe_drv/enable.c`, `src_win98/winvbe_drv/blt.c`,
-`test/win98/runner.c`, and `mesa_patches/win98/0005-wgl-tls-critical-section-init.patch`.
+Other pending work
 
-The working tree contains many unrelated edits; do not reset or discard them.
-Use `NVX_AUTO_RETRY=1` for Win98 VFIO boots and leave the VM running unless
-asked to stop it.
+- Confirm the physical display for the current run and whether 3DMark advances
+  from its startup/loading phase into a rendered scene. Nine's simple triangle
+  precheck works, but is slow (~10 FPS); performance is not addressed here.
+- Do not treat the prior `0xE06D7363` MSVC first-chance exceptions as fatal by
+  themselves. A debugger-enabled run is not needed for the current BO-capacity
+  check.
+- The working tree has pre-existing edits in `submodules/mesa9x` and
+  `submodules/wine9x`; preserve them.
