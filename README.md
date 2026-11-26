@@ -28,8 +28,8 @@ Full 2D and 3D (for XP) acceleration is present. OpenGL hardware rendering works
 | **2D Acceleration Engine** | Full Hardware Acceleration (Ampere Copy Engine) | Full Hardware Acceleration (Ampere Copy Engine) | GPU-backed 32bpp GDI solid fills via VxD/OpenRM; CPU fallback for other operations |
 | **3D Acceleration Engine** | Mesa WGL/Nouveau for OpenGL; Gallium Nine for D3D9 (latest user-reported 3DMark05 score: 5,409) | Mesa WGL/Nouveau for OpenGL; x86 Gallium Nine for D3D9; WineD3D for other D3D paths | Experimental x86 Mesa/Nouveau OpenGL; bounded Nine D3D9 triangle and GPU submissions observed. 3DMark03 currently renders incorrectly/black; general app coverage is unproven |
 | **Hardware Bootstrap** | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 | Authentic GSP-RM firmware booted via Falcon/SEC2 |
-| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Win98 single-monitor package; native EVO reports both heads active, GDI dual-view not validated |
-| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 @ 32bpp primary; GSP/EVO modeset and matching 10,240-byte pitch boot-tested, physical image confirmation pending |
+| **Multi-Monitor Method** | Windows XP XDDM multi-head scanout surfaces / DualView | Windows XP XDDM multi-head scanout surfaces / DualView | Win98 single-monitor package; native EVO reports both heads active, GDI dual-view partially validated |
+| **Tested Resolutions** | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 + 2560×1440 @ 32bpp True Color | 2560×1440 @ 32bpp primary; GSP/EVO modeset and matching 10,240-byte pitch boot-tested |
 
 ---
 ## Architecture
